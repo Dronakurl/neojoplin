@@ -5,6 +5,7 @@ pub mod error;
 pub mod traits;
 pub mod sync;
 pub mod config;
+pub mod editor;
 
 // Re-exports for convenience
 pub use domain::*;
@@ -12,6 +13,7 @@ pub use error::*;
 pub use traits::*;
 pub use sync::*;
 pub use config::*;
+pub use editor::*;
 
 /// Convenience Result type
 pub type Result<T> = std::result::Result<T, NeoJoplinError>;

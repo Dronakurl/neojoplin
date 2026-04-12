@@ -1,7 +1,7 @@
 // NeoJoplin CLI - Main entry point
 
 use clap::{Parser, Subcommand};
-use neojoplin_core::{now_ms, Note, Folder, Storage};
+use neojoplin_core::{now_ms, Note, Folder, Storage, Editor};
 use neojoplin_storage::SqliteStorage;
 use std::sync::Arc;
 use std::path::PathBuf;
@@ -31,6 +31,12 @@ enum Commands {
         /// Note body (optional, opens editor if not specified)
         #[arg(short, long)]
         body: Option<String>,
+    },
+
+    /// Edit an existing note
+    Edit {
+        /// Note ID or title
+        note: String,
     },
 
     /// Create a new folder/notebook
@@ -112,13 +118,24 @@ async fn main() -> Result<()> {
         }
 
         Commands::MkNote { title, parent, body } => {
+            let note_body = match body {
+                Some(body) => body,
+                None => {
+                    // Launch external editor
+                    println!("Opening editor for new note: {}", title);
+                    let editor = Editor::new()
+                        .map_err(|e| anyhow::anyhow!("Failed to initialize editor: {}", e))?;
+
+                    let initial_content = format!("# {}\n\n", title);
+                    editor.edit(&initial_content, &title).await
+                        .map_err(|e| anyhow::anyhow!("Editor failed: {}", e))?
+                }
+            };
+
             let note = Note {
                 id: uuid::Uuid::new_v4().to_string(),
                 title: title.clone(),
-                body: body.unwrap_or_else(|| {
-                    // TODO: Launch external editor
-                    format!("Note: {}", title)
-                }),
+                body: note_body,
                 parent_id: parent.unwrap_or_default(),
                 created_time: now_ms(),
                 updated_time: now_ms(),
@@ -149,6 +166,43 @@ async fn main() -> Result<()> {
 
             storage.create_note(&note).await?;
             println!("Created note: {} ({})", title, note.id);
+            Ok(())
+        }
+
+        Commands::Edit { note } => {
+            // Find the note
+            let note_obj = if let Some(found) = storage.get_note(&note).await? {
+                found
+            } else {
+                // Try to find by title
+                let notes = storage.list_notes(None).await?;
+                let found = notes.iter()
+                    .find(|n| n.title == note)
+                    .ok_or_else(|| anyhow::anyhow!("Note not found: {}", note))?;
+                storage.get_note(&found.id).await?.unwrap()
+            };
+
+            println!("Editing note: {}", note_obj.title);
+
+            // Launch editor
+            let editor = Editor::new()
+                .map_err(|e| anyhow::anyhow!("Failed to initialize editor: {}", e))?;
+
+            let updated_body = editor.edit(&note_obj.body, &note_obj.title).await
+                .map_err(|e| anyhow::anyhow!("Editor failed: {}", e))?;
+
+            // Update note if content changed
+            if updated_body != note_obj.body {
+                let mut updated_note = note_obj.clone();
+                updated_note.body = updated_body;
+                updated_note.updated_time = now_ms();
+
+                storage.update_note(&updated_note).await?;
+                println!("Note updated successfully");
+            } else {
+                println!("No changes made to note");
+            }
+
             Ok(())
         }
 
