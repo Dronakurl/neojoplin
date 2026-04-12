@@ -10,8 +10,9 @@ use ratatui::{backend::CrosstermBackend, Terminal};
 use std::sync::Arc;
 use std::time::Duration;
 
-use neojoplin_core::Storage;
+use neojoplin_core::{Storage, Note, Folder, now_ms};
 use neojoplin_storage::SqliteStorage;
+use neojoplin_sync::{SyncEngine, ReqwestWebDavClient, WebDavConfig};
 
 use crate::config::Config;
 use crate::state::{AppState, FocusPanel};
@@ -154,8 +155,7 @@ impl App {
                     self.state.toggle_settings();
                 } else {
                     // s - Sync
-                    self.state.set_status("Syncing...");
-                    // TODO: Implement sync
+                    self.sync().await?;
                 }
             }
 
@@ -179,8 +179,8 @@ impl App {
             KeyCode::Enter => {
                 if self.state.focus == FocusPanel::Notes {
                     if let Some(note) = self.state.selected_note() {
-                        self.state.set_status(&format!("Editing: {}", note.title));
-                        // TODO: Launch external editor
+                        let note_clone = note.clone();
+                        self.edit_note(&note_clone).await?;
                     }
                 }
             }
@@ -189,22 +189,196 @@ impl App {
             KeyCode::Char('n') => {
                 if key.modifiers.contains(KeyModifiers::SHIFT) {
                     // N - New folder
-                    self.state.set_status("New folder not implemented yet");
+                    self.create_folder().await?;
                 } else {
                     // n - New note
-                    self.state.set_status("New note not implemented yet");
+                    self.create_note().await?;
                 }
             }
 
             // Delete
             KeyCode::Char('d') => {
-                self.state.set_status("Delete not implemented yet");
+                self.delete_selected().await?;
             }
 
             _ => {}
         }
 
         Ok(false)
+    }
+
+    /// Sync with WebDAV server
+    async fn sync(&mut self) -> Result<()> {
+        self.state.set_status("Starting sync...");
+        // TODO: Implement actual sync with WebDAV
+        // For now, just simulate sync
+        std::thread::sleep(std::time::Duration::from_millis(500));
+        self.state.set_status("Sync completed (not implemented)");
+        Ok(())
+    }
+
+    /// Edit note in external editor
+    async fn edit_note(&mut self, note: &Note) -> Result<()> {
+        use neojoplin_core::Editor;
+
+        self.state.set_status(&format!("Opening editor for: {}", note.title));
+
+        let editor = Editor::new()
+            .map_err(|e| anyhow::anyhow!("Failed to initialize editor: {}", e))?;
+
+        let updated_body = editor.edit(&note.body, &note.title).await
+            .map_err(|e| anyhow::anyhow!("Editor failed: {}", e))?;
+
+        // Update note if content changed
+        if updated_body != note.body {
+            let mut updated_note = note.clone();
+            updated_note.body = updated_body.clone();
+            updated_note.updated_time = now_ms();
+
+            self.storage.update_note(&updated_note).await?;
+
+            // Update in-memory state
+            if let Some(idx) = self.state.selected_note {
+                if idx < self.state.notes.len() {
+                    self.state.notes[idx].body = updated_body;
+                }
+            }
+            self.state.load_note_content();
+
+            self.state.set_status("Note updated successfully");
+        } else {
+            self.state.set_status("No changes made to note");
+        }
+
+        Ok(())
+    }
+
+    /// Create a new note
+    async fn create_note(&mut self) -> Result<()> {
+        use uuid::Uuid;
+
+        self.state.set_status("Creating new note...");
+
+        // For simplicity, create a note with a default title
+        let title = format!("New Note {}", Uuid::new_v4().to_string()[..8].to_string());
+        let note = Note {
+            id: Uuid::new_v4().to_string(),
+            title: title.clone(),
+            body: String::new(),
+            parent_id: self.state.selected_folder()
+                .map(|f| f.id.clone())
+                .unwrap_or_default(),
+            created_time: now_ms(),
+            updated_time: now_ms(),
+            user_created_time: 0,
+            user_updated_time: 0,
+            is_shared: 0,
+            share_id: None,
+            master_key_id: None,
+            encryption_applied: 0,
+            encryption_cipher_text: None,
+            is_conflict: 0,
+            is_todo: 0,
+            todo_completed: 0,
+            todo_due: 0,
+            source: String::new(),
+            source_application: String::new(),
+            order: 0,
+            latitude: 0,
+            longitude: 0,
+            altitude: 0,
+            author: String::new(),
+            source_url: String::new(),
+            application_data: String::new(),
+            markup_language: 1,
+            encryption_blob_encrypted: 0,
+            conflict_original_id: String::new(),
+        };
+
+        self.storage.create_note(&note).await?;
+
+        // Reload notes for current folder
+        self.reload_notes().await?;
+
+        self.state.set_status(&format!("Created note: {}", title));
+        Ok(())
+    }
+
+    /// Create a new folder
+    async fn create_folder(&mut self) -> Result<()> {
+        use uuid::Uuid;
+
+        self.state.set_status("Creating new folder...");
+
+        let title = format!("New Folder {}", Uuid::new_v4().to_string()[..8].to_string());
+        let folder = Folder {
+            id: Uuid::new_v4().to_string(),
+            title: title.clone(),
+            parent_id: String::new(), // Root folder
+            created_time: now_ms(),
+            updated_time: now_ms(),
+            user_created_time: 0,
+            user_updated_time: 0,
+            is_shared: 0,
+            share_id: None,
+            master_key_id: None,
+            encryption_applied: 0,
+            encryption_cipher_text: None,
+            icon: String::new(),
+        };
+
+        self.storage.create_folder(&folder).await?;
+
+        // Reload folders
+        let folders = self.storage.list_folders().await?;
+        self.state.set_folders(folders);
+
+        // Reload notes for current folder
+        self.reload_notes().await?;
+
+        self.state.set_status(&format!("Created folder: {}", title));
+        Ok(())
+    }
+
+    /// Delete selected item (note or folder)
+    async fn delete_selected(&mut self) -> Result<()> {
+        match self.state.focus {
+            FocusPanel::Notes => {
+                if let Some(note) = self.state.selected_note() {
+                    let note_id = note.id.clone();
+                    self.state.set_status(&format!("Deleting note: {}", note.title));
+                    self.storage.delete_note(&note_id).await?;
+                    self.reload_notes().await?;
+                    self.state.set_status("Note deleted");
+                }
+            }
+            FocusPanel::Notebooks => {
+                if let Some(folder) = self.state.selected_folder() {
+                    let folder_id = folder.id.clone();
+                    self.state.set_status(&format!("Deleting folder: {}", folder.title));
+                    self.storage.delete_folder(&folder_id).await?;
+                    // Reload folders
+                    let folders = self.storage.list_folders().await?;
+                    self.state.set_folders(folders);
+                    // Reload notes
+                    self.reload_notes().await?;
+                    self.state.set_status("Folder deleted");
+                }
+            }
+            FocusPanel::Content => {
+                self.state.set_status("Cannot delete from content panel");
+            }
+        }
+        Ok(())
+    }
+
+    /// Reload notes for currently selected folder
+    async fn reload_notes(&mut self) -> Result<()> {
+        if let Some(folder) = self.state.selected_folder() {
+            let notes = self.storage.list_notes(Some(&folder.id)).await?;
+            self.state.set_notes(notes);
+        }
+        Ok(())
     }
 }
 

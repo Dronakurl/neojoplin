@@ -1,4 +1,4 @@
-// NeoJoplin CLI - Main entry point
+// NeoJoplin - Main entry point (CLI + TUI)
 
 use clap::{Parser, Subcommand};
 use neojoplin_core::{now_ms, Note, Folder, Storage, Editor};
@@ -13,7 +13,11 @@ use anyhow::Result;
 #[command(version = "0.1.0")]
 struct Cli {
     #[command(subcommand)]
-    command: Commands,
+    command: Option<Commands>,
+
+    /// Launch TUI interface (default when no command specified)
+    #[arg(short, long)]
+    tui: bool,
 }
 
 #[derive(Subcommand)]
@@ -78,7 +82,7 @@ enum Commands {
         #[arg(short = 'P', long)]
         password: Option<String>,
         /// Remote path
-        #[arg(short = 'r', long, default_value = "/")]
+        #[arg(short = 'r', long, default_value = "/neojoplin")]
         remote: String,
     },
 
@@ -108,10 +112,15 @@ enum Commands {
 async fn main() -> Result<()> {
     let cli = Cli::parse();
 
-    // Initialize storage
+    // Launch TUI if no command specified or --tui flag is used
+    if cli.command.is_none() || cli.tui {
+        return neojoplin_tui::run_app().await;
+    }
+
+    // Initialize storage for CLI commands
     let storage = Arc::new(SqliteStorage::new().await?);
 
-    match cli.command {
+    match cli.command.unwrap() {
         Commands::Init => {
             println!("Database initialized at: {}", get_db_path()?.display());
             Ok(())

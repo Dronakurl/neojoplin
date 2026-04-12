@@ -17,7 +17,7 @@ impl Default for SyncContext {
     fn default() -> Self {
         Self {
             last_sync_time: 0,
-            remote_path: "/".to_string(),
+            remote_path: "/neojoplin".to_string(),
         }
     }
 }
@@ -75,9 +75,12 @@ impl SyncEngine {
     /// Ensure remote directory exists
     async fn ensure_remote_directory(&self) -> Result<()> {
         // Create root directory if it doesn't exist
-        if let Err(_) = self.webdav.exists(&self.context.remote_path).await {
+        let remote_exists = self.webdav.exists(&self.context.remote_path).await
+            .unwrap_or(false);
+
+        if !remote_exists {
             self.webdav.mkcol(&self.context.remote_path).await
-                .map_err(|e| SyncError::Server(format!("Failed to create remote directory: {}", e)))?;
+                .map_err(|e| SyncError::Server(format!("Failed to create remote directory {}: {}", self.context.remote_path, e)))?;
             let _ = self.event_tx.send(SyncEvent::Warning {
                 message: format!("Created remote directory: {}", self.context.remote_path)
             });
@@ -86,13 +89,13 @@ impl SyncEngine {
         // Create required Joplin subdirectories
         let subdirs = ["folders", "items", "resources", "tags", "note_tags"];
         for subdir in &subdirs {
-            let dir_path = format!("{}{}", self.context.remote_path, subdir);
-            if let Err(_) = self.webdav.exists(&dir_path).await {
-                if let Err(e) = self.webdav.mkcol(&dir_path).await {
-                    let _ = self.event_tx.send(SyncEvent::Warning {
-                        message: format!("Failed to create subdirectory {}: {}", dir_path, e)
-                    });
-                }
+            let dir_path = format!("{}/{}", self.context.remote_path.trim_end_matches('/'), subdir);
+            let subdir_exists = self.webdav.exists(&dir_path).await
+                .unwrap_or(false);
+
+            if !subdir_exists {
+                self.webdav.mkcol(&dir_path).await
+                    .map_err(|e| SyncError::Server(format!("Failed to create subdirectory {}: {}", dir_path, e)))?;
             }
         }
 
@@ -430,19 +433,34 @@ impl SyncEngine {
     async fn store_downloaded_item(&self, item_id: &str, content: &str) -> Result<()> {
         // Try to parse as note first
         if let Ok(note) = self.deserialize_note(item_id, content) {
-            let _ = self.storage.update_note(&note).await;
+            // Check if note exists, if not create it
+            if self.storage.get_note(&note.id).await.is_ok() {
+                self.storage.update_note(&note).await
+                    .map_err(|e| SyncError::Local(e))?;
+            } else {
+                self.storage.create_note(&note).await
+                    .map_err(|e| SyncError::Local(e))?;
+            }
             return Ok(());
         }
 
         // Try folder
         if let Ok(folder) = self.deserialize_folder(item_id, content) {
-            let _ = self.storage.update_folder(&folder).await;
+            // Check if folder exists, if not create it
+            if self.storage.get_folder(&folder.id).await.is_ok() {
+                self.storage.update_folder(&folder).await
+                    .map_err(|e| SyncError::Local(e))?;
+            } else {
+                self.storage.create_folder(&folder).await
+                    .map_err(|e| SyncError::Local(e))?;
+            }
             return Ok(());
         }
 
         // Try tag
         if let Ok(tag) = self.deserialize_tag(item_id, content) {
-            let _ = self.storage.update_tag(&tag).await;
+            self.storage.update_tag(&tag).await
+                .map_err(|e| SyncError::Local(e))?;
             return Ok(());
         }
 

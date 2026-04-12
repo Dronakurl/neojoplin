@@ -83,7 +83,13 @@ The database schema differs from typical Rust types:
 
 ### WebDAV Configuration
 
-The application reads WebDAV credentials from rclone config:
+**Sync Path Configuration:**
+The sync remote path is configurable via `SyncEngine::with_remote_path()`. Default is `/joplin`.
+- **Production**: `SyncEngine::new(...).with_remote_path("/neojoplin".to_string())`
+- **Testing**: Use unique paths per test to avoid conflicts: `"/test-sync-123"`
+- **Compatibility**: Joplin can sync to any path, not just root level
+
+**Production credentials from rclone:**
 - Config location: `~/.config/rclone/rclone.conf`
 - Target section: `[gmx]`
 - URL: `https://webdav.mc.gmx.net`
@@ -105,11 +111,50 @@ The rclone password is "obscured" and must be decrypted using rclone's algorithm
 
 ### Testing Strategy
 
-- **Unit tests**: In module files (e.g., `src/core/models.rs`)
-- **Integration tests**: `tests/integration/` and `tests/unit/`
-- **Sync compatibility**: Must test bidirectional sync with reference Joplin CLI
+**CRITICAL: Test sync compatibility after every sync-related change**
 
-Critical test: Create notes in NeoJoplin → sync → verify in Joplin CLI → modify → sync back → verify changes.
+**Automated sync test (comprehensive):**
+```bash
+./tests/integration/sync_test.sh
+```
+
+This script tests:
+1. Local WebDAV server setup on port 8080
+2. NeoJoplin database initialization
+3. Note and folder creation in NeoJoplin
+4. NeoJoplin → WebDAV sync (upload)
+5. WebDAV → Joplin CLI sync (download)
+6. Note creation in Joplin CLI
+7. Joplin → WebDAV sync (upload)
+8. WebDAV → NeoJoplin sync (download)
+9. Bidirectional sync verification
+10. Deletion sync verification
+
+**Requirements:**
+- Python 3 for local WebDAV server
+- Joplin CLI installed (optional, for full compatibility test)
+- Port 8080 available
+
+**Quick manual test (without Joplin CLI):**
+```bash
+# Start local WebDAV server
+python3 -m http.server 8080 --directory /tmp/webdav-test &
+
+# Initialize test database
+cargo run -- init --db /tmp/test-neojoplin.db
+
+# Create test data
+cargo run -- mknote "Test Note" --body "Test content" --db /tmp/test-neojoplin.db
+
+# Sync to local WebDAV
+cargo run -- sync --url http://localhost:8080/test --path /test-sync
+
+# Verify WebDAV contents
+curl http://localhost:8080/test-sync/items/
+```
+
+**Unit tests:** In module files (e.g., `src/core/models.rs`)
+**Integration tests:** `tests/integration/` and `tests/unit/`
 
 ### Current Implementation Status
 

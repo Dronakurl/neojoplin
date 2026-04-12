@@ -206,23 +206,29 @@ impl ReqwestWebDavClient {
 }
 
 /// Simple PROPFIND response parser
-fn parse_propfind_response(body: &str, base_url: &str) -> WebDavResult<Vec<String>> {
+fn parse_propfind_response(body: &str, _base_url: &str) -> WebDavResult<Vec<String>> {
     let mut files = Vec::new();
 
-    // Very simple XML parsing - extract href tags
-    for line in body.lines() {
-        if line.contains("<D:href>") {
-            if let Some(start) = line.find("<D:href>") {
-                if let Some(end) = line.find("</D:href>") {
-                    let href = &line[start + 8..end];
-                    // Extract just the filename from the path
-                    if let Some(filename) = href.rsplit('/').next() {
-                        if !filename.is_empty() && !href.contains(base_url) {
-                            files.push(filename.to_string());
-                        }
+    // Simple XML parsing - extract all href tags
+    let mut search_start = 0;
+    while let Some(href_start) = body[search_start..].find("<D:href>") {
+        let actual_start = search_start + href_start;
+        if let Some(href_end) = body[actual_start + 8..].find("</D:href>") {
+            let actual_end = actual_start + 8 + href_end;
+            let href = &body[actual_start + 8..actual_end];
+
+            // Filter out directory entries (those ending with /)
+            if !href.ends_with('/') {
+                if let Some(filename) = href.rsplit('/').next() {
+                    if !filename.is_empty() {
+                        files.push(filename.to_string());
                     }
                 }
             }
+
+            search_start = actual_end + 9; // Move past this href tag
+        } else {
+            break;
         }
     }
 

@@ -22,7 +22,7 @@ pub fn render_ui(f: &mut Frame, state: &AppState) {
             ]
             .as_ref(),
         )
-        .split(f.size());
+        .split(f.area());
 
     // Render main content
     render_main_content(f, state, chunks[0]);

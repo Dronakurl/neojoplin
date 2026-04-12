@@ -15,6 +15,7 @@ path = "src/main.rs"
 neojoplin-core = { path = "../core" }
 neojoplin-storage = { path = "../storage" }
 neojoplin-sync = { path = "../sync" }
+neojoplin-tui = { path = "../tui" }
 tokio = { workspace = true }
 clap = { version = "4.5", features = ["derive"] }
 anyhow = { workspace = true }

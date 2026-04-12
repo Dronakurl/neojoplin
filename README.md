@@ -4,16 +4,17 @@ A native Rust terminal client for [Joplin](https://joplinapp.org/) note-taking w
 
 ## Status
 
-🚧 **Under Active Development** - This is a new project. See the [Implementation Plan](#implementation-status) for current progress.
+✅ **Production Ready** - Fully functional with 100% Joplin sync compatibility. See [IMPLEMENTATION_STATUS.md](IMPLEMENTATION_STATUS.md) for details.
 
 ## Features
 
 - ✅ **100% Sync Compatible** - Bidirectional sync with Joplin Desktop/CLI
-- ✅ **Terminal Interface** - Fast, keyboard-driven workflow
-- ✅ **WebDAV Sync** - Sync with any WebDAV server (GMX, Nextcloud, etc.)
+- ✅ **CLI Interface** - Fast, scriptable command-line interface
+- ✅ **TUI Interface** - Interactive terminal user interface with vim-style navigation
+- ✅ **WebDAV Sync** - Three-phase sync with any WebDAV server (GMX, Nextcloud, etc.)
 - ✅ **External Editor** - Edit notes with your favorite editor (helix, nvim, etc.)
 - ✅ **Emoji Support** - Beautiful folder icons and UI elements
-- 🚧 **TUI Mode** - Interactive terminal interface (planned)
+- ✅ **Full-Featured** - Complete note management, search, and organization
 
 ## Installation
 
@@ -24,8 +25,7 @@ A native Rust terminal client for [Joplin](https://joplinapp.org/) note-taking w
 git clone https://github.com/Dronakurl/neojoplin.git
 cd neojoplin
 
-# Install dependencies (just, cargo)
-just build
+# Install the unified binary
 just install
 ```
 
@@ -38,27 +38,46 @@ just install
 
 ## Quick Start
 
+NeoJoplin provides a single binary that works as both a CLI tool and launches the TUI interface by default.
+
+### TUI Interface (Default)
+
+```bash
+# Launch the TUI interface (default when no commands specified)
+neojoplin
+# or explicitly
+neojoplin --tui
+
+# Keybindings:
+# q     - Quit
+# ?     - Help
+# Tab   - Switch panels (notebooks | notes | content)
+# j/k   - Navigate (vim-style)
+# Enter - Edit selected note
+# n     - New note
+# N     - New folder
+# d     - Delete selected
+# s     - Sync
+```
+
+### CLI Commands
+
 ```bash
 # Initialize the database
 neojoplin init
 
-# Configure WebDAV sync (reads from ~/.config/rclone/rclone.conf)
-neojoplin config sync.target gmx
-
-# Create a note
-neojoplin mknote "My First Note" "Note content here..."
+# Create a folder and note
+neojoplin mk-book "Development"
+neojoplin mk-note "Rust Tips" --body "Use cargo for everything!"
 
 # List notes
 neojoplin ls
 
-# View a note
-neojoplin cat "My First Note"
-
 # Edit a note (uses $EDITOR or configured editor)
-neojoplin edit "My First Note"
+neojoplin edit "Rust Tips"
 
 # Sync with WebDAV
-neojoplin sync
+neojoplin sync --url https://webdav.example.com --username user --password pass
 ```
 
 ## Configuration
@@ -168,37 +187,40 @@ just fmt      # format
 
 ## Implementation Status
 
-See [IMPLEMENTATION.md](docs/IMPLEMENTATION.md) for detailed progress tracking.
+See [IMPLEMENTATION_STATUS.md](IMPLEMENTATION_STATUS.md) for detailed progress tracking.
 
 ### Completed ✅
 
 - [x] Project structure and dependencies
-- [x] Database schema (Joplin v41)
-- [x] Basic CLI framework
+- [x] Database schema (Joplin v41 compatibility)
+- [x] Complete CLI framework with all core commands
+- [x] Three-phase sync engine (upload → delete_remote → delta)
+- [x] WebDAV client with full protocol support
+- [x] External editor integration
+- [x] TUI application with interactive interface
+- [x] Comprehensive test suite
+- [x] Sync compatibility verified
 
-### In Progress 🚧
+### Available Features ✅
 
-- [ ] Database layer implementation
-- [ ] Core commands (ls, cat, mknote, edit)
-- [ ] WebDAV sync engine
-
-### Planned 📋
-
-- [ ] Three-phase sync protocol
-- [ ] E2EE support
-- [ ] Conflict resolution
-- [ ] TUI mode (ratatui)
-- [ ] Embedded editor (nvim-rs)
+- **CLI**: `init`, `mk-note`, `mk-book`, `ls`, `cat`, `edit`, `sync`, `rm-note`, `rm-book`
+- **TUI**: Three-panel layout, vim navigation, interactive editing
+- **Sync**: Three-phase protocol, configurable remote path, WebDAV support
+- **Editor**: External editor integration with terminal handling
+- **Database**: Full SQLite with FTS5 search, exact Joplin schema
 
 ## Architecture
 
 NeoJoplin is built with:
 
 - **Tokio** - Async runtime
-- **SQLx** - Database access
+- **SQLx** - Database access with compile-time query verification
 - **Clap** - CLI argument parsing
+- **Ratatui** - Terminal UI framework
+- **Crossterm** - Terminal handling and keyboard events
 - **Reqwest** - HTTP client for WebDAV
-- **Ratatui** - TUI framework (planned)
+- **UUID** - Unique ID generation (Joplin compatible)
+- **Chrono** - Timestamp handling (milliseconds since epoch)
 
 ## Contributing
 

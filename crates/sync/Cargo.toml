@@ -20,6 +20,7 @@ futures = "0.3"
 base64 = "0.22"
 chrono = { workspace = true }
 serde_json = { workspace = true }
+uuid = { version = "1.11", features = ["v4", "serde"] }
 
 [[bin]]
 name = "test_webdav"

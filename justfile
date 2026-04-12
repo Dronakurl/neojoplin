@@ -12,13 +12,14 @@ build:
 test:
     cargo test --all
 
-# Build and run
-run:
-    cargo run --
+# Build and run (launches TUI by default, or pass CLI commands)
+run ARGV="":
+    cargo run --bin neojoplin -- {{ARGV}}
 
 # Build and install to ~/.local/bin
 install: build
-    @cargo install --path .
+    @cargo install --path crates/cli
+    @echo "Installed neojoplin (CLI + TUI combined)"
 
 # Development mode with hot reload
 dev:
@@ -107,25 +108,22 @@ test-data:
     cargo run -- mk-note "Welcome" "Welcome to NeoJoplin!" && \
     echo "Test data created successfully"
 
-# Build TUI binary
-build-tui:
-    cargo build --release -p neojoplin-tui
+# Launch TUI (same as running with no arguments)
+tui:
+    cargo run -- --tui
 
-# Run TUI
-run-tui:
-    cargo run -p neojoplin-tui
+# Legacy compatibility (now just runs the main binary)
+run-tui: tui
 
-# Install TUI to ~/.local/bin
-install-tui: build-tui
-    @cargo install --path crates/tui-bin
+# Legacy compatibility (now just runs the main binary)
+install-cli: install
 
-# Install CLI to ~/.local/bin
-install-cli: build
-    @cargo install --path crates/cli
+# Legacy compatibility (now just installs the main binary)
+install-tui: install
 
-# Install both binaries
-install-all: install-cli install-tui
-    @echo "Installed neojoplin (CLI) and neojoplin-tui (TUI)"
+# Legacy compatibility (now just installs the main binary)
+install-all: install
+    @echo "Installed neojoplin (CLI + TUI combined)"
 
 # Test WebDAV connection
 test-webdav URL USERNAME PASSWORD:
@@ -148,4 +146,8 @@ test-local-webdav:
 # View WebDAV server logs
 webdav-logs:
     docker compose logs -f webdav
+
+# Test bidirectional sync with Joplin CLI
+test-sync:
+    ./tests/integration/sync_test.sh
 
