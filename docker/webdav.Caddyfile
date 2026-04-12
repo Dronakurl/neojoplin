@@ -2,10 +2,8 @@
 :8080 {
     # Basic WebDAV setup
     route /webdav/* {
-        webdav /srv/webdav {
-            # Allow all methods for testing
-            # In production, you'd want authentication
-        }
+        root * /srv/webdav
+        webdav
     }
 
     # Health check endpoint
