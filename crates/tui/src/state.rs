@@ -46,7 +46,7 @@ impl Default for AppState {
             focus: FocusPanel::Notebooks,
             show_quit_confirmation: false,
             show_settings: false,
-            status_message: "Welcome to NeoJoplin. Press ? for help".to_string(),
+            status_message: String::new(),
             settings_modified: false,
         }
     }

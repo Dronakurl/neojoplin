@@ -12,13 +12,16 @@ use crate::state::{AppState, FocusPanel};
 
 /// Render the main UI
 pub fn render_ui(f: &mut Frame, state: &AppState) {
+    // Use 2 lines for status bar on narrow terminals, 1 line on wide terminals
+    let status_bar_height = if f.area().width < 100 { 2 } else { 1 };
+
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .margin(0)
         .constraints(
             [
                 Constraint::Min(0),  // Main content
-                Constraint::Length(1),  // Status bar
+                Constraint::Length(status_bar_height),  // Status bar
             ]
             .as_ref(),
         )
@@ -171,20 +174,57 @@ fn render_content_panel(f: &mut Frame, state: &AppState, area: Rect) {
 
 /// Render status bar with keybinding help
 fn render_status_bar(f: &mut Frame, state: &AppState, area: Rect) {
-    let help_text = vec![Line::from(vec![
-        Span::styled("q", Style::default().fg(Color::Yellow)),
-        Span::raw(":quit "),
-        Span::styled("Tab", Style::default().fg(Color::Yellow)),
-        Span::raw(":panel "),
-        Span::styled("↑↓", Style::default().fg(Color::Yellow)),
-        Span::raw(":nav "),
-        Span::styled("s", Style::default().fg(Color::Yellow)),
-        Span::raw(":sync "),
-        Span::styled("?", Style::default().fg(Color::Yellow)),
-        Span::raw(":help "),
-        Span::raw(" | "),
-        Span::styled(&state.status_message, Style::default().fg(Color::Cyan)),
-    ])];
+    let use_two_lines = area.height > 1;
+
+    let help_text = if use_two_lines {
+        vec![
+            Line::from(vec![
+                Span::styled("q", Style::default().fg(Color::Yellow)),
+                Span::raw(":quit "),
+                Span::styled("Tab", Style::default().fg(Color::Yellow)),
+                Span::raw(":panel "),
+                Span::styled("hjkl", Style::default().fg(Color::Yellow)),
+                Span::raw(":nav "),
+                Span::styled("Ent", Style::default().fg(Color::Yellow)),
+                Span::raw(":edit "),
+                Span::styled("n", Style::default().fg(Color::Yellow)),
+                Span::raw(":new "),
+            ]),
+            Line::from(vec![
+                Span::styled("N", Style::default().fg(Color::Yellow)),
+                Span::raw(":folder "),
+                Span::styled("d", Style::default().fg(Color::Yellow)),
+                Span::raw(":del "),
+                Span::styled("s", Style::default().fg(Color::Yellow)),
+                Span::raw(":sync "),
+                Span::styled("?", Style::default().fg(Color::Yellow)),
+                Span::raw(":help "),
+                Span::styled(&state.status_message, Style::default().fg(Color::Cyan)),
+            ]),
+        ]
+    } else {
+        vec![Line::from(vec![
+            Span::styled("q", Style::default().fg(Color::Yellow)),
+            Span::raw(":quit "),
+            Span::styled("Tab", Style::default().fg(Color::Yellow)),
+            Span::raw(":panel "),
+            Span::styled("hjkl", Style::default().fg(Color::Yellow)),
+            Span::raw(":nav "),
+            Span::styled("Ent", Style::default().fg(Color::Yellow)),
+            Span::raw(":edit "),
+            Span::styled("n", Style::default().fg(Color::Yellow)),
+            Span::raw(":new "),
+            Span::styled("N", Style::default().fg(Color::Yellow)),
+            Span::raw(":fldr "),
+            Span::styled("d", Style::default().fg(Color::Yellow)),
+            Span::raw(":del "),
+            Span::styled("s", Style::default().fg(Color::Yellow)),
+            Span::raw(":sync "),
+            Span::styled("?", Style::default().fg(Color::Yellow)),
+            Span::raw(":help "),
+            Span::styled(&state.status_message, Style::default().fg(Color::Cyan)),
+        ])]
+    };
 
     let paragraph = Paragraph::new(help_text)
         .alignment(Alignment::Left)
@@ -194,38 +234,42 @@ fn render_status_bar(f: &mut Frame, state: &AppState, area: Rect) {
 }
 
 /// Render help popup
-pub fn render_help(f: &mut Frame) {
-    let area = centered_rect(60, 60, f.area());
+pub fn render_help(f: &mut Frame, scroll: u16) {
+    let area = centered_rect(80, 80, f.area());
 
     let text = Text::from(vec![
-        Line::from("NeoJoplin Keybindings").style(Style::default().fg(Color::Yellow)),
+        Line::from("NEOJOPLIN").style(Style::default().fg(Color::Cyan).bold()),
+        Line::from(""),
+        Line::from("Joplin-compatible terminal note-taking client").style(Style::default().fg(Color::Gray)),
+        Line::from(""),
+        Line::from("Keybindings").style(Style::default().fg(Color::Yellow).bold()),
         Line::from(""),
         Line::from("Navigation:"),
-        Line::from("  Tab/Shift-Tab  - Switch between panels"),
-        Line::from("  j/↓ or k/↑     - Move selection (vim)"),
-        Line::from("  Arrow keys      - Move selection"),
+        Line::from("  Tab/Shift-Tab  Switch panels"),
+        Line::from("  hjkl/Arrows    Move selection"),
+        Line::from("  j/k (in help)  Scroll help"),
         Line::from(""),
         Line::from("Actions:"),
-        Line::from("  q               - Quit"),
-        Line::from("  s               - Sync with WebDAV"),
-        Line::from("  S               - Open settings"),
-        Line::from("  ?               - Show this help"),
-        Line::from("  Enter           - Edit selected note"),
-        Line::from("  n               - New note"),
-        Line::from("  N               - New folder"),
-        Line::from("  d               - Delete selected"),
-        Line::from(""),
-        Line::from("Press any key to close"),
+        Line::from("  q      Quit"),
+        Line::from("  s      Sync with WebDAV"),
+        Line::from("  S      Open settings"),
+        Line::from("  ?      Show this help"),
+        Line::from("  Enter  Edit selected note"),
+        Line::from("  n      New note"),
+        Line::from("  N      New folder"),
+        Line::from("  d      Delete selected"),
     ]);
 
     let paragraph = Paragraph::new(text)
         .block(
             Block::default()
-                .title("Help")
+                .title("Help (q: close, j/k: scroll)")
                 .borders(Borders::ALL)
                 .border_style(Style::default().fg(Color::Yellow)),
         )
-        .wrap(Wrap { trim: true });
+        .wrap(Wrap { trim: false })
+        .scroll((scroll, 0))
+        .alignment(Alignment::Left);
 
     f.render_widget(paragraph, area);
 }
@@ -237,7 +281,7 @@ pub fn render_quit_confirmation(f: &mut Frame) {
     let text = Text::from(vec![
         Line::from("Quit NeoJoplin?").style(Style::default().fg(Color::Yellow)),
         Line::from(""),
-        Line::from("Press 'q' again to confirm, or any other key to cancel"),
+        Line::from("Press q or y to confirm, any other key to cancel"),
     ]);
 
     let paragraph = Paragraph::new(text)

@@ -356,7 +356,8 @@ impl SyncEngine {
         let items_path = format!("{}/items", self.context.remote_path);
 
         // Ensure items directory exists
-        if let Err(_) = self.webdav.exists(&items_path).await {
+        let exists = self.webdav.exists(&items_path).await;
+        if exists.is_err() || !exists.unwrap() {
             return Ok(Vec::new());
         }
 
@@ -434,7 +435,9 @@ impl SyncEngine {
         // Try to parse as note first
         if let Ok(note) = self.deserialize_note(item_id, content) {
             // Check if note exists, if not create it
-            if self.storage.get_note(&note.id).await.is_ok() {
+            let exists = matches!(self.storage.get_note(&note.id).await, Ok(Some(_)));
+
+            if exists {
                 self.storage.update_note(&note).await
                     .map_err(|e| SyncError::Local(e))?;
             } else {
@@ -447,7 +450,9 @@ impl SyncEngine {
         // Try folder
         if let Ok(folder) = self.deserialize_folder(item_id, content) {
             // Check if folder exists, if not create it
-            if self.storage.get_folder(&folder.id).await.is_ok() {
+            let exists = matches!(self.storage.get_folder(&folder.id).await, Ok(Some(_)));
+
+            if exists {
                 self.storage.update_folder(&folder).await
                     .map_err(|e| SyncError::Local(e))?;
             } else {

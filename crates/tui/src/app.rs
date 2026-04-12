@@ -24,6 +24,7 @@ pub struct App {
     storage: Arc<SqliteStorage>,
     config: Config,
     show_help: bool,
+    help_scroll: u16,
 }
 
 impl App {
@@ -49,6 +50,7 @@ impl App {
             storage,
             config,
             show_help: false,
+            help_scroll: 0,
         })
     }
 
@@ -88,7 +90,7 @@ impl App {
             // Render UI
             terminal.draw(|f| {
                 if self.show_help {
-                    ui::render_help(f);
+                    ui::render_help(f, self.help_scroll);
                 } else if self.state.show_quit_confirmation {
                     ui::render_quit_confirmation(f);
                 } else if self.state.show_settings {
@@ -116,7 +118,7 @@ impl App {
         match self.state.show_quit_confirmation {
             true => {
                 // Confirm quit
-                if key.code == KeyCode::Char('q') {
+                if key.code == KeyCode::Char('q') || key.code == KeyCode::Char('y') {
                     return Ok(true); // Exit
                 } else {
                     self.state.hide_quit();
@@ -128,7 +130,21 @@ impl App {
 
         // Handle help popup
         if self.show_help {
-            self.show_help = false;
+            match key.code {
+                KeyCode::Char('j') | KeyCode::Down => {
+                    self.help_scroll = self.help_scroll.saturating_add(1);
+                }
+                KeyCode::Char('k') | KeyCode::Up => {
+                    self.help_scroll = self.help_scroll.saturating_sub(1);
+                }
+                KeyCode::Char('q') => {
+                    self.show_help = false;
+                    self.help_scroll = 0;
+                }
+                _ => {
+                    // Ignore all other keys in help mode
+                }
+            }
             return Ok(false);
         }
 

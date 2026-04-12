@@ -284,10 +284,11 @@ async fn main() -> Result<()> {
             use tokio::sync::mpsc;
             use neojoplin_core::SyncEvent;
 
-            // TODO: Load credentials from config if not provided
             let url = url.ok_or_else(|| anyhow::anyhow!("WebDAV URL is required"))?;
-            let username = username.ok_or_else(|| anyhow::anyhow!("Username is required"))?;
-            let password = password.ok_or_else(|| anyhow::anyhow!("Password is required"))?;
+
+            // For testing with local WebDAV servers, allow empty credentials
+            let username = username.unwrap_or_else(|| "".to_string());
+            let password = password.unwrap_or_else(|| "".to_string());
 
             let config = WebDavConfig::new(url, username, password);
             let webdav = Arc::new(ReqwestWebDavClient::new(config)?);
@@ -323,6 +324,18 @@ async fn main() -> Result<()> {
                         }
                         SyncEvent::Warning { message } => {
                             eprintln!("Warning: {}", message);
+                        }
+                        SyncEvent::ItemDownload { item_type, item_id } => {
+                            println!("Downloading {} {}", item_type, item_id);
+                        }
+                        SyncEvent::ItemDownloadComplete { item_type, item_id } => {
+                            println!("Downloaded {} {}", item_type, item_id);
+                        }
+                        SyncEvent::ItemUpload { item_type, item_id } => {
+                            println!("Uploading {} {}", item_type, item_id);
+                        }
+                        SyncEvent::ItemUploadComplete { item_type, item_id } => {
+                            println!("Uploaded {} {}", item_type, item_id);
                         }
                         _ => {}
                     }

@@ -110,12 +110,12 @@ test-data:
 
 # Launch TUI (same as running with no arguments)
 tui:
-    cargo run -- --tui
+    cargo run --bin neojoplin -- --tui
 
 # Legacy compatibility (now just runs the main binary)
 run-tui: tui
 
-# Legacy compatibility (now just runs the main binary)
+# Legacy compatibility (now just installs the main binary)
 install-cli: install
 
 # Legacy compatibility (now just installs the main binary)
@@ -124,6 +124,8 @@ install-tui: install
 # Legacy compatibility (now just installs the main binary)
 install-all: install
     @echo "Installed neojoplin (CLI + TUI combined)"
+
+# Note: tui-bin crate removed - unified binary provides both interfaces
 
 # Test WebDAV connection
 test-webdav URL USERNAME PASSWORD:
