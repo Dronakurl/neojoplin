@@ -1,14 +1,25 @@
+# Order webdav before file_server
+{
+    order webdav before file_server
+}
+
 # Local WebDAV server for testing
 :8080 {
-    # Basic WebDAV setup
-    route /webdav/* {
-        root * /srv/webdav
-        webdav
-    }
+    root * /srv/webdav
 
-    # Health check endpoint
-    route /health {
-        respond "OK" 200
+    route {
+        # WebDAV with proper prefix
+        webdav /webdav/* {
+            prefix /webdav
+        }
+
+        # Health check endpoint
+        handle /health {
+            respond "OK" 200
+        }
+
+        # File server for directory listings
+        file_server
     }
 
     # Log to stdout
