@@ -926,6 +926,121 @@ impl Storage for SqliteStorage {
         Ok(())
     }
 
+    async fn clear_deleted_items(&self, limit: i64) -> Result<usize, DatabaseError> {
+        let result = sqlx::query("DELETE FROM deleted_items WHERE id IN (SELECT id FROM deleted_items LIMIT ?)")
+            .bind(limit)
+            .execute(&self.pool)
+            .await
+            .map_err(|e| DatabaseError::QueryFailed(format!("Failed to clear deleted items: {}", e)))?;
+
+        Ok(result.rows_affected() as usize)
+    }
+
+    // Sync helper methods
+    async fn get_folders_updated_since(&self, timestamp: i64) -> Result<Vec<Folder>, DatabaseError> {
+        let folders = sqlx::query_as::<_, Folder>(
+            "SELECT * FROM folders WHERE updated_time > ? ORDER BY updated_time ASC"
+        )
+        .bind(timestamp)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| DatabaseError::QueryFailed(format!("Failed to get folders updated since {}: {}", timestamp, e)))?;
+
+        Ok(folders)
+    }
+
+    async fn get_tags_updated_since(&self, timestamp: i64) -> Result<Vec<Tag>, DatabaseError> {
+        let tags = sqlx::query_as::<_, Tag>(
+            "SELECT * FROM tags WHERE updated_time > ? ORDER BY updated_time ASC"
+        )
+        .bind(timestamp)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| DatabaseError::QueryFailed(format!("Failed to get tags updated since {}: {}", timestamp, e)))?;
+
+        Ok(tags)
+    }
+
+    async fn get_notes_updated_since(&self, timestamp: i64) -> Result<Vec<Note>, DatabaseError> {
+        let notes = sqlx::query_as::<_, Note>(
+            "SELECT * FROM notes WHERE updated_time > ? ORDER BY updated_time ASC"
+        )
+        .bind(timestamp)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| DatabaseError::QueryFailed(format!("Failed to get notes updated since {}: {}", timestamp, e)))?;
+
+        Ok(notes)
+    }
+
+    async fn get_note_tags_updated_since(&self, timestamp: i64) -> Result<Vec<NoteTag>, DatabaseError> {
+        let note_tags = sqlx::query_as::<_, NoteTag>(
+            "SELECT * FROM note_tags WHERE updated_time > ? ORDER BY updated_time ASC"
+        )
+        .bind(timestamp)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| DatabaseError::QueryFailed(format!("Failed to get note_tags updated since {}: {}", timestamp, e)))?;
+
+        Ok(note_tags)
+    }
+
+    async fn get_all_sync_items(&self) -> Result<Vec<SyncItem>, DatabaseError> {
+        let items = sqlx::query_as::<_, SyncItem>(
+            "SELECT * FROM sync_items ORDER BY sync_time DESC"
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| DatabaseError::QueryFailed(format!("Failed to get all sync items: {}", e)))?;
+
+        Ok(items)
+    }
+
+    async fn update_sync_time(&self, table: &str, id: &str, timestamp: i64) -> Result<(), DatabaseError> {
+        // First, check if the item exists in sync_items
+        let existing = sqlx::query_as::<_, SyncItem>(
+            "SELECT * FROM sync_items WHERE item_id = ? AND item_type = ?"
+        )
+        .bind(id)
+        .bind(table)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|e| DatabaseError::QueryFailed(format!("Failed to check sync item: {}", e)))?;
+
+        if let Some(existing_item) = existing {
+            // Update existing
+            sqlx::query(
+                "UPDATE sync_items SET sync_time = ? WHERE id = ?"
+            )
+            .bind(timestamp)
+            .bind(existing_item.id)
+            .execute(&self.pool)
+            .await
+            .map_err(|e| DatabaseError::QueryFailed(format!("Failed to update sync time: {}", e)))?;
+        } else {
+            // Insert new
+            sqlx::query(
+                r#"
+                INSERT INTO sync_items (
+                    sync_target, sync_time, item_type, item_id, sync_disabled, sync_disabled_reason, item_location
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                "#
+            )
+            .bind(1) // sync_target
+            .bind(timestamp)
+            .bind(table)
+            .bind(id)
+            .bind(0) // sync_disabled
+            .bind("") // sync_disabled_reason
+            .bind(1) // item_location
+            .execute(&self.pool)
+            .await
+            .map_err(|e| DatabaseError::QueryFailed(format!("Failed to insert sync item: {}", e)))?;
+        }
+
+        Ok(())
+    }
+
     // Database info
     async fn get_version(&self) -> Result<i32, DatabaseError> {
         let version: Option<i32> = sqlx::query_scalar(

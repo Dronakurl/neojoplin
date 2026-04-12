@@ -82,6 +82,9 @@ pub enum SyncError {
 
     #[error("Sync cancelled")]
     Cancelled,
+
+    #[error("Serialization error: {0}")]
+    Serialization(String),
 }
 
 /// Sync phases

@@ -441,6 +441,20 @@ impl sqlx::FromRow<'_, sqlx::sqlite::SqliteRow> for Tag {
 }
 
 #[cfg(feature = "sqlx")]
+impl sqlx::FromRow<'_, sqlx::sqlite::SqliteRow> for NoteTag {
+    fn from_row(row: &sqlx::sqlite::SqliteRow) -> sqlx::Result<Self> {
+        Ok(NoteTag {
+            id: row.try_get("id")?,
+            note_id: row.try_get("note_id")?,
+            tag_id: row.try_get("tag_id")?,
+            created_time: row.try_get("created_time")?,
+            updated_time: row.try_get("updated_time")?,
+            is_shared: row.try_get("is_shared")?,
+        })
+    }
+}
+
+#[cfg(feature = "sqlx")]
 impl sqlx::FromRow<'_, sqlx::sqlite::SqliteRow> for SyncItem {
     fn from_row(row: &sqlx::sqlite::SqliteRow) -> sqlx::Result<Self> {
         Ok(SyncItem {

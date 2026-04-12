@@ -38,6 +38,14 @@ pub trait Storage: Send + Sync {
     async fn remove_note_tag(&self, note_id: &str, tag_id: &str) -> Result<(), DatabaseError>;
     async fn get_note_tags(&self, note_id: &str) -> Result<Vec<Tag>, DatabaseError>;
 
+    // Sync helper methods
+    async fn get_folders_updated_since(&self, timestamp: i64) -> Result<Vec<Folder>, DatabaseError>;
+    async fn get_tags_updated_since(&self, timestamp: i64) -> Result<Vec<Tag>, DatabaseError>;
+    async fn get_notes_updated_since(&self, timestamp: i64) -> Result<Vec<Note>, DatabaseError>;
+    async fn get_note_tags_updated_since(&self, timestamp: i64) -> Result<Vec<NoteTag>, DatabaseError>;
+    async fn get_all_sync_items(&self) -> Result<Vec<SyncItem>, DatabaseError>;
+    async fn update_sync_time(&self, table: &str, id: &str, timestamp: i64) -> Result<(), DatabaseError>;
+
     // Settings
     async fn get_setting(&self, key: &str) -> Result<Option<String>, DatabaseError>;
     async fn set_setting(&self, key: &str, value: &str) -> Result<(), DatabaseError>;
@@ -51,6 +59,7 @@ pub trait Storage: Send + Sync {
     async fn get_deleted_items(&self, sync_target: i32) -> Result<Vec<DeletedItem>, DatabaseError>;
     async fn add_deleted_item(&self, item: &DeletedItem) -> Result<(), DatabaseError>;
     async fn remove_deleted_item(&self, id: i32) -> Result<(), DatabaseError>;
+    async fn clear_deleted_items(&self, limit: i64) -> Result<usize, DatabaseError>;
 
     // Database info
     async fn get_version(&self) -> Result<i32, DatabaseError>;
@@ -72,9 +81,7 @@ pub trait WebDavClient: Send + Sync {
     async fn get(&self, path: &str) -> Result<Box<dyn AsyncRead + Unpin + Send>, WebDavError>;
 
     /// Put file contents
-    async fn put<R>(&self, path: &str, body: R, size: u64) -> Result<(), WebDavError>
-    where
-        R: AsyncRead + Unpin + Send + 'static;
+    async fn put(&self, path: &str, body: &[u8], size: u64) -> Result<(), WebDavError>;
 
     /// Delete a file
     async fn delete(&self, path: &str) -> Result<(), WebDavError>;

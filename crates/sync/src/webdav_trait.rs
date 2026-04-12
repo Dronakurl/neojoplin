@@ -7,7 +7,7 @@ use async_trait::async_trait;
 
 #[async_trait]
 impl WebDavClient for ReqwestWebDavClient {
-    async fn list(&self, path: &str) -> std::result::Result<Vec<DavEntry>, WebDavError> {
+    async fn list(&self, _path: &str) -> std::result::Result<Vec<DavEntry>, WebDavError> {
         // For now, return an empty list
         // TODO: Implement proper listing
         Ok(Vec::new())
@@ -20,12 +20,8 @@ impl WebDavClient for ReqwestWebDavClient {
         }
     }
 
-    async fn put<R>(&self, path: &str, _body: R, _size: u64) -> std::result::Result<(), WebDavError>
-    where
-        R: AsyncRead + Unpin + Send + 'static {
-        // For now, just create an empty file
-        // TODO: Properly implement AsyncRead to Vec<u8> conversion
-        match self.put_impl(path, &[]).await {
+    async fn put(&self, path: &str, body: &[u8], size: u64) -> std::result::Result<(), WebDavError> {
+        match self.put_impl(path, body).await {
             Ok(_) => Ok(()),
             Err(e) => Err(WebDavError::RequestFailed(format!("{:?}", e))),
         }

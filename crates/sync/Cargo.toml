@@ -19,6 +19,7 @@ tracing = { workspace = true }
 futures = "0.3"
 base64 = "0.22"
 chrono = { workspace = true }
+serde_json = { workspace = true }
 
 [[bin]]
 name = "test_webdav"
