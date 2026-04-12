@@ -1,0 +1,22 @@
+[package]
+name = "neojoplin-storage"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Storage layer for NeoJoplin (SQLite)"
+
+[dependencies]
+neojoplin-core = { path = "../core", features = ["sqlx"] }
+tokio = { workspace = true }
+sqlx = { workspace = true }
+async-trait = { workspace = true }
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+tempfile = "3.14"
+
+[dev-dependencies]
+tokio-test = "0.4"
+tempfile = "3.14"

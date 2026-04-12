@@ -1,68 +1,38 @@
-[package]
-name = "neojoplin"
+[workspace]
+members = [
+    "crates/core",
+    "crates/storage",
+    "crates/sync",
+    "crates/tui",
+    "crates/cli",
+]
+resolver = "2"
+
+[workspace.package]
 version = "0.1.0"
 edition = "2021"
 authors = ["Konrad Urlichs <konrad.urlichs@gmx.de>"]
-description = "A Rust terminal client for Joplin note-taking with 100% sync compatibility"
 license = "MIT"
 repository = "https://github.com/Dronakurl/neojoplin"
-readme = "README.md"
 
-[[bin]]
-name = "neojoplin"
-path = "src/main.rs"
-
-[lib]
-name = "neojoplin"
-path = "src/lib.rs"
-
-[dependencies]
-# CLI
-clap = { version = "4.5", features = ["derive"] }
-dialoguer = "0.11"
-indicatif = "0.17"
-console = "0.15"
-
-# TUI (Phase 4)
-ratatui = "0.28"
-crossterm = "0.28"
-
-# Database
-sqlx = { version = "0.8", features = ["runtime-tokio", "sqlite"] }
-
-# Async Runtime
+[workspace.dependencies]
+# Shared dependencies across all crates
 tokio = { version = "1.40", features = ["full"] }
-
-# HTTP/WebDAV
-reqwest = { version = "0.12", features = ["json"] }
-# async-webdav = "0.1"  # Will implement custom WebDAV client instead
-
-# Serialization
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
-
-# Encryption
-aes-gcm = "0.10"
-pbkdf2 = "0.12"
-sha2 = "0.10"
-
-# UUID
 uuid = { version = "1.10", features = ["v4", "serde"] }
-
-# Logging
-tracing = "0.1"
-tracing-subscriber = "0.3"
-
-# Date/Time
 chrono = { version = "0.4", features = ["serde"] }
-
-# Editor Integration (nvim-rs for embedded Neovim)
-# nvim-rs = "0.7"  # Phase 3 - will add later
-
-# Utils
+tracing = "0.1"
 anyhow = "1.0"
 thiserror = "1.0"
-dirs = "5.0"
 
-[dev-dependencies]
-tokio-test = "0.4"
+[workspace.dependencies.sqlx]
+version = "0.8"
+features = ["runtime-tokio", "sqlite"]
+
+[workspace.dependencies.reqwest]
+version = "0.12"
+features = ["json", "stream"]
+
+[workspace.dependencies.async-trait]
+version = "0.1"

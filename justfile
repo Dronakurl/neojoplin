@@ -56,3 +56,53 @@ sync:
 # Show help
 help:
     cargo run -- --help
+
+# Run single test by name
+test-one FILTER:
+    cargo test -- --exact {{FILTER}}
+
+# Run database tests only
+test-db:
+    cargo test database::
+
+# Run tests with output
+test-verbose:
+    cargo test -- --nocapture
+
+# Watch and rebuild on changes
+watch:
+    @echo "Install cargo-watch for this command: cargo install cargo-watch"
+    cargo watch -x build
+
+# Reset database (careful!)
+reset-db:
+    rm -f ~/.local/share/neojoplin/joplin.db
+    @echo "Database deleted. Run 'just run -- init' to recreate."
+
+# Development build (faster than release)
+dev-build:
+    cargo build
+
+# Run development binary
+dev-run:
+    cargo run --
+
+# Open database in sqlite3
+db-shell:
+    sqlite3 ~/.local/share/neojoplin/joplin.db
+
+# Show database schema
+db-schema:
+    @sqlite3 ~/.local/share/neojoplin/joplin.db ".schema"
+
+# List all notes in database
+db-list-notes:
+    @sqlite3 ~/.local/share/neojoplin/joplin.db "SELECT id, title FROM notes LIMIT 10"
+
+# Create comprehensive test data
+test-data:
+    cargo run -- init && \
+    cargo run -- mkbook "Development" && \
+    cargo run -- mkbook "Personal" && \
+    cargo run -- mk-note "Welcome" "Welcome to NeoJoplin!" && \
+    echo "Test data created successfully"

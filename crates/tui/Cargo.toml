@@ -1,0 +1,23 @@
+[package]
+name = "neojoplin-tui"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "TUI application for NeoJoplin (ratatui)"
+
+[dependencies]
+neojoplin-core = { path = "../core" }
+neojoplin-storage = { path = "../storage" }
+neojoplin-sync = { path = "../sync" }
+tokio = { workspace = true }
+ratatui = "0.28"
+crossterm = "0.28"
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+tokio-test = "0.4"
+criterion = "0.5"

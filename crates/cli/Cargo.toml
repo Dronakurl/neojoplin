@@ -1,0 +1,21 @@
+[package]
+name = "neojoplin-cli"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "CLI application for NeoJoplin"
+
+[dependencies]
+neojoplin-core = { path = "../core" }
+neojoplin-storage = { path = "../storage" }
+neojoplin-sync = { path = "../sync" }
+tokio = { workspace = true }
+clap = { version = "4.5", features = ["derive"] }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = "0.3"
+
+[dev-dependencies]
+tokio-test = "0.4"
