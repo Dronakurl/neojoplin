@@ -5,12 +5,15 @@ use std::sync::Arc;
 use tokio::sync::mpsc;
 use futures::io::AsyncReadExt;
 use serde_json;
+use crate::sync_info::{SyncInfo, ClientIdManager};
+use anyhow::Context;
 
 /// Sync context to track sync state
 #[derive(Debug, Clone)]
 struct SyncContext {
     last_sync_time: i64,
     remote_path: String,
+    client_id: String,
 }
 
 impl Default for SyncContext {
@@ -18,6 +21,7 @@ impl Default for SyncContext {
         Self {
             last_sync_time: 0,
             remote_path: "/neojoplin".to_string(),
+            client_id: String::new(),
         }
     }
 }
@@ -28,6 +32,7 @@ pub struct SyncEngine {
     webdav: Arc<dyn WebDavClient>,
     event_tx: mpsc::UnboundedSender<SyncEvent>,
     context: SyncContext,
+    sync_info: Option<SyncInfo>,
 }
 
 impl SyncEngine {
@@ -41,6 +46,7 @@ impl SyncEngine {
             webdav,
             event_tx,
             context: SyncContext::default(),
+            sync_info: None,
         }
     }
 
@@ -50,9 +56,21 @@ impl SyncEngine {
         self
     }
 
+    /// Set the client ID
+    pub fn with_client_id(mut self, client_id: String) -> Self {
+        self.context.client_id = client_id;
+        self
+    }
+
     /// Run full sync process
     pub async fn sync(&mut self) -> Result<()> {
         let start = std::time::Instant::now();
+
+        // Check for existing locks
+        self.check_locks().await?;
+
+        // Load or create sync info
+        self.load_sync_info().await?;
 
         // Ensure remote directory exists
         self.ensure_remote_directory().await?;
@@ -63,8 +81,11 @@ impl SyncEngine {
         // Phase 2: Delete remote items
         self.phase_delete_remote().await?;
 
-        // Phase 3: Download remote changes
+        // Phase 3: Download remote changes (delta)
         self.phase_delta().await?;
+
+        // Save updated sync info
+        self.save_sync_info().await?;
 
         let duration = start.elapsed();
         let _ = self.event_tx.send(SyncEvent::Completed { duration });
@@ -237,6 +258,107 @@ impl SyncEngine {
     }
 
     // Helper methods
+
+    /// Check for existing locks on the sync target
+    async fn check_locks(&self) -> Result<()> {
+        let lock_path = format!("{}/lock.json", self.context.remote_path.trim_end_matches('/'));
+
+        match self.webdav.get(&lock_path).await {
+            Ok(mut reader) => {
+                use futures::io::AsyncReadExt;
+                let mut content = Vec::new();
+                reader.read_to_end(&mut content).await
+                    .map_err(|e| SyncError::Server(format!("Failed to read lock.json: {}", e)))?;
+
+                let content_str = String::from_utf8_lossy(&content);
+
+                // Try to parse as JSON to get timestamp
+                if let Ok(lock_data) = serde_json::from_str::<serde_json::Value>(&content_str) {
+                    if let Some(timestamp) = lock_data.get("updatedTime").and_then(|v| v.as_i64()) {
+                        let current_time = now_ms();
+                        let lock_age_ms = current_time - timestamp;
+                        let lock_age_min = lock_age_ms / (60 * 1000);
+
+                        // Lock is fresh if less than 5 minutes old
+                        if lock_age_min < 5 {
+                            return Err(SyncError::Server(format!(
+                                "Sync target is locked by another client. Lock age: {} minutes. \
+                                Wait for the other sync to complete or try again later.",
+                                lock_age_min
+                            )).into());
+                        }
+                        // Lock is stale - will be overwritten
+                        let _ = self.event_tx.send(SyncEvent::Warning {
+                            message: format!("Found stale lock ({} minutes old) - proceeding with sync", lock_age_min)
+                        });
+                    }
+                }
+            }
+            Err(neojoplin_core::WebDavError::NotFound(_)) => {
+                // No lock file - this is normal
+            }
+            Err(e) => {
+                // NotFound is expected for new sync targets - not a warning
+                if !matches!(e, neojoplin_core::WebDavError::NotFound(_)) {
+                    let _ = self.event_tx.send(SyncEvent::Warning {
+                        message: format!("Failed to check lock status: {}", e)
+                    });
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Load sync info from remote or create new
+    async fn load_sync_info(&mut self) -> Result<()> {
+        match SyncInfo::load_from_remote(self.webdav.as_ref(), &self.context.remote_path).await {
+            Ok(Some(remote_sync_info)) => {
+                // Use existing sync info but update client ID to match ours
+                self.sync_info = Some(remote_sync_info);
+                self.context.last_sync_time = self.sync_info.as_ref()
+                    .map(|info| info.delta_timestamp())
+                    .unwrap_or(0);
+            }
+            Ok(None) => {
+                // Create new sync info - this is normal for new sync targets
+                let mut sync_info = SyncInfo::new();
+                sync_info.client_id = self.context.client_id.clone();
+                self.sync_info = Some(sync_info);
+                self.context.last_sync_time = 0;
+            }
+            Err(e) => {
+                // Only return error if it's not a NotFound (which is expected for new sync targets)
+                let error_msg = e.to_string();
+                if !error_msg.contains("NotFound") && !error_msg.contains("not found") {
+                    return Err(SyncError::Server(format!("Failed to load sync info: {}", e)).into());
+                }
+                // If it's a NotFound, create new sync info
+                let mut sync_info = SyncInfo::new();
+                sync_info.client_id = self.context.client_id.clone();
+                self.sync_info = Some(sync_info);
+                self.context.last_sync_time = 0;
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Save sync info to remote
+    async fn save_sync_info(&mut self) -> Result<()> {
+        if let Some(ref sync_info) = self.sync_info {
+            // Update delta context timestamp
+            let new_timestamp = now_ms();
+            let updated_info = &mut self.sync_info.as_mut().unwrap();
+            updated_info.update_delta_timestamp(new_timestamp);
+
+            // Save to remote
+            updated_info.save_to_remote(self.webdav.as_ref(), &self.context.remote_path).await
+                .map_err(|e| SyncError::Server(format!("Failed to save sync info: {}", e)))?;
+        }
+
+        Ok(())
+    }
 
     async fn get_changed_folders(&self) -> Result<Vec<Folder>> {
         self.storage.get_folders_updated_since(self.context.last_sync_time).await
