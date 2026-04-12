@@ -9,11 +9,12 @@ use ratatui::{
 };
 
 use crate::state::{AppState, FocusPanel};
+use crate::settings::SettingsTab;
 
 /// Render the main UI
 pub fn render_ui(f: &mut Frame, state: &AppState) {
-    // Use 2 lines for status bar on narrow terminals, 1 line on wide terminals
-    let status_bar_height = if f.area().width < 100 { 2 } else { 1 };
+    // Calculate heights for keybinding ribbon and status line
+    let ribbon_height = if f.area().width < 100 { 2 } else { 1 };
 
     let chunks = Layout::default()
         .direction(Direction::Vertical)
@@ -21,7 +22,8 @@ pub fn render_ui(f: &mut Frame, state: &AppState) {
         .constraints(
             [
                 Constraint::Min(0),  // Main content
-                Constraint::Length(status_bar_height),  // Status bar
+                Constraint::Length(ribbon_height),  // Keybinding ribbon
+                Constraint::Length(1),  // Status line
             ]
             .as_ref(),
         )
@@ -30,8 +32,11 @@ pub fn render_ui(f: &mut Frame, state: &AppState) {
     // Render main content
     render_main_content(f, state, chunks[0]);
 
-    // Render status bar
-    render_status_bar(f, state, chunks[1]);
+    // Render keybinding ribbon
+    render_keybinding_ribbon(f, state, chunks[1]);
+
+    // Render status line
+    render_status_line(f, state, chunks[2]);
 }
 
 /// Render main content area with split panes
@@ -58,23 +63,28 @@ fn render_main_content(f: &mut Frame, state: &AppState, area: Rect) {
 fn render_notebooks_panel(f: &mut Frame, state: &AppState, area: Rect) {
     let title = "Notebooks";
 
-    let items: Vec<ListItem> = state
-        .folders
-        .iter()
-        .enumerate()
-        .map(|(i, folder)| {
-            let is_selected = state.selected_folder == Some(i);
-            let style = if is_selected {
-                Style::default()
-                    .fg(Color::Yellow)
-                    .add_modifier(Modifier::BOLD)
-            } else {
-                Style::default()
-            };
+    let items: Vec<ListItem> = if state.folders.is_empty() {
+        vec![
+            ListItem::new("No folders yet").style(Style::default().dim()),
+            ListItem::new("Press N to create one").style(Style::default().dim()),
+        ]
+    } else {
+        state
+            .folders
+            .iter()
+            .enumerate()
+            .map(|(i, folder)| {
+                let is_selected = state.selected_folder == Some(i);
+                let style = if is_selected {
+                    Style::default().bold()
+                } else {
+                    Style::default()
+                };
 
-            ListItem::new(format!("📁 {}", folder.title)).style(style)
-        })
-        .collect();
+                ListItem::new(format!("📁 {}", folder.title)).style(style)
+            })
+            .collect()
+    };
 
     let list = List::new(items)
         .block(
@@ -82,16 +92,12 @@ fn render_notebooks_panel(f: &mut Frame, state: &AppState, area: Rect) {
                 .title(title)
                 .borders(Borders::ALL)
                 .border_style(if state.focus == FocusPanel::Notebooks {
-                    Style::default().fg(Color::Green)
+                    Style::default().bold()
                 } else {
                     Style::default()
                 }),
         )
-        .highlight_style(
-            Style::default()
-                .add_modifier(Modifier::REVERSED)
-                .fg(Color::Yellow),
-        );
+        .highlight_style(Style::default().add_modifier(Modifier::REVERSED).bold());
 
     f.render_widget(list, area);
 }
@@ -104,23 +110,35 @@ fn render_notes_panel(f: &mut Frame, state: &AppState, area: Rect) {
         "Notes".to_string()
     };
 
-    let items: Vec<ListItem> = state
-        .notes
-        .iter()
-        .enumerate()
-        .map(|(i, note)| {
-            let is_selected = state.selected_note == Some(i);
-            let style = if is_selected {
-                Style::default()
-                    .fg(Color::Yellow)
-                    .add_modifier(Modifier::BOLD)
-            } else {
-                Style::default()
-            };
+    let items: Vec<ListItem> = if state.notes.is_empty() {
+        if state.selected_folder().is_some() {
+            vec![
+                ListItem::new("No notes in this folder").style(Style::default().dim()),
+                ListItem::new("Press n to create one").style(Style::default().dim()),
+            ]
+        } else {
+            vec![
+                ListItem::new("No folder selected").style(Style::default().dim()),
+                ListItem::new("Select a folder first").style(Style::default().dim()),
+            ]
+        }
+    } else {
+        state
+            .notes
+            .iter()
+            .enumerate()
+            .map(|(i, note)| {
+                let is_selected = state.selected_note == Some(i);
+                let style = if is_selected {
+                    Style::default().bold()
+                } else {
+                    Style::default()
+                };
 
-            ListItem::new(format!("📝 {}", note.title)).style(style)
-        })
-        .collect();
+                ListItem::new(format!("📝 {}", note.title)).style(style)
+            })
+            .collect()
+    };
 
     let list = List::new(items)
         .block(
@@ -128,16 +146,12 @@ fn render_notes_panel(f: &mut Frame, state: &AppState, area: Rect) {
                 .title(title)
                 .borders(Borders::ALL)
                 .border_style(if state.focus == FocusPanel::Notes {
-                    Style::default().fg(Color::Green)
+                    Style::default().bold()
                 } else {
                     Style::default()
                 }),
         )
-        .highlight_style(
-            Style::default()
-                .add_modifier(Modifier::REVERSED)
-                .fg(Color::Yellow),
-        );
+        .highlight_style(Style::default().add_modifier(Modifier::REVERSED).bold());
 
     f.render_widget(list, area);
 }
@@ -147,13 +161,33 @@ fn render_content_panel(f: &mut Frame, state: &AppState, area: Rect) {
     let title = if let Some(note) = state.selected_note() {
         note.title.clone()
     } else {
-        "No note selected".to_string()
+        "Content".to_string()
     };
 
     let content = if let Some(note) = state.selected_note() {
-        note.body.clone()
+        if note.body.is_empty() {
+            Text::from(vec![
+                Line::from("This note is empty").style(Style::default().dim()),
+                Line::from(""),
+                Line::from("Press Enter to edit this note").style(Style::default().bold()),
+            ])
+        } else {
+            Text::from(note.body.clone())
+        }
     } else {
-        "Select a note to view its content".to_string()
+        Text::from(vec![
+            Line::from("No note selected").style(Style::default().dim()),
+            Line::from(""),
+            Line::from("Select a note to view its content").style(Style::default().dim()),
+            Line::from(""),
+            Line::from("Keybindings:").style(Style::default().bold()),
+            Line::from("  Tab/Shift-Tab - Switch panels"),
+            Line::from("  hjkl/Arrows     - Move selection"),
+            Line::from("  Enter           - Edit selected note"),
+            Line::from("  n               - New note"),
+            Line::from("  N               - New folder"),
+            Line::from("  d               - Delete selected"),
+        ])
     };
 
     let paragraph = Paragraph::new(content)
@@ -162,7 +196,7 @@ fn render_content_panel(f: &mut Frame, state: &AppState, area: Rect) {
                 .title(title)
                 .borders(Borders::ALL)
                 .border_style(if state.focus == FocusPanel::Content {
-                    Style::default().fg(Color::Green)
+                    Style::default().bold()
                 } else {
                     Style::default()
                 }),
@@ -172,65 +206,393 @@ fn render_content_panel(f: &mut Frame, state: &AppState, area: Rect) {
     f.render_widget(paragraph, area);
 }
 
-/// Render status bar with keybinding help
-fn render_status_bar(f: &mut Frame, state: &AppState, area: Rect) {
+/// Render keybinding ribbon (show available keybindings)
+fn render_keybinding_ribbon(f: &mut Frame, state: &AppState, area: Rect) {
     let use_two_lines = area.height > 1;
+
+    let key_style = Style::default().bold();
 
     let help_text = if use_two_lines {
         vec![
             Line::from(vec![
-                Span::styled("q", Style::default().fg(Color::Yellow)),
+                Span::styled("q", key_style),
                 Span::raw(":quit "),
-                Span::styled("Tab", Style::default().fg(Color::Yellow)),
+                Span::styled("?", key_style),
+                Span::raw(":help "),
+                Span::styled("Tab", key_style),
                 Span::raw(":panel "),
-                Span::styled("hjkl", Style::default().fg(Color::Yellow)),
+                Span::styled("hjkl", key_style),
                 Span::raw(":nav "),
-                Span::styled("Ent", Style::default().fg(Color::Yellow)),
+                Span::styled("Ent", key_style),
                 Span::raw(":edit "),
-                Span::styled("n", Style::default().fg(Color::Yellow)),
+                Span::styled("n", key_style),
                 Span::raw(":new "),
             ]),
             Line::from(vec![
-                Span::styled("N", Style::default().fg(Color::Yellow)),
+                Span::styled("N", key_style),
                 Span::raw(":folder "),
-                Span::styled("d", Style::default().fg(Color::Yellow)),
+                Span::styled("d", key_style),
                 Span::raw(":del "),
-                Span::styled("s", Style::default().fg(Color::Yellow)),
+                Span::styled("s", key_style),
                 Span::raw(":sync "),
-                Span::styled("?", Style::default().fg(Color::Yellow)),
-                Span::raw(":help "),
-                Span::styled(&state.status_message, Style::default().fg(Color::Cyan)),
+                Span::styled("S", key_style),
+                Span::raw(":settings "),
             ]),
         ]
     } else {
         vec![Line::from(vec![
-            Span::styled("q", Style::default().fg(Color::Yellow)),
+            Span::styled("q", key_style),
             Span::raw(":quit "),
-            Span::styled("Tab", Style::default().fg(Color::Yellow)),
-            Span::raw(":panel "),
-            Span::styled("hjkl", Style::default().fg(Color::Yellow)),
-            Span::raw(":nav "),
-            Span::styled("Ent", Style::default().fg(Color::Yellow)),
-            Span::raw(":edit "),
-            Span::styled("n", Style::default().fg(Color::Yellow)),
-            Span::raw(":new "),
-            Span::styled("N", Style::default().fg(Color::Yellow)),
-            Span::raw(":fldr "),
-            Span::styled("d", Style::default().fg(Color::Yellow)),
-            Span::raw(":del "),
-            Span::styled("s", Style::default().fg(Color::Yellow)),
-            Span::raw(":sync "),
-            Span::styled("?", Style::default().fg(Color::Yellow)),
+            Span::styled("?", key_style),
             Span::raw(":help "),
-            Span::styled(&state.status_message, Style::default().fg(Color::Cyan)),
+            Span::styled("Tab", key_style),
+            Span::raw(":panel "),
+            Span::styled("hjkl", key_style),
+            Span::raw(":nav "),
+            Span::styled("Ent", key_style),
+            Span::raw(":edit "),
+            Span::styled("n", key_style),
+            Span::raw(":new "),
+            Span::styled("N", key_style),
+            Span::raw(":fldr "),
+            Span::styled("d", key_style),
+            Span::raw(":del "),
+            Span::styled("s", key_style),
+            Span::raw(":sync "),
+            Span::styled("S", key_style),
+            Span::raw(":set "),
         ])]
     };
 
     let paragraph = Paragraph::new(help_text)
         .alignment(Alignment::Left)
-        .block(Block::default().bg(Color::DarkGray));
+        .block(Block::default().style(Style::default().dim()));
 
     f.render_widget(paragraph, area);
+}
+
+/// Render status line (show current status message)
+fn render_status_line(f: &mut Frame, state: &AppState, area: Rect) {
+    let status_text = if state.status_message.is_empty() {
+        Line::from(vec![
+            Span::from("Ready").style(Style::default().dim()),
+        ])
+    } else {
+        Line::from(vec![
+            Span::from("→ ").style(Style::default().dim()),
+            Span::styled(&state.status_message, Style::default().bold()),
+        ])
+    };
+
+    let paragraph = Paragraph::new(status_text)
+        .alignment(Alignment::Left)
+        .block(Block::default().style(Style::default().dim()));
+
+    f.render_widget(paragraph, area);
+}
+
+/// Render settings menu
+pub fn render_settings(f: &mut Frame, state: &AppState) {
+    let area = centered_rect(70, 80, f.area());
+
+    let tabs = vec!["General", "Encryption", "About"];
+    let current_tab_idx = match state.settings.current_tab {
+        SettingsTab::General => 0,
+        SettingsTab::Encryption => 1,
+        SettingsTab::About => 2,
+    };
+
+    // Create title with tabs
+    let title = format!(
+        "Settings - {}",
+        tabs[current_tab_idx]
+    );
+
+    // Render based on current tab
+    let content = match state.settings.current_tab {
+        SettingsTab::General => Text::from(render_general_settings_inline(state)),
+        SettingsTab::Encryption => Text::from(render_encryption_settings_inline(state)),
+        SettingsTab::About => Text::from(render_about_settings_inline()),
+    };
+
+    let paragraph = Paragraph::new(content)
+        .block(
+            Block::default()
+                .title(title)
+                .borders(Borders::ALL)
+                .border_style(Style::default().bold())
+        )
+        .wrap(Wrap { trim: false })
+        .alignment(Alignment::Left);
+
+    f.render_widget(paragraph, area);
+
+    // Render tab navigation hint at bottom
+    let hint_area = Rect {
+        x: area.x,
+        y: area.bottom() - 3,
+        width: area.width,
+        height: 3,
+    };
+
+    let hint_text = Text::from(vec![
+        Line::from(vec![
+            Span::styled("[", Style::default().dim()),
+            Span::styled("<", Style::default().bold()),
+            Span::styled("]", Style::default().dim()),
+            Span::raw(" prev tab "),
+            Span::styled("[", Style::default().dim()),
+            Span::styled(">", Style::default().bold()),
+            Span::styled("]", Style::default().dim()),
+            Span::raw(" next tab "),
+            Span::styled("[", Style::default().dim()),
+            Span::styled("q", Style::default().bold()),
+            Span::styled("]", Style::default().dim()),
+            Span::raw(" close "),
+        ]),
+        Line::from(vec![
+            Span::styled("[", Style::default().dim()),
+            Span::styled("e", Style::default().bold()),
+            Span::styled("]", Style::default().dim()),
+            Span::raw(" enable encryption "),
+            Span::styled("[", Style::default().dim()),
+            Span::styled("d", Style::default().bold()),
+            Span::styled("]", Style::default().dim()),
+            Span::raw(" disable encryption "),
+        ]),
+    ]);
+
+    let hint_paragraph = Paragraph::new(hint_text)
+        .alignment(Alignment::Center)
+        .block(Block::default().style(Style::default().dim()));
+
+    f.render_widget(hint_paragraph, hint_area);
+}
+
+/// Render general settings (inline)
+fn render_general_settings_inline(state: &AppState) -> Vec<Line<'_>> {
+    let enc = &state.settings.encryption;
+
+    let mut lines = vec![
+        Line::from("End-to-End Encryption").style(Style::default().bold()),
+        Line::from(""),
+    ];
+
+    // Status
+    lines.push(Line::from(vec![
+        Span::raw("Status: "),
+        Span::styled(&enc.status_message, Style::default().bold()),
+    ]));
+
+    lines.push(Line::from(""));
+
+    // Master key info
+    if let Some(ref key_id) = enc.active_master_key_id {
+        lines.push(Line::from(vec![
+            Span::raw("Active Key: "),
+            Span::styled(&key_id[..8], Style::default().bold()),
+            Span::raw("..."),
+        ]));
+    }
+
+    lines.push(Line::from(format!("Available Keys: {}", enc.master_key_count)));
+    lines.push(Line::from(""));
+
+    // Actions
+    if !enc.enabled {
+        lines.push(Line::from(vec![
+            Span::styled("[e]", Style::default().bold()),
+            Span::raw(" Enable encryption with master password"),
+        ]));
+    } else {
+        lines.push(Line::from(vec![
+            Span::styled("[d]", Style::default().bold()),
+            Span::raw(" Disable encryption"),
+        ]));
+    }
+
+    // Password prompt
+    if enc.show_new_key_prompt {
+        lines.push(Line::from(""));
+        lines.push(Line::from("─────────────────────────────────").style(Style::default().bold()));
+        lines.push(Line::from("Setup Master Password").style(Style::default().bold()));
+        lines.push(Line::from(""));
+
+        if !enc.password_input.is_empty() || !enc.confirm_password_input.is_empty() {
+            let masked_password = "•".repeat(enc.password_input.len());
+            let masked_confirm = "•".repeat(enc.confirm_password_input.len());
+
+            lines.push(Line::from(vec![
+                Span::raw("Password:      "),
+                Span::styled(masked_password, Style::default().bold()),
+            ]));
+
+            lines.push(Line::from(vec![
+                Span::raw("Confirm:       "),
+                Span::styled(masked_confirm, Style::default().bold()),
+            ]));
+        } else {
+            lines.push(Line::from("Type password (min 8 characters)"));
+        }
+
+        // Error message
+        if let Some(ref error) = enc.password_error {
+            lines.push(Line::from(""));
+            lines.push(Line::from(vec![
+                Span::styled("⚠ ", Style::default().bold()),
+                Span::styled(error, Style::default().bold()),
+            ]));
+        }
+
+        // Success message
+        if enc.password_success {
+            lines.push(Line::from(""));
+            lines.push(Line::from(vec![
+                Span::styled("✓ ", Style::default().bold()),
+                Span::styled("Encryption enabled successfully!", Style::default().bold()),
+            ]));
+        }
+
+        lines.push(Line::from(""));
+        lines.push(Line::from(vec![
+            Span::styled("[", Style::default().dim()),
+            Span::styled("Enter", Style::default().bold()),
+            Span::styled("]", Style::default().dim()),
+            Span::raw(" to confirm "),
+            Span::styled("[", Style::default().dim()),
+            Span::styled("Esc", Style::default().bold()),
+            Span::styled("]", Style::default().dim()),
+            Span::raw(" to cancel"),
+        ]));
+    }
+
+    lines
+}
+
+/// Render encryption settings (inline)
+fn render_encryption_settings_inline(state: &AppState) -> Vec<Line<'_>> {
+    let enc = &state.settings.encryption;
+
+    let mut lines = vec![
+        Line::from("Encryption Settings").style(Style::default().bold()),
+        Line::from(""),
+    ];
+
+    // Status
+    lines.push(Line::from(vec![
+        Span::raw("Status: "),
+        Span::styled(&enc.status_message, Style::default().bold()),
+    ]));
+
+    lines.push(Line::from(""));
+
+    // Master key info
+    if let Some(ref key_id) = enc.active_master_key_id {
+        lines.push(Line::from(vec![
+            Span::raw("Active Key: "),
+            Span::styled(&key_id[..8], Style::default().bold()),
+            Span::raw("..."),
+        ]));
+    }
+
+    lines.push(Line::from(format!("Available Keys: {}", enc.master_key_count)));
+    lines.push(Line::from(""));
+
+    // Actions
+    if !enc.enabled {
+        lines.push(Line::from(vec![
+            Span::styled("[e]", Style::default().bold()),
+            Span::raw(" Enable encryption with master password"),
+        ]));
+    } else {
+        lines.push(Line::from(vec![
+            Span::styled("[d]", Style::default().bold()),
+            Span::raw(" Disable encryption"),
+        ]));
+    }
+
+    // Password prompt
+    if enc.show_new_key_prompt {
+        lines.push(Line::from(""));
+        lines.push(Line::from("─────────────────────────────────").style(Style::default().bold()));
+        lines.push(Line::from("Setup Master Password").style(Style::default().bold()));
+        lines.push(Line::from(""));
+
+        if !enc.password_input.is_empty() || !enc.confirm_password_input.is_empty() {
+            let masked_password = "•".repeat(enc.password_input.len());
+            let masked_confirm = "•".repeat(enc.confirm_password_input.len());
+
+            lines.push(Line::from(vec![
+                Span::raw("Password:      "),
+                Span::styled(masked_password, Style::default().bold()),
+            ]));
+
+            lines.push(Line::from(vec![
+                Span::raw("Confirm:       "),
+                Span::styled(masked_confirm, Style::default().bold()),
+            ]));
+        } else {
+            lines.push(Line::from("Type password (min 8 characters)"));
+        }
+
+        // Error message
+        if let Some(ref error) = enc.password_error {
+            lines.push(Line::from(""));
+            lines.push(Line::from(vec![
+                Span::styled("⚠ ", Style::default().bold()),
+                Span::styled(error, Style::default().bold()),
+            ]));
+        }
+
+        // Success message
+        if enc.password_success {
+            lines.push(Line::from(""));
+            lines.push(Line::from(vec![
+                Span::styled("✓ ", Style::default().bold()),
+                Span::styled("Encryption enabled successfully!", Style::default().bold()),
+            ]));
+        }
+
+        lines.push(Line::from(""));
+        lines.push(Line::from(vec![
+            Span::styled("[", Style::default().dim()),
+            Span::styled("Enter", Style::default().bold()),
+            Span::styled("]", Style::default().dim()),
+            Span::raw(" to confirm "),
+            Span::styled("[", Style::default().dim()),
+            Span::styled("Esc", Style::default().bold()),
+            Span::styled("]", Style::default().dim()),
+            Span::raw(" to cancel"),
+        ]));
+    }
+
+    lines
+}
+
+/// Render about settings (inline)
+fn render_about_settings_inline() -> Vec<Line<'static>> {
+    vec![
+        Line::from("About NeoJoplin").style(Style::default().bold()),
+        Line::from(""),
+        Line::from("Version: 0.1.0-alpha"),
+        Line::from(""),
+        Line::from("A fast, memory-safe Joplin-compatible").style(Style::default().bold()),
+        Line::from("terminal note-taking client in Rust."),
+        Line::from(""),
+        Line::from("Features:"),
+        Line::from("  • 100% Joplin sync compatibility"),
+        Line::from("  • End-to-end encryption (E2EE)"),
+        Line::from("  • WebDAV synchronization"),
+        Line::from("  • External editor integration"),
+        Line::from("  • Terminal UI (TUI)"),
+        Line::from(""),
+        Line::from("Repository:"),
+        Line::from("  https://github.com/Dronakurl/neojoplin"),
+        Line::from(""),
+        Line::from("Based on Joplin by Laurent Cozic"),
+        Line::from(""),
+        Line::from("Press 'q' to close settings"),
+    ]
 }
 
 /// Render help popup
@@ -238,11 +600,11 @@ pub fn render_help(f: &mut Frame, scroll: u16) {
     let area = centered_rect(80, 80, f.area());
 
     let text = Text::from(vec![
-        Line::from("NEOJOPLIN").style(Style::default().fg(Color::Cyan).bold()),
+        Line::from("NEOJOPLIN").style(Style::default().bold()),
         Line::from(""),
-        Line::from("Joplin-compatible terminal note-taking client").style(Style::default().fg(Color::Gray)),
+        Line::from("Joplin-compatible terminal note-taking client").style(Style::default().dim()),
         Line::from(""),
-        Line::from("Keybindings").style(Style::default().fg(Color::Yellow).bold()),
+        Line::from("Keybindings").style(Style::default().bold()),
         Line::from(""),
         Line::from("Navigation:"),
         Line::from("  Tab/Shift-Tab  Switch panels"),
@@ -265,7 +627,7 @@ pub fn render_help(f: &mut Frame, scroll: u16) {
             Block::default()
                 .title("Help (q: close, j/k: scroll)")
                 .borders(Borders::ALL)
-                .border_style(Style::default().fg(Color::Yellow)),
+                .border_style(Style::default().bold()),
         )
         .wrap(Wrap { trim: false })
         .scroll((scroll, 0))
@@ -279,23 +641,23 @@ pub fn render_quit_confirmation(f: &mut Frame) {
     let area = centered_rect(50, 25, f.area());
 
     let text = Text::from(vec![
-        Line::from("Quit NeoJoplin?").style(Style::default().fg(Color::Yellow).bold()),
+        Line::from("Quit NeoJoplin?").style(Style::default().bold()),
         Line::from(""),
         Line::from(""),
         Line::from(vec![
-            Span::styled("[", Style::default().fg(Color::Gray)),
-            Span::styled("q", Style::default().fg(Color::Green).bold()),
-            Span::styled("]", Style::default().fg(Color::Gray)),
+            Span::styled("[", Style::default().dim()),
+            Span::styled("q", Style::default().bold()),
+            Span::styled("]", Style::default().dim()),
             Span::raw(" or "),
-            Span::styled("[", Style::default().fg(Color::Gray)),
-            Span::styled("y", Style::default().fg(Color::Green).bold()),
-            Span::styled("]", Style::default().fg(Color::Gray)),
+            Span::styled("[", Style::default().dim()),
+            Span::styled("y", Style::default().bold()),
+            Span::styled("]", Style::default().dim()),
             Span::raw(" to quit "),
         ]),
         Line::from(vec![
-            Span::styled("[", Style::default().fg(Color::Gray)),
-            Span::styled("any", Style::default().fg(Color::Cyan)),
-            Span::styled("]", Style::default().fg(Color::Gray)),
+            Span::styled("[", Style::default().dim()),
+            Span::styled("any", Style::default().bold()),
+            Span::styled("]", Style::default().dim()),
             Span::raw(" other key to cancel "),
         ]),
     ]);
@@ -305,7 +667,7 @@ pub fn render_quit_confirmation(f: &mut Frame) {
             Block::default()
                 .title("Confirm Quit")
                 .borders(Borders::ALL)
-                .border_style(Style::default().fg(Color::Red)),
+                .border_style(Style::default().bold()),
         )
         .wrap(Wrap { trim: true })
         .alignment(Alignment::Center);

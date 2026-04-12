@@ -1,6 +1,7 @@
 // Application state management
 
 use neojoplin_core::{Note, Folder};
+use crate::settings::Settings;
 
 /// Which panel has focus
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -33,6 +34,8 @@ pub struct AppState {
     pub status_message: String,
     /// Whether settings were modified
     pub settings_modified: bool,
+    /// Settings state
+    pub settings: Settings,
 }
 
 impl Default for AppState {
@@ -48,6 +51,7 @@ impl Default for AppState {
             show_settings: false,
             status_message: String::new(),
             settings_modified: false,
+            settings: Settings::new(),
         }
     }
 }

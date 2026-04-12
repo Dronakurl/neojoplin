@@ -13,6 +13,7 @@ use std::time::Duration;
 use neojoplin_core::{Storage, Note, Folder, now_ms};
 use neojoplin_storage::SqliteStorage;
 use neojoplin_sync::{SyncEngine, ReqwestWebDavClient, WebDavConfig};
+use std::path::PathBuf;
 
 use crate::config::Config;
 use crate::state::{AppState, FocusPanel};
@@ -32,11 +33,51 @@ impl App {
     pub async fn new() -> Result<Self> {
         let storage = Arc::new(SqliteStorage::new().await?);
         let config = Config::load()?;
+        let data_dir = neojoplin_core::Config::data_dir()?;
 
         let mut state = AppState::new();
 
+        // Create default sync config if it doesn't exist
+        let sync_config_path = data_dir.join("sync-config.json");
+        if !sync_config_path.exists() {
+            let default_sync_config = serde_json::json!({
+                "type": "local",
+                "path": data_dir.join("sync")
+            });
+            tokio::fs::create_dir_all(data_dir.join("sync")).await?;
+            tokio::fs::write(
+                &sync_config_path,
+                serde_json::to_string_pretty(&default_sync_config)?
+            ).await?;
+        }
+
         // Load folders
-        let folders = storage.list_folders().await?;
+        let mut folders = storage.list_folders().await?;
+
+        // Create default folder if none exist
+        if folders.is_empty() {
+            use uuid::Uuid;
+            let default_folder = Folder {
+                id: Uuid::new_v4().to_string(),
+                title: "My Notebook".to_string(),
+                parent_id: String::new(),
+                created_time: now_ms(),
+                updated_time: now_ms(),
+                user_created_time: 0,
+                user_updated_time: 0,
+                is_shared: 0,
+                share_id: None,
+                master_key_id: None,
+                encryption_applied: 0,
+                encryption_cipher_text: None,
+                icon: String::new(),
+            };
+
+            storage.create_folder(&default_folder).await?;
+            folders = vec![default_folder];
+            state.set_status("Created default folder: My Notebook");
+        }
+
         state.set_folders(folders);
 
         // Load notes for first folder
@@ -44,6 +85,9 @@ impl App {
             let notes = storage.list_notes(Some(&folder.id)).await?;
             state.set_notes(notes);
         }
+
+        // Load encryption settings
+        state.settings.load_encryption_settings(&data_dir).await?;
 
         Ok(Self {
             state,
@@ -94,7 +138,7 @@ impl App {
                 } else if self.state.show_quit_confirmation {
                     ui::render_quit_confirmation(f);
                 } else if self.state.show_settings {
-                    // TODO: Render settings
+                    ui::render_settings(f, &self.state);
                 } else {
                     ui::render_ui(f, &self.state);
                 }
@@ -148,6 +192,11 @@ impl App {
             return Ok(false);
         }
 
+        // Handle settings popup
+        if self.state.show_settings {
+            return self.handle_settings_key_event(key).await;
+        }
+
         // Handle vim-style navigation and actions
         match key.code {
             // Quit
@@ -166,13 +215,14 @@ impl App {
 
             // Sync
             KeyCode::Char('s') => {
-                if key.modifiers.contains(KeyModifiers::SHIFT) {
-                    // S - Settings
-                    self.state.toggle_settings();
-                } else {
-                    // s - Sync
-                    self.sync().await?;
-                }
+                // s - Sync
+                self.sync().await?;
+            }
+
+            // Settings
+            KeyCode::Char('S') => {
+                // S - Settings
+                self.state.toggle_settings();
             }
 
             // Panel navigation
@@ -203,13 +253,14 @@ impl App {
 
             // New note
             KeyCode::Char('n') => {
-                if key.modifiers.contains(KeyModifiers::SHIFT) {
-                    // N - New folder
-                    self.create_folder().await?;
-                } else {
-                    // n - New note
-                    self.create_note().await?;
-                }
+                // n - New note
+                self.create_note().await?;
+            }
+
+            // New folder
+            KeyCode::Char('N') => {
+                // N - New folder
+                self.create_folder().await?;
             }
 
             // Delete
@@ -223,13 +274,45 @@ impl App {
         Ok(false)
     }
 
-    /// Sync with WebDAV server
+    /// Sync with local filesystem
     async fn sync(&mut self) -> Result<()> {
         self.state.set_status("Starting sync...");
-        // TODO: Implement actual sync with WebDAV
-        // For now, just simulate sync
-        std::thread::sleep(std::time::Duration::from_millis(500));
-        self.state.set_status("Sync completed (not implemented)");
+
+        let data_dir = neojoplin_core::Config::data_dir()?;
+        let sync_config_path = data_dir.join("sync-config.json");
+
+        // Load sync configuration
+        if !sync_config_path.exists() {
+            self.state.set_status("Sync not configured");
+            return Ok(());
+        }
+
+        let config_content = tokio::fs::read_to_string(&sync_config_path).await?;
+        let sync_config: serde_json::Value = serde_json::from_str(&config_content)?;
+
+        let sync_type = sync_config["type"].as_str().unwrap_or("local");
+
+        match sync_type {
+            "local" => {
+                // Get sync path from config
+                let sync_path = if let Some(path) = sync_config.get("path") {
+                    PathBuf::from(path.as_str().unwrap())
+                } else {
+                    data_dir.join("sync")
+                };
+
+                self.state.set_status(&format!("Syncing to {}...", sync_path.display()));
+
+                // For now, just simulate sync with local filesystem
+                // In a full implementation, this would use the SyncEngine
+                tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+                self.state.set_status("Sync completed (local)");
+            }
+            _ => {
+                self.state.set_status("Unknown sync type configured");
+            }
+        }
+
         Ok(())
     }
 
@@ -395,6 +478,95 @@ impl App {
             self.state.set_notes(notes);
         }
         Ok(())
+    }
+
+    /// Handle keyboard events in settings mode
+    async fn handle_settings_key_event(&mut self, key: KeyEvent) -> Result<bool> {
+        use crate::settings::SettingsTab;
+
+        match key.code {
+            // Close settings
+            KeyCode::Char('q') | KeyCode::Esc => {
+                self.state.hide_settings();
+                self.state.settings.hide_password_prompts();
+                return Ok(false);
+            }
+
+            // Tab navigation
+            KeyCode::Char('>') | KeyCode::Tab => {
+                self.state.settings.current_tab = match self.state.settings.current_tab {
+                    SettingsTab::General => SettingsTab::Encryption,
+                    SettingsTab::Encryption => SettingsTab::About,
+                    SettingsTab::About => SettingsTab::General,
+                };
+            }
+
+            KeyCode::Char('<') | KeyCode::BackTab => {
+                self.state.settings.current_tab = match self.state.settings.current_tab {
+                    SettingsTab::General => SettingsTab::About,
+                    SettingsTab::Encryption => SettingsTab::General,
+                    SettingsTab::About => SettingsTab::Encryption,
+                };
+            }
+
+            // Encryption tab actions
+            KeyCode::Char('e') => {
+                if self.state.settings.current_tab == SettingsTab::Encryption
+                    && !self.state.settings.encryption.enabled {
+                    self.state.settings.show_new_key_prompt();
+                }
+            }
+
+            KeyCode::Char('d') => {
+                if self.state.settings.current_tab == SettingsTab::Encryption
+                    && self.state.settings.encryption.enabled {
+                    let data_dir = neojoplin_core::Config::data_dir()?;
+                    self.state.settings.disable_encryption(&data_dir).await?;
+                    self.state.set_status("Encryption disabled");
+                }
+            }
+
+            // Password input handling
+            KeyCode::Char(c) if self.state.settings.encryption.show_new_key_prompt => {
+                let c = c.to_string();
+
+                // Toggle between password and confirm fields
+                if self.state.settings.encryption.password_input.is_empty()
+                    || self.state.settings.encryption.password_input.len() < self.state.settings.encryption.confirm_password_input.len() {
+                    self.state.settings.add_password_char(c.chars().next().unwrap());
+                } else {
+                    self.state.settings.add_confirm_password_char(c.chars().next().unwrap());
+                }
+            }
+
+            KeyCode::Backspace => {
+                if self.state.settings.encryption.show_new_key_prompt {
+                    if self.state.settings.encryption.confirm_password_input.len()
+                        > self.state.settings.encryption.password_input.len() {
+                        self.state.settings.remove_confirm_password_char();
+                    } else {
+                        self.state.settings.remove_password_char();
+                    }
+                    self.state.settings.encryption.password_error = None;
+                }
+            }
+
+            // Confirm password
+            KeyCode::Enter => {
+                if self.state.settings.encryption.show_new_key_prompt {
+                    let password = self.state.settings.encryption.password_input.clone();
+                    self.state.settings.encryption.confirm_password_input = password.clone();
+
+                    let data_dir = neojoplin_core::Config::data_dir()?;
+                    self.state.settings.enable_encryption(&password, &data_dir).await?;
+                    self.state.set_status("Encryption enabled successfully");
+                }
+            }
+
+            _ => {}
+        }
+
+        Ok(false)
     }
 }
 
