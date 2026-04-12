@@ -133,13 +133,13 @@ test-webdav URL USERNAME PASSWORD:
 
 # Start local WebDAV server for testing
 webdav-server:
-    docker-compose up -d webdav
+    docker compose up -d webdav
     @echo "Local WebDAV server started on http://localhost:8080"
     @echo "WebDAV path: http://localhost:8080/webdav"
 
 # Stop local WebDAV server
 webdav-stop:
-    docker-compose down
+    docker compose down
 
 # Test with local WebDAV server
 test-local-webdav:
@@ -147,5 +147,5 @@ test-local-webdav:
 
 # View WebDAV server logs
 webdav-logs:
-    docker-compose logs -f webdav
+    docker compose logs -f webdav
 
