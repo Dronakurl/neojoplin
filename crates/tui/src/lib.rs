@@ -1,4 +1,10 @@
-// TUI crate - Terminal user interface
+// NeoJoplin TUI - Terminal user interface with ratatui
 
-// TODO: Implement TUI crate
-// This will contain the ratatui-based terminal UI
+pub mod config;
+pub mod state;
+pub mod ui;
+pub mod app;
+
+pub use app::{App, run_app};
+pub use config::Config;
+pub use state::{AppState, FocusPanel};

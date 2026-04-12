@@ -1,0 +1,19 @@
+[package]
+name = "neojoplin-tui-bin"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "TUI binary for NeoJoplin"
+
+[[bin]]
+name = "neojoplin-tui"
+path = "src/main.rs"
+
+[dependencies]
+neojoplin-tui = { path = "../tui" }
+tokio = { workspace = true }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = "0.3"

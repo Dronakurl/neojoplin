@@ -5,6 +5,7 @@ members = [
     "crates/sync",
     "crates/tui",
     "crates/cli",
+    "crates/tui-bin",
 ]
 resolver = "2"
 

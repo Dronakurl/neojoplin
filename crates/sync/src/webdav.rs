@@ -3,6 +3,7 @@
 use reqwest::{Client, header};
 use std::time::Duration;
 use neojoplin_core::{WebDavError, FileMeta};
+use std::net::{IpAddr, Ipv4Addr};
 
 // Use WebDavError directly in this module
 type WebDavResult<T> = std::result::Result<T, WebDavError>;
@@ -44,8 +45,12 @@ pub struct ReqwestWebDavClient {
 
 impl ReqwestWebDavClient {
     pub fn new(config: WebDavConfig) -> WebDavResult<Self> {
+        // Force IPv4 by setting local address to IPv4 unspecified
+        // This ensures the client only uses IPv4 for connections
+        let ipv4 = IpAddr::V4(Ipv4Addr::UNSPECIFIED);
         let client = Client::builder()
             .timeout(DEFAULT_TIMEOUT)
+            .local_address(ipv4)
             .build()
             .map_err(|e| WebDavError::ConnectionFailed(format!("Failed to create HTTP client: {}", e)))?;
 

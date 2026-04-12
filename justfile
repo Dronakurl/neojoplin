@@ -106,3 +106,23 @@ test-data:
     cargo run -- mkbook "Personal" && \
     cargo run -- mk-note "Welcome" "Welcome to NeoJoplin!" && \
     echo "Test data created successfully"
+
+# Build TUI binary
+build-tui:
+    cargo build --release -p neojoplin-tui
+
+# Run TUI
+run-tui:
+    cargo run -p neojoplin-tui
+
+# Install TUI to ~/.local/bin
+install-tui: build-tui
+    @cargo install --path crates/tui-bin
+
+# Install CLI to ~/.local/bin
+install-cli: build
+    @cargo install --path crates/cli
+
+# Install both binaries
+install-all: install-cli install-tui
+    @echo "Installed neojoplin (CLI) and neojoplin-tui (TUI)"
