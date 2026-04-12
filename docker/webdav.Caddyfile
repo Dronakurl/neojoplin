@@ -1,0 +1,21 @@
+# Local WebDAV server for testing
+:8080 {
+    # Basic WebDAV setup
+    route /webdav/* {
+        webdav /srv/webdav {
+            # Allow all methods for testing
+            # In production, you'd want authentication
+        }
+    }
+
+    # Health check endpoint
+    route /health {
+        respond "OK" 200
+    }
+
+    # Log to stdout
+    log {
+        output stdout
+        format console
+    }
+}

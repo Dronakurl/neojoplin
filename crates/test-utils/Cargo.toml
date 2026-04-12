@@ -1,0 +1,19 @@
+[package]
+name = "neojoplin-test-utils"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Testing utilities for NeoJoplin"
+
+[[bin]]
+name = "webdav-test"
+path = "src/webdav_test.rs"
+
+[dependencies]
+neojoplin-sync = { path = "../sync" }
+neojoplin-core = { path = "../core" }
+tokio = { workspace = true }
+anyhow = { workspace = true }
+futures = "0.3"

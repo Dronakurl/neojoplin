@@ -1,0 +1,18 @@
+FROM caddy:2.9-alpine AS builder
+
+# Install xcaddy and build dependencies
+RUN apk add --no-cache go git
+
+# Build Caddy with WebDAV module
+RUN xcaddy build \
+    --output /usr/bin/caddy \
+    --with github.com/mholt/caddy-webdav
+
+# Final stage - use the custom built Caddy
+FROM alpine:latest
+RUN apk add --no-cache ca-certificates curl
+
+COPY --from=builder /usr/bin/caddy /usr/bin/caddy
+
+EXPOSE 80 443 2019
+CMD ["/usr/bin/caddy", "run", "--config", "/etc/caddy/Caddyfile", "--adapter", "caddyfile"]

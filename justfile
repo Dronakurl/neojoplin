@@ -126,3 +126,26 @@ install-cli: build
 # Install both binaries
 install-all: install-cli install-tui
     @echo "Installed neojoplin (CLI) and neojoplin-tui (TUI)"
+
+# Test WebDAV connection
+test-webdav URL USERNAME PASSWORD:
+    cargo run --bin webdav-test -- {{URL}} {{USERNAME}} {{PASSWORD}}
+
+# Start local WebDAV server for testing
+webdav-server:
+    docker-compose up -d webdav
+    @echo "Local WebDAV server started on http://localhost:8080"
+    @echo "WebDAV path: http://localhost:8080/webdav"
+
+# Stop local WebDAV server
+webdav-stop:
+    docker-compose down
+
+# Test with local WebDAV server
+test-local-webdav:
+    cargo run --bin webdav-test -- http://localhost:8080/webdav test test
+
+# View WebDAV server logs
+webdav-logs:
+    docker-compose logs -f webdav
+

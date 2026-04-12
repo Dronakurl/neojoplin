@@ -69,16 +69,16 @@ enum Commands {
     /// Synchronize with WebDAV server
     Sync {
         /// WebDAV URL
-        #[arg(short, long)]
+        #[arg(long)]
         url: Option<String>,
         /// Username
-        #[arg(short, long)]
+        #[arg(short = 'U', long)]
         username: Option<String>,
         /// Password
-        #[arg(short, long)]
+        #[arg(short = 'P', long)]
         password: Option<String>,
         /// Remote path
-        #[arg(short, long, default_value = "/neojoplin")]
+        #[arg(short = 'r', long, default_value = "/neojoplin")]
         remote: String,
     },
 
