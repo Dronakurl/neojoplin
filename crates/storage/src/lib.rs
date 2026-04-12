@@ -995,12 +995,22 @@ impl Storage for SqliteStorage {
     }
 
     async fn update_sync_time(&self, table: &str, id: &str, timestamp: i64) -> Result<(), DatabaseError> {
+        // Convert table name to model type
+        let item_type = match table {
+            "notes" => 1,      // Note
+            "folders" => 2,    // Folder
+            "tags" => 3,       // Tag
+            "note_tags" => 4,  // NoteTag
+            "resources" => 5,  // Resource
+            _ => return Err(DatabaseError::InvalidData(format!("Unknown table: {}", table))),
+        };
+
         // First, check if the item exists in sync_items
         let existing = sqlx::query_as::<_, SyncItem>(
             "SELECT * FROM sync_items WHERE item_id = ? AND item_type = ?"
         )
         .bind(id)
-        .bind(table)
+        .bind(item_type)
         .fetch_optional(&self.pool)
         .await
         .map_err(|e| DatabaseError::QueryFailed(format!("Failed to check sync item: {}", e)))?;
@@ -1026,7 +1036,7 @@ impl Storage for SqliteStorage {
             )
             .bind(1) // sync_target
             .bind(timestamp)
-            .bind(table)
+            .bind(item_type)
             .bind(id)
             .bind(0) // sync_disabled
             .bind("") // sync_disabled_reason

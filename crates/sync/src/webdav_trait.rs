@@ -7,10 +7,29 @@ use async_trait::async_trait;
 
 #[async_trait]
 impl WebDavClient for ReqwestWebDavClient {
-    async fn list(&self, _path: &str) -> std::result::Result<Vec<DavEntry>, WebDavError> {
-        // For now, return an empty list
-        // TODO: Implement proper listing
-        Ok(Vec::new())
+    async fn list(&self, path: &str) -> std::result::Result<Vec<DavEntry>, WebDavError> {
+        // Use the list_impl method and convert results to DavEntry
+        let files = self.list_impl(path).await
+            .map_err(|e| WebDavError::RequestFailed(format!("List failed: {:?}", e)))?;
+
+        let entries = files.into_iter().map(|filename| {
+            // list_impl returns just filenames, so we need to construct the full path
+            let full_path = if path.ends_with('/') {
+                format!("{}{}", path, filename)
+            } else {
+                format!("{}/{}", path, filename)
+            };
+
+            DavEntry {
+                path: full_path,
+                is_directory: false, // We can't easily determine this from just the filename
+                size: None,           // We don't have size info from list_impl
+                modified: None,       // We don't have timestamp info from list_impl
+                etag: None,
+            }
+        }).collect();
+
+        Ok(entries)
     }
 
     async fn get(&self, path: &str) -> std::result::Result<Box<dyn AsyncRead + Unpin + Send>, WebDavError> {
