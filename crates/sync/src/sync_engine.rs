@@ -17,7 +17,7 @@ impl Default for SyncContext {
     fn default() -> Self {
         Self {
             last_sync_time: 0,
-            remote_path: "/neojoplin".to_string(),
+            remote_path: "/".to_string(),
         }
     }
 }
@@ -488,7 +488,7 @@ mod tests {
     fn test_sync_context_default() {
         let context = SyncContext::default();
         assert_eq!(context.last_sync_time, 0);
-        assert_eq!(context.remote_path, "/neojoplin");
+        assert_eq!(context.remote_path, "/");
     }
 
     #[test]

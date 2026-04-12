@@ -78,7 +78,7 @@ enum Commands {
         #[arg(short = 'P', long)]
         password: Option<String>,
         /// Remote path
-        #[arg(short = 'r', long, default_value = "/neojoplin")]
+        #[arg(short = 'r', long, default_value = "/")]
         remote: String,
     },
 
