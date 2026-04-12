@@ -475,23 +475,189 @@ impl SyncEngine {
     }
 
     fn serialize_note(&self, note: &Note) -> Result<String> {
-        serde_json::to_string_pretty(note)
-            .map_err(|e| SyncError::Serialization(format!("Failed to serialize note: {}", e)).into())
+        // Joplin format: human-readable text format (not JSON)
+        let mut content = format!("{}\n", note.title);
+        content.push_str(&format!("id: {}\n", note.id));
+        content.push_str(&format!("parent_id: {}\n", note.parent_id));
+
+        // Convert timestamps to ISO 8601 format
+        let created_time = self.ms_to_iso(note.created_time);
+        let updated_time = self.ms_to_iso(note.updated_time);
+        let user_created_time = self.ms_to_iso(note.user_created_time);
+        let user_updated_time = self.ms_to_iso(note.user_updated_time);
+
+        content.push_str(&format!("created_time: {}\n", created_time));
+        content.push_str(&format!("updated_time: {}\n", updated_time));
+        content.push_str(&format!("is_conflict: {}\n", note.is_conflict));
+        content.push_str(&format!("latitude: {:.8}\n", note.latitude as f64 / 1e7));
+        content.push_str(&format!("longitude: {:.8}\n", note.longitude as f64 / 1e7));
+        content.push_str(&format!("altitude: {:.4}\n", note.altitude as f64 / 1e2));
+        content.push_str(&format!("author: {}\n", note.author));
+        content.push_str(&format!("source_url: {}\n", note.source_url));
+        content.push_str(&format!("is_todo: {}\n", note.is_todo));
+        content.push_str(&format!("todo_due: {}\n", note.todo_due));
+        content.push_str(&format!("todo_completed: {}\n", note.todo_completed));
+        content.push_str(&format!("source: {}\n", note.source));
+        content.push_str(&format!("source_application: {}\n", note.source_application));
+        content.push_str(&format!("application_data: {}\n", note.application_data));
+        content.push_str(&format!("order: {}\n", note.order));
+        content.push_str(&format!("user_created_time: {}\n", user_created_time));
+        content.push_str(&format!("user_updated_time: {}\n", user_updated_time));
+        content.push_str(&format!("encryption_cipher_text: {}\n", note.encryption_cipher_text.as_ref().unwrap_or(&String::new())));
+        content.push_str(&format!("encryption_applied: {}\n", note.encryption_applied));
+        content.push_str(&format!("markup_language: {}\n", note.markup_language));
+        content.push_str(&format!("is_shared: {}\n", note.is_shared));
+        content.push_str(&format!("share_id: {}\n", note.share_id.as_ref().unwrap_or(&String::new())));
+        content.push_str(&format!("conflict_original_id: {}\n", note.conflict_original_id));
+        content.push_str(&format!("master_key_id: {}\n", note.master_key_id.as_ref().unwrap_or(&String::new())));
+        content.push_str(&format!("user_data: {}\n", String::new()));
+        content.push_str(&format!("deleted_time: {}\n", 0));
+
+        // Determine type_ based on is_todo
+        let type_ = if note.is_todo == 1 { 5 } else { 1 }; // 5 = todo, 1 = note
+        content.push_str(&format!("type_: {}\n", type_));
+
+        // Add body content at the end
+        if !note.body.is_empty() {
+            content.push_str(&format!("\n{}\n", note.body));
+        }
+
+        Ok(content)
     }
 
     fn deserialize_note(&self, id: &str, content: &str) -> Result<Note> {
-        serde_json::from_str(content)
-            .map_err(|e| SyncError::Serialization(format!("Failed to deserialize note {}: {}", id, e)).into())
+        // Parse Joplin format (human-readable text format)
+        let mut note = Note::default();
+        note.id = id.to_string();
+
+        // Split content into properties and body
+        let parts: Vec<&str> = content.splitn(2, "\n\n").collect();
+        let properties_part = parts.get(0).unwrap_or(&content);
+        let body_part = parts.get(1).unwrap_or(&"");
+
+        // Parse title (first line)
+        if let Some(first_line) = properties_part.lines().next() {
+            if !first_line.contains(':') {
+                note.title = first_line.to_string();
+            }
+        }
+
+        // Parse properties
+        for line in properties_part.lines() {
+            if line.is_empty() || line.starts_with('#') {
+                continue;
+            }
+
+            if let Some((key, value)) = line.split_once(':') {
+                let value = value.trim();
+                match key.trim() {
+                    "id" => note.id = value.to_string(),
+                    "title" => {
+                        // Title is the first line without a colon (already handled above)
+                    },
+                    "parent_id" => note.parent_id = value.to_string(),
+                    "created_time" => note.created_time = self.iso_to_ms(value)?,
+                    "updated_time" => note.updated_time = self.iso_to_ms(value)?,
+                    "user_created_time" => note.user_created_time = self.iso_to_ms(value)?,
+                    "user_updated_time" => note.user_updated_time = self.iso_to_ms(value)?,
+                    "is_conflict" => note.is_conflict = value.parse().unwrap_or(0),
+                    "latitude" => note.latitude = (value.parse::<f64>().unwrap_or(0.0) * 1e7) as i64,
+                    "longitude" => note.longitude = (value.parse::<f64>().unwrap_or(0.0) * 1e7) as i64,
+                    "altitude" => note.altitude = (value.parse::<f64>().unwrap_or(0.0) * 1e2) as i64,
+                    "author" => note.author = value.to_string(),
+                    "source_url" => note.source_url = value.to_string(),
+                    "is_todo" => note.is_todo = value.parse().unwrap_or(0),
+                    "todo_due" => note.todo_due = value.parse().unwrap_or(0),
+                    "todo_completed" => note.todo_completed = value.parse().unwrap_or(0),
+                    "source" => note.source = value.to_string(),
+                    "source_application" => note.source_application = value.to_string(),
+                    "application_data" => note.application_data = value.to_string(),
+                    "order" => note.order = value.parse().unwrap_or(0),
+                    "encryption_cipher_text" => note.encryption_cipher_text = if !value.is_empty() { Some(value.to_string()) } else { None },
+                    "encryption_applied" => note.encryption_applied = value.parse().unwrap_or(0),
+                    "markup_language" => note.markup_language = value.parse().unwrap_or(1),
+                    "is_shared" => note.is_shared = value.parse().unwrap_or(0),
+                    "share_id" => note.share_id = if !value.is_empty() { Some(value.to_string()) } else { None },
+                    "conflict_original_id" => note.conflict_original_id = value.to_string(),
+                    "master_key_id" => note.master_key_id = if !value.is_empty() { Some(value.to_string()) } else { None },
+                    "type_" => {
+                        // type_ determines if it's a todo or note
+                        note.is_todo = if value.parse::<i32>().unwrap_or(1) == 5 { 1 } else { 0 };
+                    },
+                    _ => {} // Ignore unknown fields
+                }
+            }
+        }
+
+        // Parse body (everything after the properties section)
+        note.body = body_part.trim().to_string();
+
+        Ok(note)
     }
 
     fn deserialize_folder(&self, id: &str, content: &str) -> Result<Folder> {
-        serde_json::from_str(content)
-            .map_err(|e| SyncError::Serialization(format!("Failed to deserialize folder {}: {}", id, e)).into())
+        // For folders, try JSON format first (folders use different format)
+        if let Ok(folder) = serde_json::from_str::<Folder>(content) {
+            return Ok(folder);
+        }
+
+        // Fallback to text format parsing
+        let mut folder = Folder::default();
+        folder.id = id.to_string();
+
+        for line in content.lines() {
+            if let Some((key, value)) = line.split_once(':') {
+                let value = value.trim();
+                match key.trim() {
+                    "id" => folder.id = value.to_string(),
+                    "title" => folder.title = value.to_string(),
+                    "parent_id" => folder.parent_id = value.to_string(),
+                    "created_time" => folder.created_time = self.iso_to_ms(value)?,
+                    "updated_time" => folder.updated_time = self.iso_to_ms(value)?,
+                    _ => {}
+                }
+            }
+        }
+
+        Ok(folder)
     }
 
     fn deserialize_tag(&self, id: &str, content: &str) -> Result<Tag> {
         serde_json::from_str(content)
             .map_err(|e| SyncError::Serialization(format!("Failed to deserialize tag {}: {}", id, e)).into())
+    }
+
+    /// Convert milliseconds since epoch to ISO 8601 string
+    fn ms_to_iso(&self, ms: i64) -> String {
+        if ms == 0 {
+            return "0".to_string();
+        }
+
+        use chrono::{DateTime, NaiveDateTime, Utc};
+        let secs = ms / 1000;
+        let millis = (ms % 1000) as u32;
+        let dt = NaiveDateTime::from_timestamp_opt(secs, millis * 1_000_000);
+
+        match dt {
+            Some(naive_dt) => {
+                let datetime = DateTime::<Utc>::from_utc(naive_dt, Utc);
+                datetime.format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string()
+            },
+            None => "0".to_string()
+        }
+    }
+
+    /// Convert ISO 8601 string to milliseconds since epoch
+    fn iso_to_ms(&self, iso: &str) -> Result<i64> {
+        if iso == "0" {
+            return Ok(0);
+        }
+
+        use chrono::{DateTime, Utc};
+        let dt = DateTime::parse_from_rfc3339(iso)
+            .map_err(|e| SyncError::Serialization(format!("Failed to parse timestamp {}: {}", iso, e)))?;
+
+        Ok(dt.timestamp_millis())
     }
 }
 
