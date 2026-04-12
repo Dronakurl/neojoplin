@@ -276,18 +276,34 @@ pub fn render_help(f: &mut Frame, scroll: u16) {
 
 /// Render quit confirmation popup
 pub fn render_quit_confirmation(f: &mut Frame) {
-    let area = centered_rect(40, 20, f.area());
+    let area = centered_rect(50, 25, f.area());
 
     let text = Text::from(vec![
-        Line::from("Quit NeoJoplin?").style(Style::default().fg(Color::Yellow)),
+        Line::from("Quit NeoJoplin?").style(Style::default().fg(Color::Yellow).bold()),
         Line::from(""),
-        Line::from("Press q or y to confirm, any other key to cancel"),
+        Line::from(""),
+        Line::from(vec![
+            Span::styled("[", Style::default().fg(Color::Gray)),
+            Span::styled("q", Style::default().fg(Color::Green).bold()),
+            Span::styled("]", Style::default().fg(Color::Gray)),
+            Span::raw(" or "),
+            Span::styled("[", Style::default().fg(Color::Gray)),
+            Span::styled("y", Style::default().fg(Color::Green).bold()),
+            Span::styled("]", Style::default().fg(Color::Gray)),
+            Span::raw(" to quit "),
+        ]),
+        Line::from(vec![
+            Span::styled("[", Style::default().fg(Color::Gray)),
+            Span::styled("any", Style::default().fg(Color::Cyan)),
+            Span::styled("]", Style::default().fg(Color::Gray)),
+            Span::raw(" other key to cancel "),
+        ]),
     ]);
 
     let paragraph = Paragraph::new(text)
         .block(
             Block::default()
-                .title("Confirm")
+                .title("Confirm Quit")
                 .borders(Borders::ALL)
                 .border_style(Style::default().fg(Color::Red)),
         )
