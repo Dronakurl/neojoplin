@@ -460,8 +460,23 @@ impl SyncEngine {
 
     // Serialization methods (simplified JED-like format)
     fn serialize_folder(&self, folder: &Folder) -> Result<String> {
-        serde_json::to_string_pretty(folder)
-            .map_err(|e| SyncError::Serialization(format!("Failed to serialize folder: {}", e)).into())
+        // Joplin format for folders is same text format as notes
+        let mut content = format!("{}\n", folder.title);
+        content.push_str(&format!("id: {}\n", folder.id));
+        content.push_str(&format!("parent_id: {}\n", folder.parent_id));
+
+        // Convert timestamps to ISO 8601 format
+        let created_time = self.ms_to_iso(folder.created_time);
+        let updated_time = self.ms_to_iso(folder.updated_time);
+
+        content.push_str(&format!("created_time: {}\n", created_time));
+        content.push_str(&format!("updated_time: {}\n", updated_time));
+        content.push_str(&format!("encryption_cipher_text: {}\n", folder.encryption_cipher_text.as_ref().unwrap_or(&String::new())));
+        content.push_str(&format!("encryption_applied: {}\n", folder.encryption_applied));
+        content.push_str(&format!("icon: {}\n", folder.icon));
+        content.push_str(&format!("type_: 2\n")); // 2 = folder
+
+        Ok(content)
     }
 
     fn serialize_tag(&self, tag: &Tag) -> Result<String> {
@@ -596,25 +611,38 @@ impl SyncEngine {
     }
 
     fn deserialize_folder(&self, id: &str, content: &str) -> Result<Folder> {
-        // For folders, try JSON format first (folders use different format)
+        // Try JSON format first for backwards compatibility
         if let Ok(folder) = serde_json::from_str::<Folder>(content) {
             return Ok(folder);
         }
 
-        // Fallback to text format parsing
+        // Parse Joplin text format
         let mut folder = Folder::default();
         folder.id = id.to_string();
 
+        // Parse title (first line)
         for line in content.lines() {
+            if line.is_empty() || line.starts_with('#') {
+                continue;
+            }
+
             if let Some((key, value)) = line.split_once(':') {
                 let value = value.trim();
                 match key.trim() {
                     "id" => folder.id = value.to_string(),
-                    "title" => folder.title = value.to_string(),
+                    "title" => {
+                        // Title is the first line without a colon
+                        if folder.title.is_empty() {
+                            folder.title = value.to_string();
+                        }
+                    },
                     "parent_id" => folder.parent_id = value.to_string(),
                     "created_time" => folder.created_time = self.iso_to_ms(value)?,
                     "updated_time" => folder.updated_time = self.iso_to_ms(value)?,
-                    _ => {}
+                    "encryption_cipher_text" => folder.encryption_cipher_text = if !value.is_empty() { Some(value.to_string()) } else { None },
+                    "encryption_applied" => folder.encryption_applied = value.parse().unwrap_or(0),
+                    "icon" => folder.icon = value.to_string(),
+                    _ => {} // Ignore unknown fields
                 }
             }
         }
