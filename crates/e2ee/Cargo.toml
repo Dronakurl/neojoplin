@@ -1,0 +1,27 @@
+[package]
+name = "neojoplin-e2ee"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "End-to-end encryption (E2EE) support for NeoJoplin"
+
+[dependencies]
+neojoplin-core = { path = "../core" }
+tokio = { workspace = true }
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+chrono = { workspace = true }
+serde_bytes = "0.11"
+aes-gcm = "0.10"
+pbkdf2 = "0.12"
+sha2 = "0.10"
+rand = "0.8"
+hex = "0.4"
+uuid = { version = "1.11", features = ["v4"] }
+
+[dev-dependencies]
+tokio-test = "0.4"

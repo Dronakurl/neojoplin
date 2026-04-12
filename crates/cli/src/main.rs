@@ -106,6 +106,38 @@ enum Commands {
         #[arg(short, long)]
         force: bool,
     },
+
+    /// Manage end-to-end encryption
+    E2ee {
+        #[command(subcommand)]
+        command: E2eeCommands,
+    },
+}
+
+#[derive(Subcommand)]
+enum E2eeCommands {
+    /// Enable encryption with a master password
+    Enable {
+        /// Master password (not recommended - will prompt if not provided)
+        #[arg(short, long)]
+        password: Option<String>,
+    },
+
+    /// Disable encryption
+    Disable {
+        /// Force disable without confirmation
+        #[arg(short, long)]
+        force: bool,
+    },
+
+    /// Show encryption status
+    Status,
+
+    /// Decrypt an encrypted string
+    Decrypt {
+        /// Encrypted string (JED format)
+        encrypted: String,
+    },
 }
 
 #[tokio::main]
@@ -416,6 +448,169 @@ async fn main() -> Result<()> {
             storage.delete_folder(&folder_id).await?;
             println!("Deleted folder: {}", folder);
             Ok(())
+        }
+
+        Commands::E2ee { command } => {
+            use neojoplin_e2ee::{EncryptionContext, MasterKey};
+            use dialoguer::Confirm;
+            use dialoguer::Password;
+
+            let data_dir = neojoplin_core::Config::data_dir()?;
+            let keys_dir = data_dir.join("keys");
+
+            match command {
+                E2eeCommands::Enable { password } => {
+                    // Prompt for password if not provided
+                    let password = match password {
+                        Some(pwd) => pwd,
+                        None => {
+                            println!("Setting up master password for encryption");
+                            Password::new()
+                                .with_prompt("Enter master password")
+                                .interact()?
+                        }
+                    };
+
+                    // Confirm password if not provided via flag
+                    if password.is_empty() {
+                        return Err(anyhow::anyhow!("Password cannot be empty"));
+                    }
+
+                    // Verify password strength (basic check)
+                    if password.len() < 8 {
+                        return Err(anyhow::anyhow!("Password must be at least 8 characters"));
+                    }
+
+                    // Create master key
+                    let master_key = MasterKey::new();
+                    let key_id = master_key.id.clone();
+
+                    // Encrypt master key with password
+                    let encrypted_master_key = master_key.encrypt_with_password(&password)?;
+
+                    // Save to file
+                    tokio::fs::create_dir_all(&keys_dir).await?;
+                    let key_path = keys_dir.join(format!("{}.json", key_id));
+                    tokio::fs::write(&key_path, encrypted_master_key).await?;
+
+                    // Save active key ID to config
+                    let config_path = data_dir.join("encryption.json");
+                    let config = serde_json::json!({
+                        "enabled": true,
+                        "active_master_key_id": key_id
+                    });
+                    tokio::fs::write(&config_path, config.to_string()).await?;
+
+                    println!("✓ Encryption enabled successfully");
+                    println!("✓ Master key generated and encrypted");
+                    println!("✓ Master key ID: {}", key_id);
+                    println!();
+                    println!("Important: Store your master password in a secure location.");
+                    println!("If you lose it, you will not be able to decrypt your notes.");
+
+                    Ok(())
+                }
+
+                E2eeCommands::Disable { force } => {
+                    let config_path = data_dir.join("encryption.json");
+
+                    if !config_path.exists() {
+                        println!("Encryption is not enabled");
+                        return Ok(());
+                    }
+
+                    if !force {
+                        let confirmed = Confirm::new()
+                            .with_prompt("Are you sure you want to disable encryption? This will not decrypt your existing notes.")
+                            .default(false)
+                            .interact()?;
+
+                        if !confirmed {
+                            println!("Operation cancelled");
+                            return Ok(());
+                        }
+                    }
+
+                    // Remove encryption config
+                    tokio::fs::remove_file(&config_path).await.ok();
+
+                    println!("✓ Encryption disabled");
+                    println!("Note: Existing encrypted notes remain encrypted");
+
+                    Ok(())
+                }
+
+                E2eeCommands::Status => {
+                    let config_path = data_dir.join("encryption.json");
+
+                    if config_path.exists() {
+                        let config_content = tokio::fs::read_to_string(&config_path).await?;
+                        let config: serde_json::Value = serde_json::from_str(&config_content)?;
+
+                        let enabled = config["enabled"].as_bool().unwrap_or(false);
+                        let active_key = config["active_master_key_id"].as_str().unwrap_or("none");
+
+                        println!("Encryption: {}", if enabled { "Enabled" } else { "Disabled" });
+                        println!("Active master key: {}", active_key);
+
+                        // List available keys
+                        if keys_dir.exists() {
+                            let mut entries = tokio::fs::read_dir(&keys_dir).await?;
+                            let mut key_count = 0;
+                            while let Some(entry) = entries.next_entry().await? {
+                                if entry.path().extension().map_or(false, |e| e == "json") {
+                                    key_count += 1;
+                                }
+                            }
+                            println!("Available master keys: {}", key_count);
+                        }
+                    } else {
+                        println!("Encryption: Disabled");
+                        println!("No master keys configured");
+                    }
+
+                    Ok(())
+                }
+
+                E2eeCommands::Decrypt { encrypted } => {
+                    use neojoplin_e2ee::jed_format::JedFormat;
+
+                    // Check if it's JED format
+                    if !JedFormat::is_jed_format(&encrypted) {
+                        return Err(anyhow::anyhow!("Input is not in JED format"));
+                    }
+
+                    // Extract key ID
+                    let key_id = JedFormat::extract_key_id(&encrypted)?;
+
+                    // Load master key
+                    let key_path = keys_dir.join(format!("{}.json", key_id));
+                    if !key_path.exists() {
+                        return Err(anyhow::anyhow!("Master key not found: {}", key_id));
+                    }
+
+                    let encrypted_key = tokio::fs::read_to_string(&key_path).await?;
+
+                    // Prompt for password
+                    let password = Password::new()
+                        .with_prompt("Enter master password")
+                        .interact()?;
+
+                    // Decrypt master key
+                    let master_key = neojoplin_e2ee::MasterKey::decrypt_from_password(&encrypted_key, &password)?;
+                    let key_data = master_key.data.clone();
+
+                    // Create encryption context
+                    let mut context = EncryptionContext::new();
+                    context.load_master_key(key_id, key_data.clone());
+
+                    // Decrypt the data
+                    let decrypted = neojoplin_e2ee::JedDecoder::decode(&encrypted, &key_data)?;
+
+                    println!("{}", decrypted);
+                    Ok(())
+                }
+            }
         }
     }
 }

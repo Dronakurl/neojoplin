@@ -16,12 +16,15 @@ neojoplin-core = { path = "../core" }
 neojoplin-storage = { path = "../storage" }
 neojoplin-sync = { path = "../sync" }
 neojoplin-tui = { path = "../tui" }
+neojoplin-e2ee = { path = "../e2ee" }
 tokio = { workspace = true }
 clap = { version = "4.5", features = ["derive"] }
 anyhow = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = "0.3"
 uuid = { workspace = true }
+dialoguer = "0.11"
+serde_json = { workspace = true }
 
 [dev-dependencies]
 tokio-test = "0.4"
