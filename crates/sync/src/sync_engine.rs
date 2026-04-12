@@ -74,6 +74,7 @@ impl SyncEngine {
 
     /// Ensure remote directory exists
     async fn ensure_remote_directory(&self) -> Result<()> {
+        // Create root directory if it doesn't exist
         if let Err(_) = self.webdav.exists(&self.context.remote_path).await {
             self.webdav.mkcol(&self.context.remote_path).await
                 .map_err(|e| SyncError::Server(format!("Failed to create remote directory: {}", e)))?;
@@ -81,6 +82,20 @@ impl SyncEngine {
                 message: format!("Created remote directory: {}", self.context.remote_path)
             });
         }
+
+        // Create required Joplin subdirectories
+        let subdirs = ["folders", "items", "resources", "tags", "note_tags"];
+        for subdir in &subdirs {
+            let dir_path = format!("{}{}", self.context.remote_path, subdir);
+            if let Err(_) = self.webdav.exists(&dir_path).await {
+                if let Err(e) = self.webdav.mkcol(&dir_path).await {
+                    let _ = self.event_tx.send(SyncEvent::Warning {
+                        message: format!("Failed to create subdirectory {}: {}", dir_path, e)
+                    });
+                }
+            }
+        }
+
         Ok(())
     }
 
