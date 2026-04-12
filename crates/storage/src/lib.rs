@@ -295,13 +295,11 @@ impl SqliteStorage {
         .await
         .map_err(|e| DatabaseError::MigrationFailed(format!("Failed to create deleted_items table: {}", e)))?;
 
-        // Create full-text search table
+        // Create full-text search table (standalone, not external content)
         sqlx::query(
             r#"
             CREATE VIRTUAL TABLE IF NOT EXISTS notes_fts USING fts5(
-                id, title, body,
-                content='notes',
-                content_rowid='rowid'
+                id UNINDEXED, title, body
             )
             "#
         )
