@@ -63,6 +63,20 @@ These files **must** be consulted when implementing sync or database features:
 **Encryption Format:**
 - `/home/konrad/gallery/kjoplin/docs/E2EE.md` - JED format specification for E2EE
 
+**Joplin Reference Implementation:**
+- **Location:** `/home/konrad/gallery/kjoplin/joplin/` - Contains the complete Joplin application source code
+- **CLI Tool:** The `joplin` command-line application is already installed on this system
+- **Compatibility Goal:** NeoJoplin is designed to be 100% compatible with Joplin, allowing both applications to use the same database simultaneously
+- **Testing:** Use the Joplin CLI to test compatibility after implementing sync features
+- **E2EE Syncing:** Both applications should be able to sync with the same WebDAV target using end-to-end encryption
+
+**TUI Emoji Display:**
+- **Folder Icons:** The Joplin database stores emoji configurations for each notebook in the `folders.icon` column
+- **Format:** JSON string like `{"emoji":"📝"}` 
+- **TUI Implementation:** NeoJoplin TUI extracts and displays these emojis in the notebooks panel
+- **Fallback:** Uses default "📁" emoji if no icon is configured or JSON parsing fails
+- **Location:** `crates/tui/src/ui.rs::extract_folder_emoji()` handles emoji extraction
+
 ### Data Model Constraints
 
 **Important**: The Joplin database uses `is_todo` (0/1 integer) to distinguish notes from todos, **not** a `type` field. The TypeScript reference uses `type_` at the application layer, but this is **not in the database**.

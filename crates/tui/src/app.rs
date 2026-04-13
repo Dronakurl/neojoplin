@@ -134,6 +134,8 @@ impl App {
                     ui::render_quit_confirmation(f);
                 } else if self.state.show_settings {
                     ui::render_settings(f, &self.state);
+                } else if self.state.show_rename_prompt {
+                    ui::render_rename_prompt(f, &self.state);
                 } else {
                     ui::render_ui(f, &self.state);
                 }
@@ -165,6 +167,29 @@ impl App {
                 return Ok(false);
             }
             false => {}
+        }
+
+        // Handle rename prompt
+        if self.state.show_rename_prompt {
+            match key.code {
+                KeyCode::Char(c) => {
+                    self.state.add_rename_char(c);
+                }
+                KeyCode::Backspace => {
+                    self.state.remove_rename_char();
+                }
+                KeyCode::Enter => {
+                    if !self.state.rename_input.is_empty() {
+                        self.rename_item().await?;
+                    }
+                    self.state.hide_rename_prompt();
+                }
+                KeyCode::Esc => {
+                    self.state.hide_rename_prompt();
+                }
+                _ => {}
+            }
+            return Ok(false);
         }
 
         // Handle help popup
@@ -263,6 +288,18 @@ impl App {
                 self.delete_selected().await?;
             }
 
+            // Rename
+            KeyCode::Char('r') => {
+                if self.state.focus == FocusPanel::Notes {
+                    if let Some(note) = self.state.selected_note() {
+                        self.state.rename_input = note.title.clone();
+                        self.state.show_rename_prompt();
+                    }
+                } else if self.state.focus == FocusPanel::Notebooks {
+                    self.state.set_status("Use 'N' to create new folder instead");
+                }
+            }
+
             _ => {}
         }
 
@@ -342,19 +379,37 @@ impl App {
         if updated_body != note.body {
             let mut updated_note = note.clone();
             updated_note.body = updated_body.clone();
+
+            // Extract title from first line (max 100 chars)
+            let new_title = updated_note.body
+                .lines()
+                .next()
+                .unwrap_or("Untitled")
+                .trim()
+                .chars()
+                .take(100)
+                .collect::<String>();
+
+            if !new_title.is_empty() {
+                updated_note.title = new_title;
+            }
+
             updated_note.updated_time = now_ms();
 
             self.storage.update_note(&updated_note).await?;
 
-            // Update in-memory state
+            // Update in-memory state to reflect changes immediately
             if let Some(idx) = self.state.selected_note {
                 if idx < self.state.notes.len() {
-                    self.state.notes[idx].body = updated_body.clone();
+                    self.state.notes[idx] = updated_note.clone();
                 }
             }
+
+            // Reload content and clear it to force refresh
+            self.state.current_note_content.clear();
             self.state.load_note_content();
 
-            self.state.set_status("Note updated successfully");
+            self.state.set_status(&format!("Updated: {}", updated_note.title));
         } else {
             self.state.set_status("No changes made to note");
         }
@@ -442,8 +497,14 @@ impl App {
         let folders = self.storage.list_folders().await?;
         self.state.set_folders(folders);
 
-        // Reload notes for current folder
-        self.reload_notes().await?;
+        // Select the newly created folder (it should be the last one)
+        if !self.state.folders.is_empty() {
+            self.state.selected_folder = Some(self.state.folders.len() - 1);
+            // Clear notes since new folder is empty
+            self.state.notes.clear();
+            self.state.selected_note = None;
+            self.state.current_note_content.clear();
+        }
 
         self.state.set_status(&format!("Created folder: {}", title));
         Ok(())
@@ -486,6 +547,51 @@ impl App {
         if let Some(folder) = self.state.selected_folder() {
             let notes = self.storage.list_notes(Some(&folder.id)).await?;
             self.state.set_notes(notes);
+        }
+        Ok(())
+    }
+
+    /// Rename selected item (note or folder)
+    async fn rename_item(&mut self) -> Result<()> {
+        let new_name = self.state.rename_input.clone();
+
+        match self.state.focus {
+            FocusPanel::Notes => {
+                if let Some(note) = self.state.selected_note() {
+                    let mut updated_note = note.clone();
+                    updated_note.title = new_name.clone();
+                    updated_note.updated_time = now_ms();
+
+                    self.storage.update_note(&updated_note).await?;
+
+                    // Update in-memory state
+                    if let Some(idx) = self.state.selected_note {
+                        if idx < self.state.notes.len() {
+                            self.state.notes[idx] = updated_note;
+                        }
+                    }
+
+                    self.state.set_status(&format!("Renamed note to: {}", new_name));
+                }
+            }
+            FocusPanel::Notebooks => {
+                if let Some(folder) = self.state.selected_folder() {
+                    let mut updated_folder = folder.clone();
+                    updated_folder.title = new_name.clone();
+                    updated_folder.updated_time = now_ms();
+
+                    self.storage.update_folder(&updated_folder).await?;
+
+                    // Reload folders to update list
+                    let folders = self.storage.list_folders().await?;
+                    self.state.set_folders(folders);
+
+                    self.state.set_status(&format!("Renamed folder to: {}", new_name));
+                }
+            }
+            FocusPanel::Content => {
+                self.state.set_status("Cannot rename content panel");
+            }
         }
         Ok(())
     }

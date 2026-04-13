@@ -81,7 +81,10 @@ fn render_notebooks_panel(f: &mut Frame, state: &AppState, area: Rect) {
                     Style::default()
                 };
 
-                ListItem::new(format!("📁 {}", folder.title)).style(style)
+                // Extract emoji from folder icon, or use default
+                let emoji = extract_folder_emoji(&folder.icon).unwrap_or_else(|| "📁 ".to_string());
+
+                ListItem::new(format!("{}{}", emoji, folder.title)).style(style)
             })
             .collect()
     };
@@ -673,6 +676,76 @@ pub fn render_quit_confirmation(f: &mut Frame) {
         .alignment(Alignment::Center);
 
     f.render_widget(paragraph, area);
+}
+
+/// Render rename prompt
+pub fn render_rename_prompt(f: &mut Frame, state: &AppState) {
+    let area = centered_rect(60, 20, f.area());
+
+    let item_name = if state.focus == FocusPanel::Notes {
+        state.selected_note().map(|n| n.title.as_str()).unwrap_or("note")
+    } else {
+        state.selected_folder().map(|f| f.title.as_str()).unwrap_or("folder")
+    };
+
+    let text = Text::from(vec![
+        Line::from("Rename").style(Style::default().bold()),
+        Line::from(format!("Renaming: {}", item_name)).style(Style::default().dim()),
+        Line::from(""),
+        Line::from(format!("New name: {}", state.rename_input)).style(Style::default().bold()),
+        Line::from(""),
+        Line::from(vec![
+            Span::styled("[", Style::default().dim()),
+            Span::styled("Enter", Style::default().bold()),
+            Span::styled("]", Style::default().dim()),
+            Span::raw(" to confirm "),
+        ]),
+        Line::from(vec![
+            Span::styled("[", Style::default().dim()),
+            Span::styled("Esc", Style::default().bold()),
+            Span::styled("]", Style::default().dim()),
+            Span::raw(" to cancel "),
+        ]),
+        Line::from(vec![
+            Span::styled("[", Style::default().dim()),
+            Span::styled("Backspace", Style::default().bold()),
+            Span::styled("]", Style::default().dim()),
+            Span::raw(" to delete character "),
+        ]),
+    ]);
+
+    let paragraph = Paragraph::new(text)
+        .block(
+            Block::default()
+                .title("Rename Item")
+                .borders(Borders::ALL)
+                .border_style(Style::default().bold()),
+        )
+        .wrap(Wrap { trim: true })
+        .alignment(Alignment::Left);
+
+    f.render_widget(paragraph, area);
+}
+
+/// Extract emoji from folder icon JSON field
+fn extract_folder_emoji(icon: &str) -> Option<String> {
+    if icon.is_empty() {
+        return None;
+    }
+
+    // Try to parse as JSON: {"emoji":"📝"}
+    if let Ok(json) = serde_json::from_str::<serde_json::Value>(icon) {
+        if let Some(emoji) = json.get("emoji").and_then(|e| e.as_str()) {
+            return Some(format!("{} ", emoji));
+        }
+    }
+
+    // If JSON parsing fails, try to use the string directly if it looks like an emoji
+    if icon.chars().count() <= 4 && icon.chars().all(|c| c.is_alphanumeric() || c == ':' || c == ' ') {
+        return None; // Don't show non-emoji strings
+    }
+
+    None
 }
 
 /// Helper to create centered rectangle

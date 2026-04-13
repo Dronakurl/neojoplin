@@ -36,6 +36,10 @@ pub struct AppState {
     pub settings_modified: bool,
     /// Settings state
     pub settings: Settings,
+    /// Whether rename mode is active
+    pub show_rename_prompt: bool,
+    /// Current rename input
+    pub rename_input: String,
 }
 
 impl Default for AppState {
@@ -52,6 +56,8 @@ impl Default for AppState {
             status_message: String::new(),
             settings_modified: false,
             settings: Settings::new(),
+            show_rename_prompt: false,
+            rename_input: String::new(),
         }
     }
 }
@@ -176,6 +182,28 @@ impl AppState {
     /// Toggle settings
     pub fn toggle_settings(&mut self) {
         self.show_settings = !self.show_settings;
+    }
+
+    /// Show rename prompt
+    pub fn show_rename_prompt(&mut self) {
+        self.show_rename_prompt = true;
+        self.rename_input.clear();
+    }
+
+    /// Hide rename prompt
+    pub fn hide_rename_prompt(&mut self) {
+        self.show_rename_prompt = false;
+        self.rename_input.clear();
+    }
+
+    /// Add character to rename input
+    pub fn add_rename_char(&mut self, c: char) {
+        self.rename_input.push(c);
+    }
+
+    /// Remove last character from rename input
+    pub fn remove_rename_char(&mut self) {
+        self.rename_input.pop();
     }
 }
 
