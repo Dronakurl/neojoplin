@@ -2,6 +2,7 @@
 
 use neojoplin_core::{Note, Folder};
 use crate::settings::Settings;
+use crate::theme::Theme;
 
 /// Which panel has focus
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -40,6 +41,8 @@ pub struct AppState {
     pub show_rename_prompt: bool,
     /// Current rename input
     pub rename_input: String,
+    /// Color theme
+    pub theme: Theme,
 }
 
 impl Default for AppState {
@@ -58,6 +61,7 @@ impl Default for AppState {
             settings: Settings::new(),
             show_rename_prompt: false,
             rename_input: String::new(),
+            theme: crate::theme::default_theme(),
         }
     }
 }

@@ -2,7 +2,7 @@
 
 use ratatui::{
     layout::{Alignment, Constraint, Direction, Layout, Rect},
-    style::{Modifier, Style, Stylize},
+    style::{Style, Stylize},
     text::{Line, Span, Text},
     widgets::{Block, Borders, List, ListItem, Paragraph, Wrap},
     Frame,
@@ -62,11 +62,12 @@ fn render_main_content(f: &mut Frame, state: &AppState, area: Rect) {
 /// Render notebooks (folders) panel
 fn render_notebooks_panel(f: &mut Frame, state: &AppState, area: Rect) {
     let title = "Notebooks";
+    let theme = &state.theme;
 
     let items: Vec<ListItem> = if state.folders.is_empty() {
         vec![
-            ListItem::new("No folders yet").style(Style::default().dim()),
-            ListItem::new("Press N to create one").style(Style::default().dim()),
+            ListItem::new("No folders yet").style(theme.dim()),
+            ListItem::new("Press N to create one").style(theme.dim()),
         ]
     } else {
         state
@@ -76,9 +77,9 @@ fn render_notebooks_panel(f: &mut Frame, state: &AppState, area: Rect) {
             .map(|(i, folder)| {
                 let is_selected = state.selected_folder == Some(i);
                 let style = if is_selected {
-                    Style::default().bold()
+                    theme.selection()
                 } else {
-                    Style::default()
+                    theme.text()
                 };
 
                 // Extract emoji from folder icon, or use default
@@ -95,12 +96,12 @@ fn render_notebooks_panel(f: &mut Frame, state: &AppState, area: Rect) {
                 .title(title)
                 .borders(Borders::ALL)
                 .border_style(if state.focus == FocusPanel::Notebooks {
-                    Style::default().bold()
+                    theme.border_focused()
                 } else {
-                    Style::default()
+                    theme.border_normal()
                 }),
         )
-        .highlight_style(Style::default().add_modifier(Modifier::REVERSED).bold());
+        .highlight_style(theme.selection());
 
     f.render_widget(list, area);
 }
@@ -112,17 +113,18 @@ fn render_notes_panel(f: &mut Frame, state: &AppState, area: Rect) {
     } else {
         "Notes".to_string()
     };
+    let theme = &state.theme;
 
     let items: Vec<ListItem> = if state.notes.is_empty() {
         if state.selected_folder().is_some() {
             vec![
-                ListItem::new("No notes in this folder").style(Style::default().dim()),
-                ListItem::new("Press n to create one").style(Style::default().dim()),
+                ListItem::new("No notes in this folder").style(theme.dim()),
+                ListItem::new("Press n to create one").style(theme.dim()),
             ]
         } else {
             vec![
-                ListItem::new("No folder selected").style(Style::default().dim()),
-                ListItem::new("Select a folder first").style(Style::default().dim()),
+                ListItem::new("No folder selected").style(theme.dim()),
+                ListItem::new("Select a folder first").style(theme.dim()),
             ]
         }
     } else {
@@ -133,9 +135,9 @@ fn render_notes_panel(f: &mut Frame, state: &AppState, area: Rect) {
             .map(|(i, note)| {
                 let is_selected = state.selected_note == Some(i);
                 let style = if is_selected {
-                    Style::default().bold()
+                    theme.selection()
                 } else {
-                    Style::default()
+                    theme.text()
                 };
 
                 ListItem::new(format!("📝 {}", note.title)).style(style)
@@ -149,12 +151,12 @@ fn render_notes_panel(f: &mut Frame, state: &AppState, area: Rect) {
                 .title(title)
                 .borders(Borders::ALL)
                 .border_style(if state.focus == FocusPanel::Notes {
-                    Style::default().bold()
+                    theme.border_focused()
                 } else {
-                    Style::default()
+                    theme.border_normal()
                 }),
         )
-        .highlight_style(Style::default().add_modifier(Modifier::REVERSED).bold());
+        .highlight_style(theme.selection());
 
     f.render_widget(list, area);
 }
@@ -166,30 +168,31 @@ fn render_content_panel(f: &mut Frame, state: &AppState, area: Rect) {
     } else {
         "Content".to_string()
     };
+    let theme = &state.theme;
 
     let content = if let Some(note) = state.selected_note() {
         if note.body.is_empty() {
             Text::from(vec![
-                Line::from("This note is empty").style(Style::default().dim()),
+                Line::from("This note is empty").style(theme.dim()),
                 Line::from(""),
-                Line::from("Press Enter to edit this note").style(Style::default().bold()),
+                Line::from("Press Enter to edit this note").style(theme.primary()),
             ])
         } else {
             Text::from(note.body.clone())
         }
     } else {
         Text::from(vec![
-            Line::from("No note selected").style(Style::default().dim()),
+            Line::from("No note selected").style(theme.dim()),
             Line::from(""),
-            Line::from("Select a note to view its content").style(Style::default().dim()),
+            Line::from("Select a note to view its content").style(theme.dim()),
             Line::from(""),
-            Line::from("Keybindings:").style(Style::default().bold()),
-            Line::from("  Tab/Shift-Tab - Switch panels"),
-            Line::from("  hjkl/Arrows     - Move selection"),
-            Line::from("  Enter           - Edit selected note"),
-            Line::from("  n               - New note"),
-            Line::from("  N               - New folder"),
-            Line::from("  d               - Delete selected"),
+            Line::from("Keybindings:").style(theme.primary()),
+            Line::from("  Tab/Shift-Tab - Switch panels").style(theme.text()),
+            Line::from("  hjkl/Arrows     - Move selection").style(theme.text()),
+            Line::from("  Enter           - Edit selected note").style(theme.text()),
+            Line::from("  n               - New note").style(theme.text()),
+            Line::from("  N               - New folder").style(theme.text()),
+            Line::from("  d               - Delete selected").style(theme.text()),
         ])
     };
 
@@ -199,9 +202,9 @@ fn render_content_panel(f: &mut Frame, state: &AppState, area: Rect) {
                 .title(title)
                 .borders(Borders::ALL)
                 .border_style(if state.focus == FocusPanel::Content {
-                    Style::default().bold()
+                    theme.border_focused()
                 } else {
-                    Style::default()
+                    theme.border_normal()
                 }),
         )
         .wrap(Wrap { trim: false });
@@ -210,86 +213,89 @@ fn render_content_panel(f: &mut Frame, state: &AppState, area: Rect) {
 }
 
 /// Render keybinding ribbon (show available keybindings)
-fn render_keybinding_ribbon(f: &mut Frame, _state: &AppState, area: Rect) {
+fn render_keybinding_ribbon(f: &mut Frame, state: &AppState, area: Rect) {
     let use_two_lines = area.height > 1;
+    let theme = &state.theme;
 
-    let key_style = Style::default().bold();
+    let key_style = theme.accent();
 
     let help_text = if use_two_lines {
         vec![
             Line::from(vec![
                 Span::styled("q", key_style),
-                Span::raw(":quit "),
+                Span::raw(":quit ").style(theme.muted()),
                 Span::styled("?", key_style),
-                Span::raw(":help "),
+                Span::raw(":help ").style(theme.muted()),
                 Span::styled("Tab", key_style),
-                Span::raw(":panel "),
+                Span::raw(":panel ").style(theme.muted()),
                 Span::styled("hjkl", key_style),
-                Span::raw(":nav "),
+                Span::raw(":nav ").style(theme.muted()),
                 Span::styled("Ent", key_style),
-                Span::raw(":edit "),
+                Span::raw(":edit ").style(theme.muted()),
                 Span::styled("n", key_style),
-                Span::raw(":new "),
+                Span::raw(":new ").style(theme.muted()),
             ]),
             Line::from(vec![
                 Span::styled("N", key_style),
-                Span::raw(":folder "),
+                Span::raw(":folder ").style(theme.muted()),
                 Span::styled("d", key_style),
-                Span::raw(":del "),
+                Span::raw(":del ").style(theme.muted()),
                 Span::styled("s", key_style),
-                Span::raw(":sync "),
+                Span::raw(":sync ").style(theme.muted()),
                 Span::styled("S", key_style),
-                Span::raw(":settings "),
+                Span::raw(":settings ").style(theme.muted()),
             ]),
         ]
     } else {
         vec![Line::from(vec![
             Span::styled("q", key_style),
-            Span::raw(":quit "),
+            Span::raw(":quit ").style(theme.muted()),
             Span::styled("?", key_style),
-            Span::raw(":help "),
+            Span::raw(":help ").style(theme.muted()),
             Span::styled("Tab", key_style),
-            Span::raw(":panel "),
+            Span::raw(":panel ").style(theme.muted()),
             Span::styled("hjkl", key_style),
-            Span::raw(":nav "),
+            Span::raw(":nav ").style(theme.muted()),
             Span::styled("Ent", key_style),
-            Span::raw(":edit "),
+            Span::raw(":edit ").style(theme.muted()),
             Span::styled("n", key_style),
-            Span::raw(":new "),
+            Span::raw(":new ").style(theme.muted()),
             Span::styled("N", key_style),
-            Span::raw(":fldr "),
+            Span::raw(":fldr ").style(theme.muted()),
             Span::styled("d", key_style),
-            Span::raw(":del "),
+            Span::raw(":del ").style(theme.muted()),
             Span::styled("s", key_style),
-            Span::raw(":sync "),
+            Span::raw(":sync ").style(theme.muted()),
             Span::styled("S", key_style),
-            Span::raw(":set "),
+            Span::raw(":set ").style(theme.muted()),
         ])]
     };
 
     let paragraph = Paragraph::new(help_text)
         .alignment(Alignment::Left)
-        .block(Block::default().style(Style::default().dim()));
+        .block(Block::default().bg(theme.surface));
 
     f.render_widget(paragraph, area);
 }
 
 /// Render status line (show current status message)
 fn render_status_line(f: &mut Frame, state: &AppState, area: Rect) {
+    let theme = &state.theme;
+
     let status_text = if state.status_message.is_empty() {
         Line::from(vec![
-            Span::from("Ready").style(Style::default().dim()),
+            Span::from("Ready").style(theme.muted()),
         ])
     } else {
         Line::from(vec![
-            Span::from("→ ").style(Style::default().dim()),
-            Span::styled(&state.status_message, Style::default().bold()),
+            Span::from("→ ").style(theme.muted()),
+            Span::styled(&state.status_message, theme.primary()),
         ])
     };
 
     let paragraph = Paragraph::new(status_text)
         .alignment(Alignment::Left)
-        .block(Block::default().style(Style::default().dim()));
+        .block(Block::default().bg(theme.surface));
 
     f.render_widget(paragraph, area);
 }
@@ -297,6 +303,7 @@ fn render_status_line(f: &mut Frame, state: &AppState, area: Rect) {
 /// Render settings menu
 pub fn render_settings(f: &mut Frame, state: &AppState) {
     let area = centered_rect(70, 80, f.area());
+    let theme = &state.theme;
 
     let tabs = vec!["General", "Encryption", "About"];
     let current_tab_idx = match state.settings.current_tab {
@@ -323,7 +330,7 @@ pub fn render_settings(f: &mut Frame, state: &AppState) {
             Block::default()
                 .title(title)
                 .borders(Borders::ALL)
-                .border_style(Style::default().bold())
+                .border_style(theme.border_focused())
         )
         .wrap(Wrap { trim: false })
         .alignment(Alignment::Left);
@@ -340,34 +347,34 @@ pub fn render_settings(f: &mut Frame, state: &AppState) {
 
     let hint_text = Text::from(vec![
         Line::from(vec![
-            Span::styled("[", Style::default().dim()),
-            Span::styled("<", Style::default().bold()),
-            Span::styled("]", Style::default().dim()),
+            Span::styled("[", theme.muted()),
+            Span::styled("<", theme.accent()),
+            Span::styled("]", theme.muted()),
             Span::raw(" prev tab "),
-            Span::styled("[", Style::default().dim()),
-            Span::styled(">", Style::default().bold()),
-            Span::styled("]", Style::default().dim()),
+            Span::styled("[", theme.muted()),
+            Span::styled(">", theme.accent()),
+            Span::styled("]", theme.muted()),
             Span::raw(" next tab "),
-            Span::styled("[", Style::default().dim()),
-            Span::styled("q", Style::default().bold()),
-            Span::styled("]", Style::default().dim()),
+            Span::styled("[", theme.muted()),
+            Span::styled("q", theme.accent()),
+            Span::styled("]", theme.muted()),
             Span::raw(" close "),
         ]),
         Line::from(vec![
-            Span::styled("[", Style::default().dim()),
-            Span::styled("e", Style::default().bold()),
-            Span::styled("]", Style::default().dim()),
+            Span::styled("[", theme.muted()),
+            Span::styled("e", theme.accent()),
+            Span::styled("]", theme.muted()),
             Span::raw(" enable encryption "),
-            Span::styled("[", Style::default().dim()),
-            Span::styled("d", Style::default().bold()),
-            Span::styled("]", Style::default().dim()),
+            Span::styled("[", theme.muted()),
+            Span::styled("d", theme.accent()),
+            Span::styled("]", theme.muted()),
             Span::raw(" disable encryption "),
         ]),
     ]);
 
     let hint_paragraph = Paragraph::new(hint_text)
         .alignment(Alignment::Center)
-        .block(Block::default().style(Style::default().dim()));
+        .block(Block::default().bg(theme.surface));
 
     f.render_widget(hint_paragraph, hint_area);
 }
@@ -375,16 +382,17 @@ pub fn render_settings(f: &mut Frame, state: &AppState) {
 /// Render general settings (inline)
 fn render_general_settings_inline(state: &AppState) -> Vec<Line<'_>> {
     let enc = &state.settings.encryption;
+    let theme = &state.theme;
 
     let mut lines = vec![
-        Line::from("End-to-End Encryption").style(Style::default().bold()),
+        Line::from("End-to-End Encryption").style(theme.primary()),
         Line::from(""),
     ];
 
     // Status
     lines.push(Line::from(vec![
-        Span::raw("Status: "),
-        Span::styled(&enc.status_message, Style::default().bold()),
+        Span::raw("Status: ").style(theme.text()),
+        Span::styled(&enc.status_message, theme.primary()),
     ]));
 
     lines.push(Line::from(""));
@@ -392,33 +400,33 @@ fn render_general_settings_inline(state: &AppState) -> Vec<Line<'_>> {
     // Master key info
     if let Some(ref key_id) = enc.active_master_key_id {
         lines.push(Line::from(vec![
-            Span::raw("Active Key: "),
-            Span::styled(&key_id[..8], Style::default().bold()),
-            Span::raw("..."),
+            Span::raw("Active Key: ").style(theme.text()),
+            Span::styled(&key_id[..8], theme.accent()),
+            Span::raw("...").style(theme.text()),
         ]));
     }
 
-    lines.push(Line::from(format!("Available Keys: {}", enc.master_key_count)));
+    lines.push(Line::from(format!("Available Keys: {}", enc.master_key_count)).style(theme.text()));
     lines.push(Line::from(""));
 
     // Actions
     if !enc.enabled {
         lines.push(Line::from(vec![
-            Span::styled("[e]", Style::default().bold()),
-            Span::raw(" Enable encryption with master password"),
+            Span::styled("[e]", theme.accent()),
+            Span::raw(" Enable encryption with master password").style(theme.text()),
         ]));
     } else {
         lines.push(Line::from(vec![
-            Span::styled("[d]", Style::default().bold()),
-            Span::raw(" Disable encryption"),
+            Span::styled("[d]", theme.accent()),
+            Span::raw(" Disable encryption").style(theme.text()),
         ]));
     }
 
     // Password prompt
     if enc.show_new_key_prompt {
         lines.push(Line::from(""));
-        lines.push(Line::from("─────────────────────────────────").style(Style::default().bold()));
-        lines.push(Line::from("Setup Master Password").style(Style::default().bold()));
+        lines.push(Line::from("─────────────────────────────────").style(theme.primary()));
+        lines.push(Line::from("Setup Master Password").style(theme.primary()));
         lines.push(Line::from(""));
 
         if !enc.password_input.is_empty() || !enc.confirm_password_input.is_empty() {
@@ -426,24 +434,24 @@ fn render_general_settings_inline(state: &AppState) -> Vec<Line<'_>> {
             let masked_confirm = "•".repeat(enc.confirm_password_input.len());
 
             lines.push(Line::from(vec![
-                Span::raw("Password:      "),
-                Span::styled(masked_password, Style::default().bold()),
+                Span::raw("Password:      ").style(theme.text()),
+                Span::styled(masked_password, theme.primary()),
             ]));
 
             lines.push(Line::from(vec![
-                Span::raw("Confirm:       "),
-                Span::styled(masked_confirm, Style::default().bold()),
+                Span::raw("Confirm:       ").style(theme.text()),
+                Span::styled(masked_confirm, theme.primary()),
             ]));
         } else {
-            lines.push(Line::from("Type password (min 8 characters)"));
+            lines.push(Line::from("Type password (min 8 characters)").style(theme.muted()));
         }
 
         // Error message
         if let Some(ref error) = enc.password_error {
             lines.push(Line::from(""));
             lines.push(Line::from(vec![
-                Span::styled("⚠ ", Style::default().bold()),
-                Span::styled(error, Style::default().bold()),
+                Span::styled("⚠ ", theme.warning()),
+                Span::styled(error, theme.error()),
             ]));
         }
 
@@ -451,21 +459,21 @@ fn render_general_settings_inline(state: &AppState) -> Vec<Line<'_>> {
         if enc.password_success {
             lines.push(Line::from(""));
             lines.push(Line::from(vec![
-                Span::styled("✓ ", Style::default().bold()),
-                Span::styled("Encryption enabled successfully!", Style::default().bold()),
+                Span::styled("✓ ", theme.success()),
+                Span::styled("Encryption enabled successfully!", theme.success()),
             ]));
         }
 
         lines.push(Line::from(""));
         lines.push(Line::from(vec![
-            Span::styled("[", Style::default().dim()),
-            Span::styled("Enter", Style::default().bold()),
-            Span::styled("]", Style::default().dim()),
-            Span::raw(" to confirm "),
-            Span::styled("[", Style::default().dim()),
-            Span::styled("Esc", Style::default().bold()),
-            Span::styled("]", Style::default().dim()),
-            Span::raw(" to cancel"),
+            Span::styled("[", theme.muted()),
+            Span::styled("Enter", theme.accent()),
+            Span::styled("]", theme.muted()),
+            Span::raw(" to confirm ").style(theme.text()),
+            Span::styled("[", theme.muted()),
+            Span::styled("Esc", theme.accent()),
+            Span::styled("]", theme.muted()),
+            Span::raw(" to cancel").style(theme.text()),
         ]));
     }
 
@@ -575,11 +583,11 @@ fn render_encryption_settings_inline(state: &AppState) -> Vec<Line<'_>> {
 /// Render about settings (inline)
 fn render_about_settings_inline() -> Vec<Line<'static>> {
     vec![
-        Line::from("About NeoJoplin").style(Style::default().bold()),
+        Line::from("About NeoJoplin").bold(),
         Line::from(""),
         Line::from("Version: 0.1.0-alpha"),
         Line::from(""),
-        Line::from("A fast, memory-safe Joplin-compatible").style(Style::default().bold()),
+        Line::from("A fast, memory-safe Joplin-compatible").bold(),
         Line::from("terminal note-taking client in Rust."),
         Line::from(""),
         Line::from("Features:"),
@@ -603,11 +611,11 @@ pub fn render_help(f: &mut Frame, scroll: u16) {
     let area = centered_rect(80, 80, f.area());
 
     let text = Text::from(vec![
-        Line::from("NEOJOPLIN").style(Style::default().bold()),
+        Line::from("NEOJOPLIN").bold(),
         Line::from(""),
-        Line::from("Joplin-compatible terminal note-taking client").style(Style::default().dim()),
+        Line::from("Joplin-compatible terminal note-taking client").dim(),
         Line::from(""),
-        Line::from("Keybindings").style(Style::default().bold()),
+        Line::from("Keybindings").bold(),
         Line::from(""),
         Line::from("Navigation:"),
         Line::from("  Tab/Shift-Tab  Switch panels"),
@@ -644,7 +652,7 @@ pub fn render_quit_confirmation(f: &mut Frame) {
     let area = centered_rect(50, 25, f.area());
 
     let text = Text::from(vec![
-        Line::from("Quit NeoJoplin?").style(Style::default().bold()),
+        Line::from("Quit NeoJoplin?").bold(),
         Line::from(""),
         Line::from(""),
         Line::from(vec![
@@ -681,6 +689,7 @@ pub fn render_quit_confirmation(f: &mut Frame) {
 /// Render rename prompt
 pub fn render_rename_prompt(f: &mut Frame, state: &AppState) {
     let area = centered_rect(60, 20, f.area());
+    let theme = &state.theme;
 
     let item_name = if state.focus == FocusPanel::Notes {
         state.selected_note().map(|n| n.title.as_str()).unwrap_or("note")
@@ -689,28 +698,28 @@ pub fn render_rename_prompt(f: &mut Frame, state: &AppState) {
     };
 
     let text = Text::from(vec![
-        Line::from("Rename").style(Style::default().bold()),
-        Line::from(format!("Renaming: {}", item_name)).style(Style::default().dim()),
+        Line::from("Rename").style(theme.primary()),
+        Line::from(format!("Renaming: {}", item_name)).style(theme.muted()),
         Line::from(""),
-        Line::from(format!("New name: {}", state.rename_input)).style(Style::default().bold()),
+        Line::from(format!("New name: {}", state.rename_input)).style(theme.primary()),
         Line::from(""),
         Line::from(vec![
-            Span::styled("[", Style::default().dim()),
-            Span::styled("Enter", Style::default().bold()),
-            Span::styled("]", Style::default().dim()),
-            Span::raw(" to confirm "),
+            Span::styled("[", theme.muted()),
+            Span::styled("Enter", theme.accent()),
+            Span::styled("]", theme.muted()),
+            Span::raw(" to confirm ").style(theme.text()),
         ]),
         Line::from(vec![
-            Span::styled("[", Style::default().dim()),
-            Span::styled("Esc", Style::default().bold()),
-            Span::styled("]", Style::default().dim()),
-            Span::raw(" to cancel "),
+            Span::styled("[", theme.muted()),
+            Span::styled("Esc", theme.accent()),
+            Span::styled("]", theme.muted()),
+            Span::raw(" to cancel ").style(theme.text()),
         ]),
         Line::from(vec![
-            Span::styled("[", Style::default().dim()),
-            Span::styled("Backspace", Style::default().bold()),
-            Span::styled("]", Style::default().dim()),
-            Span::raw(" to delete character "),
+            Span::styled("[", theme.muted()),
+            Span::styled("Backspace", theme.accent()),
+            Span::styled("]", theme.muted()),
+            Span::raw(" to delete character ").style(theme.text()),
         ]),
     ]);
 
@@ -719,7 +728,7 @@ pub fn render_rename_prompt(f: &mut Frame, state: &AppState) {
             Block::default()
                 .title("Rename Item")
                 .borders(Borders::ALL)
-                .border_style(Style::default().bold()),
+                .border_style(theme.border_focused()),
         )
         .wrap(Wrap { trim: true })
         .alignment(Alignment::Left);
