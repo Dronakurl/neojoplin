@@ -39,7 +39,7 @@ impl WebDavClient for ReqwestWebDavClient {
         }
     }
 
-    async fn put(&self, path: &str, body: &[u8], size: u64) -> std::result::Result<(), WebDavError> {
+    async fn put(&self, path: &str, body: &[u8], _size: u64) -> std::result::Result<(), WebDavError> {
         match self.put_impl(path, body).await {
             Ok(_) => Ok(()),
             Err(e) => Err(WebDavError::RequestFailed(format!("{:?}", e))),

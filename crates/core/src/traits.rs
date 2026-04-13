@@ -173,6 +173,7 @@ pub enum SyncEvent {
 }
 
 /// Lock handle for sync operations
+#[allow(async_fn_in_trait)]
 pub trait LockHandle: Send + Sync {
     /// Refresh the lock
     async fn refresh(&self) -> Result<(), WebDavError>;

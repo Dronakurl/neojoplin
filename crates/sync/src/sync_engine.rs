@@ -5,8 +5,7 @@ use std::sync::Arc;
 use tokio::sync::mpsc;
 use futures::io::AsyncReadExt;
 use serde_json;
-use crate::sync_info::{SyncInfo, ClientIdManager};
-use anyhow::Context;
+use crate::sync_info::SyncInfo;
 
 /// Sync context to track sync state
 #[derive(Debug, Clone)]
@@ -346,7 +345,7 @@ impl SyncEngine {
 
     /// Save sync info to remote
     async fn save_sync_info(&mut self) -> Result<()> {
-        if let Some(ref sync_info) = self.sync_info {
+        if let Some(ref _sync_info) = self.sync_info {
             // Update delta context timestamp
             let new_timestamp = now_ms();
             let updated_info = &mut self.sync_info.as_mut().unwrap();
@@ -806,14 +805,13 @@ impl SyncEngine {
             return "0".to_string();
         }
 
-        use chrono::{DateTime, NaiveDateTime, Utc};
+        use chrono::DateTime;
         let secs = ms / 1000;
         let millis = (ms % 1000) as u32;
-        let dt = NaiveDateTime::from_timestamp_opt(secs, millis * 1_000_000);
+        let dt = DateTime::from_timestamp(secs, millis * 1_000_000);
 
         match dt {
-            Some(naive_dt) => {
-                let datetime = DateTime::<Utc>::from_utc(naive_dt, Utc);
+            Some(datetime) => {
                 datetime.format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string()
             },
             None => "0".to_string()
@@ -826,7 +824,7 @@ impl SyncEngine {
             return Ok(0);
         }
 
-        use chrono::{DateTime, Utc};
+        use chrono::DateTime;
         let dt = DateTime::parse_from_rfc3339(iso)
             .map_err(|e| SyncError::Serialization(format!("Failed to parse timestamp {}: {}", iso, e)))?;
 
@@ -850,7 +848,7 @@ mod tests {
         // This test would require mock data
         // For now, just verify the method exists
         let remote_items = vec!["item1".to_string(), "item2".to_string()];
-        let local_items: Vec<neojoplin_core::SyncItem> = vec![];
+        let _local_items: Vec<neojoplin_core::SyncItem> = vec![];
 
         // Can't call self.find_delta_items in unit test without instance
         // This is just a placeholder to show the concept

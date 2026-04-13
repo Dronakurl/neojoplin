@@ -12,10 +12,8 @@ use std::time::Duration;
 
 use neojoplin_core::{Storage, Note, Folder, now_ms};
 use neojoplin_storage::SqliteStorage;
-use neojoplin_sync::{SyncEngine, ReqwestWebDavClient, WebDavConfig};
 use std::path::PathBuf;
 
-use crate::config::Config;
 use crate::state::{AppState, FocusPanel};
 use crate::ui;
 
@@ -23,7 +21,6 @@ use crate::ui;
 pub struct App {
     state: AppState,
     storage: Arc<SqliteStorage>,
-    config: Config,
     show_help: bool,
     help_scroll: u16,
 }
@@ -32,7 +29,6 @@ impl App {
     /// Create new application
     pub async fn new() -> Result<Self> {
         let storage = Arc::new(SqliteStorage::new().await?);
-        let config = Config::load()?;
         let data_dir = neojoplin_core::Config::data_dir()?;
 
         let mut state = AppState::new();
@@ -92,7 +88,6 @@ impl App {
         Ok(Self {
             state,
             storage,
-            config,
             show_help: false,
             help_scroll: 0,
         })
@@ -322,11 +317,26 @@ impl App {
 
         self.state.set_status(&format!("Opening editor for: {}", note.title));
 
-        let editor = Editor::new()
-            .map_err(|e| anyhow::anyhow!("Failed to initialize editor: {}", e))?;
+        // Exit raw mode and alternate screen so editor can work properly
+        disable_raw_mode().context("Failed to disable raw mode")?;
+        let mut stdout = std::io::stdout();
+        execute!(stdout, LeaveAlternateScreen)
+            .context("Failed to leave alternate screen")?;
 
-        let updated_body = editor.edit(&note.body, &note.title).await
-            .map_err(|e| anyhow::anyhow!("Editor failed: {}", e))?;
+        let editor_result = async {
+            let editor = Editor::new()
+                .map_err(|e| anyhow::anyhow!("Failed to initialize editor: {}", e))?;
+
+            editor.edit(&note.body, &note.title).await
+                .map_err(|e| anyhow::anyhow!("Editor failed: {}", e))
+        }.await;
+
+        // Restore terminal for TUI
+        execute!(stdout, EnterAlternateScreen, EnableMouseCapture)
+            .context("Failed to re-enter alternate screen")?;
+        enable_raw_mode().context("Failed to re-enable raw mode")?;
+
+        let updated_body = editor_result?;
 
         // Update note if content changed
         if updated_body != note.body {
@@ -339,7 +349,7 @@ impl App {
             // Update in-memory state
             if let Some(idx) = self.state.selected_note {
                 if idx < self.state.notes.len() {
-                    self.state.notes[idx].body = updated_body;
+                    self.state.notes[idx].body = updated_body.clone();
                 }
             }
             self.state.load_note_content();

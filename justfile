@@ -18,7 +18,8 @@ run ARGV="":
 
 # Build and install to ~/.local/bin
 install: build
-    @cargo install --path crates/cli
+    @mkdir -p ~/.local/bin
+    @cp target/release/neojoplin ~/.local/bin/neojoplin
     @echo "Installed neojoplin (CLI + TUI combined)"
 
 # Development mode with hot reload

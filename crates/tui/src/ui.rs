@@ -2,7 +2,7 @@
 
 use ratatui::{
     layout::{Alignment, Constraint, Direction, Layout, Rect},
-    style::{Color, Modifier, Style, Stylize},
+    style::{Modifier, Style, Stylize},
     text::{Line, Span, Text},
     widgets::{Block, Borders, List, ListItem, Paragraph, Wrap},
     Frame,
@@ -207,7 +207,7 @@ fn render_content_panel(f: &mut Frame, state: &AppState, area: Rect) {
 }
 
 /// Render keybinding ribbon (show available keybindings)
-fn render_keybinding_ribbon(f: &mut Frame, state: &AppState, area: Rect) {
+fn render_keybinding_ribbon(f: &mut Frame, _state: &AppState, area: Rect) {
     let use_two_lines = area.height > 1;
 
     let key_style = Style::default().bold();

@@ -13,7 +13,7 @@ pub use error::*;
 pub use traits::*;
 pub use sync::*;
 pub use config::*;
-pub use editor::*;
+pub use editor::{Editor, EditorConfig as RuntimeEditorConfig};
 
 /// Convenience Result type
 pub type Result<T> = std::result::Result<T, NeoJoplinError>;

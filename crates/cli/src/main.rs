@@ -315,7 +315,6 @@ async fn main() -> Result<()> {
             use neojoplin_sync::{SyncEngine, ReqwestWebDavClient, WebDavConfig, ClientIdManager};
             use tokio::sync::mpsc;
             use neojoplin_core::SyncEvent;
-            use std::path::PathBuf;
 
             let url = url.ok_or_else(|| anyhow::anyhow!("WebDAV URL is required"))?;
 
