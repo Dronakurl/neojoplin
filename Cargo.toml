@@ -9,7 +9,7 @@ members = [
     "crates/test-utils",
 ]
 resolver = "2"
-default-run = "neojoplin"
+default-run = "neojoplin-cli"
 
 [workspace.package]
 version = "0.1.0"
