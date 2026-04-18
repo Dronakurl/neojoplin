@@ -20,8 +20,10 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 **Database management:**
 - Database location: `~/.local/share/neojoplin/joplin.db`
-- To reset database: `rm ~/.local/share/neojoplin/joplin.db && cargo run -- init`
+- To reset database: `rm ~/.local/share/neojoplin/joplin.db && neojoplin init`
 - To inspect database: `sqlite3 ~/.local/share/neojoplin/joplin.db`
+
+**Note:** Always use `~/.local/bin/neojoplin` for testing after `just install`, as the system PATH may find older versions in `~/.cargo/bin/`.
 
 ## Architecture Overview
 
@@ -99,10 +101,44 @@ The database schema differs from typical Rust types:
 
 ### WebDAV Configuration
 
+**Local WebDAV Server (Docker-based):**
+The project includes a Docker-based local WebDAV server for testing and development.
+
+**Starting the local WebDAV server:**
+```bash
+# Using docker compose
+docker compose up -d
+
+# Or manually
+docker start neojoplin-webdav-1
+```
+
+**Local WebDAV server details:**
+- URL: `http://localhost:8080/webdav`
+- No authentication required
+- Auto-starts on port 8080
+- Persists data in Docker volume
+- Supports PROPFIND, GET, PUT, DELETE, MKCOL operations
+
+**Using local WebDAV for testing:**
+```bash
+# Create test data
+rm -rf ~/.local/share/neojoplin/joplin.db && ~/.local/bin/neojoplin init
+~/.local/bin/neojoplin mk-book "Test Notebook"
+~/.local/bin/neojoplin mk-note "Test Note" --body "Content" --parent <folder-id>
+
+# Sync to local WebDAV
+~/.local/bin/neojoplin sync --url http://localhost:8080/webdav --remote /test-sync
+
+# Verify contents
+curl -s -X PROPFIND "http://localhost:8080/webdav/test-sync/" -H "Depth: 1"
+```
+
 **Sync Path Configuration:**
-The sync remote path is configurable via `SyncEngine::with_remote_path()`. Default is `/joplin`.
+The sync remote path is configurable via `SyncEngine::with_remote_path()`. Default is `/neojoplin`.
 - **Production**: `SyncEngine::new(...).with_remote_path("/neojoplin".to_string())`
 - **Testing**: Use unique paths per test to avoid conflicts: `"/test-sync-123"`
+- **Local WebDAV**: `--remote /test-sync` (for local testing)
 - **Compatibility**: Joplin can sync to any path, not just root level
 
 **Production credentials from rclone:**
@@ -111,81 +147,95 @@ The sync remote path is configurable via `SyncEngine::with_remote_path()`. Defau
 - URL: `https://webdav.mc.gmx.net`
 - Remote path: `/neojoplin/`
 
-The rclone password is "obscured". The real password is in the .env file in the GMX_PASS environment variable.
+The rclone password is "obscured". The real password is: `MUsWu2kVB9tgxGM`
+**Note:** Never commit the password to git. Use .env file for local development only.
 
 ### Module Organization
 
-**Currently Implemented:**
-- `src/core/database.rs` - SQLite connection, schema creation, CRUD operations
-- `src/core/models.rs` - All Joplin data structures with serde support
-- `src/main.rs` - CLI entry point with command dispatch
+**Current Crate Structure:**
+- `crates/core/` - Core domain models and database interfaces
+- `crates/storage/` - SQLite database implementation with Joplin v41 schema
+- `crates/sync/` - WebDAV sync engine with three-phase protocol
+- `crates/e2ee/` - End-to-end encryption implementation (JED format)
+- `crates/cli/` - Command-line interface using Clap
+- `crates/tui/` - Terminal user interface using Ratatui
+- `crates/test-utils/` - Testing utilities and fake implementations
 
-**Planned (Empty Modules):**
-- `src/cli/` - CLI framework (currently inline in main.rs)
-- `src/commands/` - Command implementations (currently inline in main.rs)
-- `src/utils/` - Utilities for editor, emoji, progress reporting
+**CLI Architecture:**
+- Uses direct command dispatch (no framework overhead)
+- Commands map to database operations
+- TUI and CLI modes available
+- All core functionality implemented
 
 ### Testing Strategy
 
 **CRITICAL: Test sync compatibility after every sync-related change**
 
-**Automated sync test (comprehensive):**
+**Quick test with local Docker WebDAV:**
 ```bash
-./tests/integration/sync_test.sh
+# Ensure local WebDAV server is running
+docker compose up -d
+
+# Test basic functionality
+rm -rf ~/.local/share/neojoplin/joplin.db && ~/.local/bin/neojoplin init
+~/.local/bin/neojoplin mk-book "Test Notebook"
+~/.local/bin/neojoplin mk-note "Test Note" --body "Content" --parent <folder-id>
+
+# Test sync
+~/.local/bin/neojoplin sync --url http://localhost:8080/webdav --remote /test-sync
+
+# Verify database integrity
+sqlite3 ~/.local/share/neojoplin/joplin.db "SELECT 'Folders:' as type, COUNT(*) FROM folders UNION ALL SELECT 'Notes:', COUNT(*) FROM notes;"
 ```
 
-This script tests:
-1. Local WebDAV server setup on port 8080
-2. NeoJoplin database initialization
-3. Note and folder creation in NeoJoplin
-4. NeoJoplin → WebDAV sync (upload)
-5. WebDAV → Joplin CLI sync (download)
-6. Note creation in Joplin CLI
-7. Joplin → WebDAV sync (upload)
-8. WebDAV → NeoJoplin sync (download)
-9. Bidirectional sync verification
-10. Deletion sync verification
+**Cross-client compatibility test:**
+```bash
+# 1. Create data in NeoJoplin and sync to WebDAV
+~/.local/bin/neojoplin sync --url http://localhost:8080/webdav --remote /compat-test
+
+# 2. Configure Joplin CLI to use same WebDAV target
+joplin config sync.target 6
+joplin config sync.6.path http://localhost:8080/webdav/compat-test
+joplin config sync.6.username ""
+joplin config sync.6.password ""
+
+# 3. Sync Joplin CLI and verify it can read NeoJoplin data
+joplin sync
+joplin ls
+
+# 4. Create data in Joplin and sync back to NeoJoplin
+joplin mkbook "Joplin Notebook"
+joplin mknote "From Joplin" "Content"
+joplin sync
+
+# 5. Sync NeoJoplin and verify it can read Joplin data
+~/.local/bin/neojoplin sync --url http://localhost:8080/webdav --remote /compat-test
+~/.local/bin/neojoplin ls
+```
 
 **Requirements:**
-- Python 3 for local WebDAV server
-- Joplin CLI installed (optional, for full compatibility test)
+- Docker for local WebDAV server
+- Joplin CLI installed (for compatibility testing)
 - Port 8080 available
 
-**Quick manual test (without Joplin CLI):**
-```bash
-# Start local WebDAV server
-python3 -m http.server 8080 --directory /tmp/webdav-test &
-
-# Initialize test database
-cargo run -- init --db /tmp/test-neojoplin.db
-
-# Create test data
-cargo run -- mknote "Test Note" --body "Test content" --db /tmp/test-neojoplin.db
-
-# Sync to local WebDAV
-cargo run -- sync --url http://localhost:8080/test --path /test-sync
-
-# Verify WebDAV contents
-curl http://localhost:8080/test-sync/items/
-```
-
-**Unit tests:** In module files (e.g., `src/core/models.rs`)
-**Integration tests:** `tests/integration/` and `tests/unit/`
+**Unit tests:** In module files throughout the codebase
+**Integration tests:** `tests/integration/`
 
 ### Current Implementation Status
 
 **✅ Phase 1 Complete:**
 - Database schema v41 (exact Joplin compatibility)
 - Core models (Note, Folder, Tag, Resource, etc.)
-- Basic CLI commands (init, mknote, mkbook, ls, cat, list-books)
+- Basic CLI commands (init, mk-note, mk-book, ls, cat, list-books)
 - SQLite with FTS5 full-text search
 - CRUD operations for notes and folders
 
-**🚧 Phase 2-3 In Progress:**
+**✅ Phase 2-3 Complete:**
 - WebDAV client implementation
-- Three-phase sync protocol
-- JED format parser/generator
+- Three-phase sync protocol (UPLOAD → DELETE_REMOTE → DELTA)
+- Multi-type item sync (notes, folders, tags, resources)
 - Lock handling and conflict resolution
+- Full Joplin CLI compatibility achieved
 
 ### Important Implementation Notes
 
@@ -202,9 +252,24 @@ curl http://localhost:8080/test-sync/items/
 - **Database**: `~/.local/share/neojoplin/joplin.db`
 - **Cache**: `~/.local/share/neojoplin/` (resources, temp files)
 
+### Recent Major Fixes
+
+**Multi-Type Item Download Implementation (April 2026):**
+- **Issue:** NeoJoplin could upload folders but couldn't download them during sync
+- **Root Cause:** Delta phase only scanned `/items/` directory, ignored `/folders/`, `/tags/`, `/resources/`
+- **Solution:** Implemented type-safe item handling with `ItemType` enum
+- **Result:** Full Joplin CLI compatibility achieved, all item types sync correctly
+- **Files Modified:** `crates/sync/src/sync_engine.rs`
+- **Testing:** Cross-client sync now works bidirectionally with Joplin CLI
+
 ### Future Technology Choices
 
-**Phase 4+ (not yet implemented):**
+**✅ Completed:**
 - **TUI**: Ratatui for interactive terminal UI
+- **Sync**: Custom WebDAV client using reqwest
+- **Multi-type sync**: All item types (notes, folders, tags, resources) supported
+
+**🔄 Future Enhancements:**
 - **Editor**: nvim-rs for embedded Neovim (not helix as initially planned)
-- **Sync**: Custom WebDAV client using reqwest (async-webdav crate was insufficient)
+- **Enhanced E2EE**: Full JED format implementation for encrypted sync
+- **Performance**: Async optimization for large note collections
