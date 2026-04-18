@@ -27,11 +27,13 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 NeoJoplin is a **Joplin-compatible terminal client** that must maintain **100% sync protocol compatibility** with the reference TypeScript implementation. This is the critical constraint that drives the architecture.
 
+The joplin terminal application is also installed on this system. The code of the joplin application can be found under ~/gallery/kjoplin/joplin
+ 
 ### Core Challenge
 
-The entire application is built around **exact replication of Joplin's sync protocol and database schema**. Any deviation will break compatibility with existing Joplin installations.
+The entire application is built around **exact replication of Joplin's sync protocol and database schema**. Any deviation will break compatibility with existing Joplin installations. I want that the user can use the joplin command line along side the neojoplin application, sharing the same database and syncing to it. 
 
-### Key Architectural Layers
+### Key Architectural Layers I want that the user can use the joplin command line along side the neojoplin application, sharing the same database and syncing to it. 
 
 1. **Database Layer** (`src/core/`) - Must match Joplin schema v41 exactly
    - **Models**: Complete Joplin data structures (Note, Folder, Tag, Resource, etc.)
@@ -109,7 +111,7 @@ The sync remote path is configurable via `SyncEngine::with_remote_path()`. Defau
 - URL: `https://webdav.mc.gmx.net`
 - Remote path: `/neojoplin/`
 
-The rclone password is "obscured" and must be decrypted using rclone's algorithm.
+The rclone password is "obscured". The real password is in the .env file in the GMX_PASS environment variable.
 
 ### Module Organization
 

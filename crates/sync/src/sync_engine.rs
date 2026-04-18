@@ -25,6 +25,22 @@ impl Default for SyncContext {
     }
 }
 
+/// Item type for type-safe sync operations
+#[derive(Clone, Debug, PartialEq, Copy)]
+enum ItemType {
+    Note = 1,
+    Folder = 2,
+    Tag = 3,
+    Resource = 4,
+}
+
+/// Remote item with type information
+#[derive(Clone, Debug)]
+struct RemoteItem {
+    id: String,
+    item_type: ItemType,
+}
+
 /// Main sync engine
 pub struct SyncEngine {
     storage: Arc<dyn Storage>,
@@ -243,10 +259,15 @@ impl SyncEngine {
         } else {
             // 4. Download new/updated items
             let total = items_to_download.len();
-            for (i, item_id) in items_to_download.iter().enumerate() {
-                self.download_item(item_id).await?;
+            tracing::info!("Starting delta download: {} items to download", total);
+
+            for (i, remote_item) in items_to_download.iter().enumerate() {
+                tracing::debug!("Downloading item {}/{}: {} ({:?})", i + 1, total, remote_item.id, remote_item.item_type);
+                self.download_item(&remote_item.id, &remote_item.item_type).await?;
                 self.report_progress(SyncPhase::Delta, i + 1, total, "Downloading remote changes");
             }
+
+            tracing::info!("Delta download complete: {} items processed", total);
 
             // 5. Update sync context (stored in database instead)
             // self.context.last_sync_time = now_ms();
@@ -473,124 +494,226 @@ impl SyncEngine {
         Ok(())
     }
 
-    async fn list_remote_items(&self) -> Result<Vec<String>> {
+    async fn list_remote_items(&self) -> Result<Vec<RemoteItem>> {
+        let mut remote_items = Vec::new();
+
+        // List items from /items/ directory (notes)
         let items_path = format!("{}/items", self.context.remote_path);
-
-        // Ensure items directory exists
-        let exists = self.webdav.exists(&items_path).await;
-        if exists.is_err() || !exists.unwrap() {
-            return Ok(Vec::new());
-        }
-
-        // List items in the remote items directory
-        let entries = self.webdav.list(&items_path).await
-            .map_err(|e| SyncError::Server(format!("Failed to list remote items: {}", e)))?;
-
-        // Extract item IDs from file names
-        let item_ids: Vec<String> = entries
-            .into_iter()
-            .filter_map(|entry| {
-                entry.path.strip_suffix(".md")
-                    .and_then(|path| path.rsplit('/').next())
-                    .map(|id| id.to_string())
-            })
-            .collect();
-
-        Ok(item_ids)
-    }
-
-    fn find_delta_items(&self, remote_items: &[String], local_items: &[neojoplin_core::SyncItem]) -> Vec<String> {
-        let mut items_to_download = Vec::new();
-
-        for remote_id in remote_items {
-            let needs_download = local_items
-                .iter()
-                .find(|local| local.item_id == *remote_id)
-                .map_or(true, |local| {
-                    // Download if remote is newer
-                    let _local_time = local.sync_time;
-                    // For now, always download if we don't have remote timestamp info
-                    // In production, we'd parse the remote file's modified time
-                    true
-                });
-
-            if needs_download {
-                items_to_download.push(remote_id.clone());
+        match self.webdav.list(&items_path).await {
+            Ok(entries) => {
+                tracing::info!("Listing notes from: {}", items_path);
+                for entry in entries {
+                    if let Some(id) = entry.path.strip_suffix(".md")
+                        .and_then(|path| path.rsplit('/').next()) {
+                        remote_items.push(RemoteItem {
+                            id: id.to_string(),
+                            item_type: ItemType::Note,
+                        });
+                        tracing::debug!("Found remote note: {}", id);
+                    }
+                }
+                tracing::info!("Found {} remote notes", remote_items.len());
+            }
+            Err(e) => {
+                tracing::warn!("Failed to list notes from {}: {}", items_path, e);
             }
         }
 
+        // List items from /folders/ directory (folders)
+        let folders_path = format!("{}/folders", self.context.remote_path);
+        match self.webdav.list(&folders_path).await {
+            Ok(entries) => {
+                tracing::info!("Listing folders from: {}", folders_path);
+                let folder_count = remote_items.len();
+                for entry in entries {
+                    if let Some(id) = entry.path.strip_suffix(".md")
+                        .and_then(|path| path.rsplit('/').next()) {
+                        remote_items.push(RemoteItem {
+                            id: id.to_string(),
+                            item_type: ItemType::Folder,
+                        });
+                        tracing::debug!("Found remote folder: {}", id);
+                    }
+                }
+                tracing::info!("Found {} remote folders", remote_items.len() - folder_count);
+            }
+            Err(e) => {
+                tracing::warn!("Failed to list folders from {}: {}", folders_path, e);
+            }
+        }
+
+        // List items from /tags/ directory (tags)
+        let tags_path = format!("{}/tags", self.context.remote_path);
+        if let Ok(entries) = self.webdav.list(&tags_path).await {
+            tracing::info!("Listing tags from: {}", tags_path);
+            let tag_count = remote_items.len();
+            for entry in entries {
+                if let Some(id) = entry.path.strip_suffix(".md")
+                    .and_then(|path| path.rsplit('/').next()) {
+                    remote_items.push(RemoteItem {
+                        id: id.to_string(),
+                        item_type: ItemType::Tag,
+                    });
+                    tracing::debug!("Found remote tag: {}", id);
+                }
+            }
+            tracing::info!("Found {} remote tags", remote_items.len() - tag_count);
+        }
+
+        // List items from /resources/ directory (resources)
+        let resources_path = format!("{}/resources", self.context.remote_path);
+        if let Ok(entries) = self.webdav.list(&resources_path).await {
+            tracing::info!("Listing resources from: {}", resources_path);
+            let resource_count = remote_items.len();
+            for entry in entries {
+                if let Some(id) = entry.path.strip_suffix(".md")
+                    .and_then(|path| path.rsplit('/').next()) {
+                    remote_items.push(RemoteItem {
+                        id: id.to_string(),
+                        item_type: ItemType::Resource,
+                    });
+                    tracing::debug!("Found remote resource: {}", id);
+                }
+            }
+            tracing::info!("Found {} remote resources", remote_items.len() - resource_count);
+        }
+
+        tracing::info!("Total remote items found: {}", remote_items.len());
+        Ok(remote_items)
+    }
+
+    fn find_delta_items(&self, remote_items: &[RemoteItem], local_items: &[neojoplin_core::SyncItem]) -> Vec<RemoteItem> {
+        let mut items_to_download = Vec::new();
+
+        tracing::debug!("Finding delta items: {} remote, {} local", remote_items.len(), local_items.len());
+
+        for remote_item in remote_items {
+            let needs_download = local_items
+                .iter()
+                .find(|local| local.item_id == remote_item.id)
+                .map_or(true, |local| {
+                    // Download if remote is newer
+                    let local_time = local.sync_time;
+                    // For now, always download if we don't have remote timestamp info
+                    let should_download = true;
+                    tracing::trace!("Item {} ({:?}): local_time={}, should_download={}",
+                        remote_item.id, remote_item.item_type, local_time, should_download);
+                    should_download
+                });
+
+            if needs_download {
+                items_to_download.push(remote_item.clone());
+                tracing::debug!("Item {} ({:?}) marked for download", remote_item.id, remote_item.item_type);
+            }
+        }
+
+        tracing::info!("Delta items to download: {}/{}", items_to_download.len(), remote_items.len());
         items_to_download
     }
 
-    async fn download_item(&self, item_id: &str) -> Result<()> {
-        let remote_path = format!("{}/items/{}.md", self.context.remote_path, item_id);
+    async fn download_item(&self, item_id: &str, item_type: &ItemType) -> Result<()> {
+        let (remote_path, type_name) = match item_type {
+            ItemType::Folder => (format!("{}/folders/{}.md", self.context.remote_path, item_id), "folder"),
+            ItemType::Note => (format!("{}/items/{}.md", self.context.remote_path, item_id), "note"),
+            ItemType::Tag => (format!("{}/tags/{}.md", self.context.remote_path, item_id), "tag"),
+            ItemType::Resource => (format!("{}/resources/{}.md", self.context.remote_path, item_id), "resource"),
+        };
+
+        tracing::info!("Downloading {} {} from: {}", type_name, item_id, remote_path);
 
         let _ = self.event_tx.send(SyncEvent::ItemDownload {
-            item_type: "item".to_string(),
+            item_type: type_name.to_string(),
             item_id: item_id.to_string(),
         });
 
         // Download item content
         let mut reader = self.webdav.get(&remote_path).await
-            .map_err(|e| SyncError::Server(format!("Failed to download item {}: {}", item_id, e)))?;
+            .map_err(|e| {
+                tracing::error!("Failed to download {} {}: {}", type_name, item_id, e);
+                SyncError::Server(format!("Failed to download item {}: {}", item_id, e))
+            })?;
 
         let mut content = Vec::new();
         reader.read_to_end(&mut content).await
-            .map_err(|e| SyncError::Server(format!("Failed to read item content {}: {}", item_id, e)))?;
+            .map_err(|e| {
+                tracing::error!("Failed to read {} content {}: {}", type_name, item_id, e);
+                SyncError::Server(format!("Failed to read item content {}: {}", item_id, e))
+            })?;
 
         let content_str = String::from_utf8_lossy(&content);
+        tracing::debug!("Downloaded {} bytes for {} {}", content.len(), type_name, item_id);
 
         // Parse and store the item
-        // For now, this is a simplified version - production would parse JED format
-        self.store_downloaded_item(item_id, &content_str).await?;
+        self.store_downloaded_item(item_id, item_type, &content_str).await?;
+
+        tracing::info!("Successfully downloaded and stored {} {}", type_name, item_id);
 
         let _ = self.event_tx.send(SyncEvent::ItemDownloadComplete {
-            item_type: "item".to_string(),
+            item_type: type_name.to_string(),
             item_id: item_id.to_string(),
         });
 
         Ok(())
     }
 
-    async fn store_downloaded_item(&self, item_id: &str, content: &str) -> Result<()> {
-        // Try to parse as note first
-        if let Ok(note) = self.deserialize_note(item_id, content) {
-            // Check if note exists, if not create it
-            let exists = matches!(self.storage.get_note(&note.id).await, Ok(Some(_)));
+    async fn store_downloaded_item(&self, item_id: &str, item_type: &ItemType, content: &str) -> Result<()> {
+        tracing::debug!("Storing item {:?} with ID {}", item_type, item_id);
 
-            if exists {
-                self.storage.update_note(&note).await
-                    .map_err(|e| SyncError::Local(e))?;
-            } else {
-                self.storage.create_note(&note).await
-                    .map_err(|e| SyncError::Local(e))?;
+        match item_type {
+            ItemType::Note => {
+                if let Ok(note) = self.deserialize_note(item_id, content) {
+                    let exists = matches!(self.storage.get_note(&note.id).await, Ok(Some(_)));
+                    if exists {
+                        self.storage.update_note(&note).await
+                            .map_err(|e| SyncError::Local(e))?;
+                        tracing::debug!("Updated note: {}", note.id);
+                    } else {
+                        self.storage.create_note(&note).await
+                            .map_err(|e| SyncError::Local(e))?;
+                        tracing::debug!("Created note: {}", note.id);
+                    }
+                    return Ok(());
+                }
             }
-            return Ok(());
-        }
-
-        // Try folder
-        if let Ok(folder) = self.deserialize_folder(item_id, content) {
-            // Check if folder exists, if not create it
-            let exists = matches!(self.storage.get_folder(&folder.id).await, Ok(Some(_)));
-
-            if exists {
-                self.storage.update_folder(&folder).await
-                    .map_err(|e| SyncError::Local(e))?;
-            } else {
-                self.storage.create_folder(&folder).await
-                    .map_err(|e| SyncError::Local(e))?;
+            ItemType::Folder => {
+                if let Ok(folder) = self.deserialize_folder(item_id, content) {
+                    let exists = matches!(self.storage.get_folder(&folder.id).await, Ok(Some(_)));
+                    if exists {
+                        self.storage.update_folder(&folder).await
+                            .map_err(|e| SyncError::Local(e))?;
+                        tracing::debug!("Updated folder: {}", folder.id);
+                    } else {
+                        self.storage.create_folder(&folder).await
+                            .map_err(|e| SyncError::Local(e))?;
+                        tracing::debug!("Created folder: {}", folder.id);
+                    }
+                    return Ok(());
+                }
             }
-            return Ok(());
+            ItemType::Tag => {
+                if let Ok(tag) = self.deserialize_tag(item_id, content) {
+                    let exists = matches!(self.storage.get_tag(&tag.id).await, Ok(Some(_)));
+                    if exists {
+                        self.storage.update_tag(&tag).await
+                            .map_err(|e| SyncError::Local(e))?;
+                        tracing::debug!("Updated tag: {}", tag.id);
+                    } else {
+                        self.storage.create_tag(&tag).await
+                            .map_err(|e| SyncError::Local(e))?;
+                        tracing::debug!("Created tag: {}", tag.id);
+                    }
+                    return Ok(());
+                }
+            }
+            ItemType::Resource => {
+                // Resources not yet implemented in storage layer
+                tracing::warn!("Resource type not yet implemented for download");
+                return Err(SyncError::Server(format!("Resource download not yet implemented")).into());
+            }
         }
 
-        // Try tag
-        if let Ok(tag) = self.deserialize_tag(item_id, content) {
-            self.storage.update_tag(&tag).await
-                .map_err(|e| SyncError::Local(e))?;
-            return Ok(());
-        }
-
-        Ok(())
+        tracing::warn!("Could not parse item {} as {:?}", item_id, item_type);
+        Err(SyncError::Server(format!("Failed to parse item: {}", item_id)).into())
     }
 
     fn report_progress(&self, phase: SyncPhase, current: usize, total: usize, message: &str) {
@@ -840,7 +963,7 @@ mod tests {
     fn test_sync_context_default() {
         let context = SyncContext::default();
         assert_eq!(context.last_sync_time, 0);
-        assert_eq!(context.remote_path, "/");
+        assert_eq!(context.remote_path, "/neojoplin");
     }
 
     #[test]
