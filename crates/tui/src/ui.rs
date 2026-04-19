@@ -695,6 +695,78 @@ pub fn render_quit_confirmation(f: &mut Frame, state: &AppState) {
     f.render_widget(paragraph, area);
 }
 
+/// Render error dialog popup
+pub fn render_error_dialog(f: &mut Frame, state: &AppState) {
+    let area = centered_rect(60, 25, f.area()); // Wider for error messages
+    let theme = &state.theme;
+
+    let bottom_title = Line::from(vec![
+        Span::styled("[", theme.muted()),
+        Span::styled("Enter", theme.accent()),
+        Span::styled("]", theme.muted()),
+        Span::raw(" close ").style(theme.text()),
+    ]);
+
+    // Split error message into multiple lines if it's too long
+    let error_lines = split_error_text(&state.error_message, 50);
+
+    let mut text_lines = vec![
+        Line::from(""),
+        Line::from("⚠ Error").style(theme.error()),
+        Line::from(""),
+    ];
+
+    for line in error_lines {
+        text_lines.push(Line::from(line).style(theme.text()));
+    }
+
+    text_lines.push(Line::from(""));
+    text_lines.push(Line::from(""));
+
+    let text = Text::from(text_lines);
+
+    let paragraph = Paragraph::new(text)
+        .block(
+            Block::default()
+                .title("Error")
+                .title_bottom(bottom_title)
+                .borders(Borders::ALL)
+                .border_style(theme.error()),
+        )
+        .wrap(Wrap { trim: true })
+        .alignment(Alignment::Left);
+
+    f.render_widget(paragraph, area);
+}
+
+/// Split error text into multiple lines for better display
+fn split_error_text(text: &str, max_width: usize) -> Vec<String> {
+    let mut lines = vec![];
+    let mut current_line = String::new();
+
+    for word in text.split_whitespace() {
+        if current_line.is_empty() {
+            current_line = word.to_string();
+        } else if current_line.len() + 1 + word.len() <= max_width {
+            current_line.push(' ');
+            current_line.push_str(word);
+        } else {
+            lines.push(current_line);
+            current_line = word.to_string();
+        }
+    }
+
+    if !current_line.is_empty() {
+        lines.push(current_line);
+    }
+
+    if lines.is_empty() {
+        lines.push(text.to_string());
+    }
+
+    lines
+}
+
 /// Render rename prompt
 pub fn render_rename_prompt(f: &mut Frame, state: &AppState) {
     let area = centered_rect_with_min_width(40, 15, 50, f.area());

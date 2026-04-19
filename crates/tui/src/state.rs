@@ -45,6 +45,10 @@ pub struct AppState {
     pub rename_input: String,
     /// Color theme
     pub theme: Theme,
+    /// Whether to show error dialog
+    pub show_error_dialog: bool,
+    /// Current error message to display
+    pub error_message: String,
 }
 
 impl Default for AppState {
@@ -65,6 +69,8 @@ impl Default for AppState {
             show_rename_prompt: false,
             rename_input: String::new(),
             theme: crate::theme::default_theme(),
+            show_error_dialog: false,
+            error_message: String::new(),
         }
     }
 }
@@ -216,6 +222,18 @@ impl AppState {
     /// Hide quit confirmation
     pub fn hide_quit(&mut self) {
         self.show_quit_confirmation = false;
+    }
+
+    /// Show error dialog with message
+    pub fn show_error(&mut self, error: &str) {
+        self.error_message = error.to_string();
+        self.show_error_dialog = true;
+    }
+
+    /// Hide error dialog
+    pub fn hide_error(&mut self) {
+        self.show_error_dialog = false;
+        self.error_message.clear();
     }
 
     /// Show settings

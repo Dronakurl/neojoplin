@@ -132,6 +132,8 @@ impl App {
                     ui::render_help(f, self.help_scroll, &self.state);
                 } else if self.state.show_quit_confirmation {
                     ui::render_quit_confirmation(f, &self.state);
+                } else if self.state.show_error_dialog {
+                    ui::render_error_dialog(f, &self.state);
                 } else if self.state.show_settings {
                     ui::render_settings(f, &self.state);
                 } else if self.state.show_rename_prompt {
@@ -171,6 +173,17 @@ impl App {
                 return Ok(false);
             }
             false => {}
+        }
+
+        // Handle error dialog
+        if self.state.show_error_dialog {
+            match key.code {
+                KeyCode::Enter | KeyCode::Char('q') | KeyCode::Esc => {
+                    self.state.hide_error();
+                }
+                _ => {}
+            }
+            return Ok(false);
         }
 
         // Handle rename prompt
@@ -385,7 +398,7 @@ impl App {
                 // Perform sync
                 match sync_engine.sync().await {
                     Ok(_) => {
-                        self.state.set_status("Sync completed successfully");
+                        self.state.set_status("✓ Sync completed successfully");
 
                         // Reload data
                         let folders = storage_clone.list_folders().await?;
@@ -395,7 +408,8 @@ impl App {
                         self.state.set_notes(notes);
                     }
                     Err(e) => {
-                        self.state.set_status(&format!("Sync failed: {}", e));
+                        // Show error dialog for sync failures
+                        self.state.show_error(&format!("Sync failed: {}", e));
                     }
                 }
             }
