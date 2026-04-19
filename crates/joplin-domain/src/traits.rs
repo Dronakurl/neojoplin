@@ -54,6 +54,7 @@ pub trait Storage: Send + Sync {
     async fn get_sync_items(&self, sync_target: i32) -> Result<Vec<SyncItem>, DatabaseError>;
     async fn upsert_sync_item(&self, item: &SyncItem) -> Result<(), DatabaseError>;
     async fn delete_sync_item(&self, id: i32) -> Result<(), DatabaseError>;
+    async fn clear_all_sync_items(&self) -> Result<usize, DatabaseError>;
 
     // Deleted items
     async fn get_deleted_items(&self, sync_target: i32) -> Result<Vec<DeletedItem>, DatabaseError>;

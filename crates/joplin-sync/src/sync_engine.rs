@@ -85,6 +85,10 @@ impl SyncEngine {
         self.check_locks().await?;
         self.load_sync_info().await?;
 
+        // Detect E2EE state changes — if encryption was just enabled or disabled,
+        // clear sync_items to force re-upload of all items in the new format
+        self.handle_encryption_state_change().await?;
+
         // Load master keys from remote info.json if E2EE is available
         self.load_remote_master_keys().await;
 
@@ -104,6 +108,41 @@ impl SyncEngine {
 
         let duration = start.elapsed();
         let _ = self.event_tx.send(SyncEvent::Completed { duration });
+
+        Ok(())
+    }
+
+    /// Detect E2EE state changes and force re-upload of all items if needed.
+    /// When encryption is enabled on a previously unencrypted sync target (or vice versa),
+    /// all items must be re-uploaded in the new format.
+    async fn handle_encryption_state_change(&mut self) -> Result<()> {
+        let remote_encrypted = self.sync_info.as_ref()
+            .map(|info| info.e2ee.value)
+            .unwrap_or(false);
+
+        let local_encrypted = self.e2ee_service.as_ref()
+            .map(|e| e.is_enabled())
+            .unwrap_or(false);
+
+        if local_encrypted != remote_encrypted {
+            let direction = if local_encrypted {
+                "Encryption enabled — re-uploading all items encrypted"
+            } else {
+                "Encryption disabled — re-uploading all items unencrypted"
+            };
+
+            let _ = self.event_tx.send(SyncEvent::Warning {
+                message: direction.to_string(),
+            });
+
+            // Clear sync_items so all items appear as "changed" and get re-uploaded
+            let cleared = self.storage.clear_all_sync_items().await
+                .map_err(|e| SyncError::Local(e))?;
+            tracing::info!("Cleared {} sync items for E2EE state change", cleared);
+
+            // Reset last_sync_time to 0 so everything is considered new
+            self.context.last_sync_time = 0;
+        }
 
         Ok(())
     }
@@ -429,13 +468,17 @@ impl SyncEngine {
         if let Some(ref mut sync_info) = self.sync_info {
             sync_info.update_delta_timestamp();
 
-            // Update E2EE info if encryption is enabled
-            if let Some(ref e2ee) = self.e2ee_service {
-                if e2ee.is_enabled() {
-                    sync_info.e2ee.value = true;
-                    if sync_info.e2ee.updated_time == 0 {
-                        sync_info.e2ee.updated_time = now_ms();
-                    }
+            // Update E2EE state in sync info
+            let e2ee_enabled = self.e2ee_service.as_ref()
+                .map(|e| e.is_enabled())
+                .unwrap_or(false);
+
+            if e2ee_enabled {
+                sync_info.e2ee.value = true;
+                if sync_info.e2ee.updated_time == 0 {
+                    sync_info.e2ee.updated_time = now_ms();
+                }
+                if let Some(ref e2ee) = self.e2ee_service {
                     if let Some(active_id) = e2ee.get_active_master_key_id() {
                         sync_info.active_master_key_id.value = active_id.clone();
                         if sync_info.active_master_key_id.updated_time == 0 {
@@ -443,6 +486,10 @@ impl SyncEngine {
                         }
                     }
                 }
+            } else if sync_info.e2ee.value {
+                // E2EE was previously enabled but now disabled
+                sync_info.e2ee.value = false;
+                sync_info.e2ee.updated_time = now_ms();
             }
 
             sync_info.save_to_remote(self.webdav.as_ref(), &self.context.remote_path).await

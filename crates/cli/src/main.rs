@@ -199,7 +199,7 @@ async fn load_e2ee_service(password_override: Option<String>) -> Result<E2eeServ
     // Create E2EE service
     let mut e2ee = E2eeService::new();
     if !master_password.is_empty() {
-        e2ee.set_master_password(master_password);
+        e2ee.set_master_password(master_password.clone());
     }
 
     // Check if encryption is enabled
@@ -238,6 +238,25 @@ async fn load_e2ee_service(password_override: Option<String>) -> Result<E2eeServ
         } else {
             tracing::warn!("Master key file not found: {}", key_file_path.display());
         }
+    } else if !master_password.is_empty() {
+        // No encryption.json but password provided — auto-enable E2EE
+        let (key_id, master_key) = e2ee.generate_master_key(&master_password)?;
+        e2ee.load_master_key(&master_key)?;
+        e2ee.set_active_master_key(key_id.clone());
+
+        // Persist encryption config
+        let keys_dir = data_dir.join("keys");
+        tokio::fs::create_dir_all(&keys_dir).await?;
+        let key_path = keys_dir.join(format!("{}.json", key_id));
+        tokio::fs::write(&key_path, serde_json::to_string_pretty(&master_key)?).await?;
+
+        let config = serde_json::json!({
+            "enabled": true,
+            "active_master_key_id": key_id
+        });
+        tokio::fs::write(&encryption_config_path, config.to_string()).await?;
+
+        eprintln!("✓ E2EE auto-enabled with provided password (key: {})", key_id);
     }
 
     Ok(e2ee)

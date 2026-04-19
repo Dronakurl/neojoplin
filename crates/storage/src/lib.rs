@@ -877,6 +877,15 @@ impl Storage for SqliteStorage {
         Ok(())
     }
 
+    async fn clear_all_sync_items(&self) -> Result<usize, DatabaseError> {
+        let result = sqlx::query("DELETE FROM sync_items")
+            .execute(&self.pool)
+            .await
+            .map_err(|e| DatabaseError::QueryFailed(format!("Failed to clear sync items: {}", e)))?;
+
+        Ok(result.rows_affected() as usize)
+    }
+
     // Deleted items
     async fn get_deleted_items(&self, sync_target: i32) -> Result<Vec<DeletedItem>, DatabaseError> {
         let items = sqlx::query_as::<_, DeletedItem>(
