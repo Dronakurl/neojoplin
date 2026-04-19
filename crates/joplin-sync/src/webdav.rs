@@ -157,8 +157,9 @@ impl ReqwestWebDavClient {
         let body = response.text().await
             .map_err(|e| WebDavError::RequestFailed(format!("Failed to read response: {}", e)))?;
 
-        // Parse PROPFIND response to extract file names
-        let files = parse_propfind_response(&body, &self.config.base_url)?;
+        // Parse PROPFIND response using robust XML parser
+        let files = crate::webdav_xml::parse_propfind_files(&body, &self.config.base_url)
+            .map_err(|e| WebDavError::RequestFailed(format!("Failed to parse PROPFIND response: {}", e)))?;
         Ok(files)
     }
 
@@ -201,75 +202,16 @@ impl ReqwestWebDavClient {
         let body = response.text().await
             .map_err(|e| WebDavError::RequestFailed(format!("Failed to read response: {}", e)))?;
 
-        parse_file_meta(&body, path)
+        let metadata = crate::webdav_xml::parse_file_metadata(&body, path)
+            .map_err(|e| WebDavError::RequestFailed(format!("Failed to parse file metadata: {}", e)))?;
+
+        Ok(FileMeta {
+            path: metadata.path,
+            size: metadata.size,
+            modified: metadata.modified,
+            is_dir: metadata.is_dir,
+        })
     }
-}
-
-/// Simple PROPFIND response parser
-fn parse_propfind_response(body: &str, _base_url: &str) -> WebDavResult<Vec<String>> {
-    let mut files = Vec::new();
-
-    // Simple XML parsing - extract all href tags
-    let mut search_start = 0;
-    while let Some(href_start) = body[search_start..].find("<D:href>") {
-        let actual_start = search_start + href_start;
-        if let Some(href_end) = body[actual_start + 8..].find("</D:href>") {
-            let actual_end = actual_start + 8 + href_end;
-            let href = &body[actual_start + 8..actual_end];
-
-            // Filter out directory entries (those ending with /)
-            if !href.ends_with('/') {
-                if let Some(filename) = href.rsplit('/').next() {
-                    if !filename.is_empty() {
-                        files.push(filename.to_string());
-                    }
-                }
-            }
-
-            search_start = actual_end + 9; // Move past this href tag
-        } else {
-            break;
-        }
-    }
-
-    Ok(files)
-}
-
-/// Parse file metadata from PROPFIND response
-fn parse_file_meta(body: &str, path: &str) -> WebDavResult<FileMeta> {
-    let mut size = None;
-    let mut modified = None;
-    let mut is_dir = false;
-
-    for line in body.lines() {
-        if line.contains("<D:getcontentlength>") {
-            if let Some(start) = line.find("<D:getcontentlength>") {
-                if let Some(end) = line.find("</D:getcontentlength>") {
-                    let size_str = &line[start + 20..end];
-                    size = Some(size_str.parse::<i64>().unwrap_or(0));
-                }
-            }
-        } else if line.contains("<D:getlastmodified>") {
-            if let Some(start) = line.find("<D:getlastmodified>") {
-                if let Some(end) = line.find("</D:getlastmodified>") {
-                    let modified_str = &line[start + 21..end];
-                    // Parse HTTP date format
-                    if let Ok(date) = chrono::DateTime::parse_from_rfc2822(modified_str) {
-                        modified = Some(date.timestamp_millis());
-                    }
-                }
-            }
-        } else if line.contains("<D:collection/>") || line.contains("<D:folder/>") {
-            is_dir = true;
-        }
-    }
-
-    Ok(FileMeta {
-        path: path.to_string(),
-        size: size.unwrap_or(0),
-        modified: modified.unwrap_or(0),
-        is_dir,
-    })
 }
 
 #[cfg(test)]

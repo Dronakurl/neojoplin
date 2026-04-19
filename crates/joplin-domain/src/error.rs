@@ -18,8 +18,57 @@ pub enum DomainError {
     #[error("Serialization error: {0}")]
     Serialization(#[from] serde_json::Error),
 
+    #[error("E2EE error: {0}")]
+    E2EE(#[from] E2eeError),
+
     #[error("Unknown error: {0}")]
     Unknown(String),
+}
+
+/// E2EE-related errors
+#[derive(Error, Debug)]
+pub enum E2eeError {
+    #[error("Master key not found: {0}")]
+    MasterKeyNotFound(String),
+
+    #[error("Encryption failed: {0}")]
+    EncryptionFailed(String),
+
+    #[error("Decryption failed: {0}")]
+    DecryptionFailed(String),
+
+    #[error("Invalid JED format: {0}")]
+    InvalidJedFormat(String),
+
+    #[error("Invalid master password")]
+    InvalidMasterPassword,
+
+    #[error("Key derivation failed: {0}")]
+    KeyDerivationFailed(String),
+
+    #[error("Master key generation failed: {0}")]
+    KeyGenerationFailed(String),
+
+    #[error("Invalid encryption method: {0}")]
+    InvalidEncryptionMethod(String),
+
+    #[error("Encryption not enabled")]
+    EncryptionNotEnabled,
+
+    #[error("Crypto error: {0}")]
+    CryptoError(String),
+
+    #[error("Invalid master key format: {0}")]
+    InvalidMasterKeyFormat(String),
+
+    #[error("Master key already exists: {0}")]
+    MasterKeyAlreadyExists(String),
+
+    #[error("No active master key")]
+    NoActiveMasterKey,
+
+    #[error("Crypto operation failed: {0}")]
+    CryptoOperationFailed(String),
 }
 
 /// Database-related errors
@@ -195,6 +244,21 @@ pub enum WebDavError {
 
     #[error("Request failed: {0}")]
     RequestFailed(String),
+
+    #[error("XML parsing error: {0}")]
+    XmlParsingError(String),
+
+    #[error("Permission denied: {0}")]
+    PermissionDenied(String),
+
+    #[error("Timeout")]
+    Timeout,
+
+    #[error("Invalid URL: {0}")]
+    InvalidUrl(String),
+
+    #[error("IO error: {0}")]
+    IoError(#[from] std::io::Error),
 }
 
 impl SyncError {

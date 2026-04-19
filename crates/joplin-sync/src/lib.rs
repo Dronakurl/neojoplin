@@ -6,6 +6,7 @@
 // 3. DELTA - Download remote changes
 
 pub mod webdav;
+pub mod webdav_xml;
 pub mod webdav_trait;
 pub mod sync_engine;
 pub mod sync_info;
