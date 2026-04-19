@@ -8,24 +8,15 @@ repository.workspace = true
 description = "Sync engine for NeoJoplin (WebDAV)"
 
 [dependencies]
+joplin-domain = { path = "../joplin-domain" }
+joplin-sync = { path = "../joplin-sync" }
 neojoplin-core = { path = "../core" }
 neojoplin-storage = { path = "../storage" }
 tokio = { workspace = true }
-reqwest = { workspace = true }
 async-trait = { workspace = true }
 anyhow = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
-futures = "0.3"
-base64 = "0.22"
-chrono = { workspace = true }
-serde = { workspace = true }
-serde_json = { workspace = true }
-uuid = { version = "1.11", features = ["v4", "serde"] }
-
-[[bin]]
-name = "test_webdav"
-path = "src/bin/test_webdav.rs"
 
 [dev-dependencies]
 tokio-test = "0.4"

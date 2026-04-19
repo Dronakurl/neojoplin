@@ -9,8 +9,9 @@ use crossterm::{
 use ratatui::{backend::CrosstermBackend, Terminal};
 use std::sync::Arc;
 use std::time::Duration;
+use uuid::Uuid;
 
-use neojoplin_core::{Storage, Note, Folder, now_ms};
+use joplin_domain::{Storage, Note, Folder, now_ms};
 use neojoplin_storage::SqliteStorage;
 use std::path::PathBuf;
 
@@ -76,11 +77,10 @@ impl App {
 
         state.set_folders(folders);
 
-        // Load notes for first folder
-        if let Some(folder) = state.selected_folder() {
-            let notes = storage.list_notes(Some(&folder.id)).await?;
-            state.set_notes(notes);
-        }
+        // Start in "All Notebooks" mode and load all notes
+        state.all_notebooks_mode = true;
+        let notes = storage.list_notes(None).await?;
+        state.set_notes(notes);
 
         // Load encryption settings
         state.settings.load_encryption_settings(&data_dir).await?;
@@ -259,10 +259,16 @@ impl App {
 
             // Vim-style navigation
             KeyCode::Char('j') | KeyCode::Down => {
-                self.state.move_selection(1);
+                let folder_changed = self.state.move_selection(1);
+                if folder_changed {
+                    self.reload_notes().await?;
+                }
             }
             KeyCode::Char('k') | KeyCode::Up => {
-                self.state.move_selection(-1);
+                let folder_changed = self.state.move_selection(-1);
+                if folder_changed {
+                    self.reload_notes().await?;
+                }
             }
 
             // Enter - edit selected note
@@ -433,7 +439,25 @@ impl App {
 
     /// Create a new note
     async fn create_note(&mut self) -> Result<()> {
-        use uuid::Uuid;
+        // Determine parent folder for the new note
+        let parent_id = if self.state.all_notebooks_mode {
+            // In "All Notebooks" mode, use the first available notebook
+            if let Some(folder) = self.state.folders.first() {
+                folder.id.clone()
+            } else {
+                // No notebooks exist, create one first
+                self.create_notebook().await?;
+                if let Some(folder) = self.state.folders.first() {
+                    folder.id.clone()
+                } else {
+                    return Err(anyhow::anyhow!("Failed to create notebook for note"));
+                }
+            }
+        } else if let Some(folder) = self.state.selected_folder() {
+            folder.id.clone()
+        } else {
+            return Err(anyhow::anyhow!("No notebook selected"));
+        };
 
         self.state.set_status("Creating new note...");
 
@@ -443,9 +467,7 @@ impl App {
             id: Uuid::new_v4().to_string(),
             title: title.clone(),
             body: String::new(),
-            parent_id: self.state.selected_folder()
-                .map(|f| f.id.clone())
-                .unwrap_or_default(),
+            parent_id: parent_id.clone(),
             created_time: now_ms(),
             updated_time: now_ms(),
             user_created_time: 0,
@@ -484,8 +506,6 @@ impl App {
 
     /// Create a new notebook
     async fn create_notebook(&mut self) -> Result<()> {
-        use uuid::Uuid;
-
         self.state.set_status("Creating new notebook...");
 
         let title = "New notebook".to_string();
@@ -561,10 +581,18 @@ impl App {
 
     /// Reload notes for currently selected notebook
     async fn reload_notes(&mut self) -> Result<()> {
-        if let Some(folder) = self.state.selected_folder() {
-            let notes = self.storage.list_notes(Some(&folder.id)).await?;
-            self.state.set_notes(notes);
-        }
+        let notes = if self.state.all_notebooks_mode {
+            // Load all notes when in "All Notebooks" mode
+            self.storage.list_notes(None).await?
+        } else if let Some(folder) = self.state.selected_folder() {
+            // Load notes for specific folder
+            self.storage.list_notes(Some(&folder.id)).await?
+        } else {
+            // No folder selected, no notes
+            vec![]
+        };
+
+        self.state.set_notes(notes);
         Ok(())
     }
 

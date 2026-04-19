@@ -1,6 +1,6 @@
 // Application state management
 
-use neojoplin_core::{Note, Folder};
+use joplin_domain::{Note, Folder};
 use crate::settings::Settings;
 use crate::theme::Theme;
 
@@ -259,7 +259,7 @@ impl AppState {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use neojoplin_core::{now_ms};
+    use joplin_domain::{now_ms};
 
     #[test]
     fn test_state_default() {
@@ -267,6 +267,7 @@ mod tests {
         assert_eq!(state.focus, FocusPanel::Notebooks);
         assert_eq!(state.selected_folder, None);
         assert_eq!(state.selected_note, None);
+        assert_eq!(state.all_notebooks_mode, false);
     }
 
     #[test]
@@ -321,5 +322,81 @@ mod tests {
         state.set_folders(folders);
         assert_eq!(state.selected_folder, Some(0));
         assert_eq!(state.folders.len(), 1);
+    }
+
+    #[test]
+    fn test_all_notebooks_mode() {
+        let mut state = AppState::new();
+
+        // Enable "All Notebooks" mode
+        state.all_notebooks_mode = true;
+        state.selected_folder = None;
+
+        // Should be in "All Notebooks" mode
+        assert_eq!(state.all_notebooks_mode, true);
+        assert_eq!(state.selected_folder, None);
+
+        // Select first folder should exit "All Notebooks" mode
+        state.set_folder(Some(0));
+        assert_eq!(state.all_notebooks_mode, false);
+        assert_eq!(state.selected_folder, Some(0));
+    }
+
+    #[test]
+    fn test_move_selection_with_all_notebooks() {
+        let mut state = AppState::new();
+
+        // Set up some folders
+        let folders = vec![
+            Folder {
+                id: "1".to_string(),
+                title: "Folder 1".to_string(),
+                parent_id: String::new(),
+                created_time: now_ms(),
+                updated_time: now_ms(),
+                user_created_time: 0,
+                user_updated_time: 0,
+                is_shared: 0,
+                share_id: None,
+                master_key_id: None,
+                encryption_applied: 0,
+                encryption_cipher_text: None,
+                icon: String::new(),
+            },
+            Folder {
+                id: "2".to_string(),
+                title: "Folder 2".to_string(),
+                parent_id: String::new(),
+                created_time: now_ms(),
+                updated_time: now_ms(),
+                user_created_time: 0,
+                user_updated_time: 0,
+                is_shared: 0,
+                share_id: None,
+                master_key_id: None,
+                encryption_applied: 0,
+                encryption_cipher_text: None,
+                icon: String::new(),
+            },
+        ];
+
+        state.set_folders(folders);
+        state.focus = FocusPanel::Notebooks;
+
+        // Start in "All Notebooks" mode
+        state.all_notebooks_mode = true;
+        state.selected_folder = None;
+
+        // Move down should select first folder
+        let folder_changed = state.move_selection(1);
+        assert_eq!(folder_changed, true);
+        assert_eq!(state.all_notebooks_mode, false);
+        assert_eq!(state.selected_folder, Some(0));
+
+        // Move up from first folder should return to "All Notebooks"
+        let folder_changed = state.move_selection(-1);
+        assert_eq!(folder_changed, true);
+        assert_eq!(state.all_notebooks_mode, true);
+        assert_eq!(state.selected_folder, None);
     }
 }

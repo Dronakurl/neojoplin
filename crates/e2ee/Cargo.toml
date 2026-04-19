@@ -8,6 +8,7 @@ repository.workspace = true
 description = "End-to-end encryption (E2EE) support for NeoJoplin"
 
 [dependencies]
+joplin-domain = { path = "../joplin-domain" }
 neojoplin-core = { path = "../core" }
 tokio = { workspace = true }
 anyhow = { workspace = true }

@@ -1,0 +1,21 @@
+[package]
+name = "joplin"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Meta-crate for Joplin-compatible functionality in Rust"
+keywords = ["joplin", "note-taking", "sync"]
+categories = ["database", "api-bindings"]
+
+[dependencies]
+joplin-domain = { path = "../joplin-domain", version = "0.1.0" }
+joplin-sync = { path = "../joplin-sync", version = "0.1.0" }
+
+[dev-dependencies]
+tokio = { version = "1.40", features = ["full"] }
+
+[features]
+default = []
+sqlx = ["joplin-domain/sqlx"]

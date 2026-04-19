@@ -117,7 +117,9 @@ fn render_notebooks_panel(f: &mut Frame, state: &AppState, area: Rect) {
 
 /// Render notes panel
 fn render_notes_panel(f: &mut Frame, state: &AppState, area: Rect) {
-    let title = if let Some(folder) = state.selected_folder() {
+    let title = if state.all_notebooks_mode {
+        "Notes - All Notebooks".to_string()
+    } else if let Some(folder) = state.selected_folder() {
         format!("Notes - {}", folder.title)
     } else {
         "Notes".to_string()
@@ -125,7 +127,7 @@ fn render_notes_panel(f: &mut Frame, state: &AppState, area: Rect) {
     let theme = &state.theme;
 
     let items: Vec<ListItem> = if state.notes.is_empty() {
-        if state.selected_folder().is_some() {
+        if state.all_notebooks_mode || state.selected_folder().is_some() {
             vec![
                 ListItem::new("No notes in this notebook").style(theme.dim()),
                 ListItem::new("Press n to create one").style(theme.dim()),

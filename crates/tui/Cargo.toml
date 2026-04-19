@@ -8,6 +8,8 @@ repository.workspace = true
 description = "TUI application for NeoJoplin (ratatui)"
 
 [dependencies]
+joplin-domain = { path = "../joplin-domain" }
+joplin-sync = { path = "../joplin-sync" }
 neojoplin-core = { path = "../core" }
 neojoplin-storage = { path = "../storage" }
 neojoplin-sync = { path = "../sync" }

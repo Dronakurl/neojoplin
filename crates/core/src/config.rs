@@ -2,8 +2,8 @@
 
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
-use crate::error::*;
-use crate::domain::SyncTarget;
+use crate::ConfigError;
+use joplin_domain::SyncTarget;
 
 /// Application configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -158,7 +158,7 @@ impl Default for AdvancedConfig {
 
 impl Config {
     /// Load configuration from file
-    pub fn load_from_file(path: &PathBuf) -> Result<Self, ConfigError> {
+    pub fn load_from_file(path: &PathBuf) -> Result<Self, crate::ConfigError> {
         let content = std::fs::read_to_string(path)
             .map_err(|_e| ConfigError::NotFound(path.to_string_lossy().to_string()))?;
 
@@ -169,7 +169,7 @@ impl Config {
     }
 
     /// Save configuration to file
-    pub fn save_to_file(&self, path: &PathBuf) -> Result<(), ConfigError> {
+    pub fn save_to_file(&self, path: &PathBuf) -> Result<(), crate::ConfigError> {
         let content = serde_json::to_string_pretty(self)
             .map_err(|e| ConfigError::InvalidFormat(format!("Serialization error: {}", e)))?;
 
@@ -180,7 +180,7 @@ impl Config {
     }
 
     /// Get default configuration directory
-    pub fn config_dir() -> Result<PathBuf, ConfigError> {
+    pub fn config_dir() -> Result<PathBuf, crate::ConfigError> {
         let dir = dirs::home_dir()
             .map(|p| p.join(".config/neojoplin"))
             .ok_or_else(|| ConfigError::NotFound("Could not determine home directory".to_string()))?;
@@ -189,12 +189,12 @@ impl Config {
     }
 
     /// Get default configuration file path
-    pub fn default_config_path() -> Result<PathBuf, ConfigError> {
+    pub fn default_config_path() -> Result<PathBuf, crate::ConfigError> {
         Ok(Self::config_dir()?.join("config.json"))
     }
 
     /// Load configuration from default location
-    pub fn load() -> Result<Self, ConfigError> {
+    pub fn load() -> Result<Self, crate::ConfigError> {
         let path = Self::default_config_path()?;
 
         if !path.exists() {
@@ -206,7 +206,7 @@ impl Config {
     }
 
     /// Get data directory
-    pub fn data_dir() -> Result<PathBuf, ConfigError> {
+    pub fn data_dir() -> Result<PathBuf, crate::ConfigError> {
         let dir = dirs::home_dir()
             .map(|p| p.join(".local/share/neojoplin"))
             .ok_or_else(|| ConfigError::NotFound("Could not determine home directory".to_string()))?;
@@ -215,7 +215,7 @@ impl Config {
     }
 
     /// Ensure data directory exists
-    pub fn ensure_data_dir() -> Result<PathBuf, ConfigError> {
+    pub fn ensure_data_dir() -> Result<PathBuf, crate::ConfigError> {
         let dir = Self::data_dir()?;
         std::fs::create_dir_all(&dir)
             .map_err(ConfigError::from)?;
@@ -223,12 +223,12 @@ impl Config {
     }
 
     /// Get database path
-    pub fn database_path() -> Result<PathBuf, ConfigError> {
+    pub fn database_path() -> Result<PathBuf, crate::ConfigError> {
         Ok(Self::data_dir()?.join("joplin.db"))
     }
 
     /// Get temp directory
-    pub fn temp_dir() -> Result<PathBuf, ConfigError> {
+    pub fn temp_dir() -> Result<PathBuf, crate::ConfigError> {
         let dir = Self::data_dir()?.join("temp");
         std::fs::create_dir_all(&dir)
             .map_err(ConfigError::from)?;

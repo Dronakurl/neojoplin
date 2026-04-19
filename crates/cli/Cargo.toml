@@ -12,6 +12,8 @@ name = "neojoplin"
 path = "src/main.rs"
 
 [dependencies]
+joplin-domain = { path = "../joplin-domain" }
+joplin-sync = { path = "../joplin-sync" }
 neojoplin-core = { path = "../core" }
 neojoplin-storage = { path = "../storage" }
 neojoplin-sync = { path = "../sync" }

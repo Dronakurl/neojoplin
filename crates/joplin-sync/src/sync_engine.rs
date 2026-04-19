@@ -1,6 +1,6 @@
 // Sync engine implementation
 
-use neojoplin_core::{Storage, WebDavClient, SyncEvent, Result, SyncPhase, SyncError, Note, Folder, Tag, NoteTag, now_ms};
+use joplin_domain::{Storage, WebDavClient, SyncEvent, Result, SyncPhase, SyncError, Note, Folder, Tag, NoteTag, now_ms};
 use std::sync::Arc;
 use tokio::sync::mpsc;
 use futures::io::AsyncReadExt;
@@ -12,7 +12,6 @@ use crate::sync_info::SyncInfo;
 struct SyncContext {
     last_sync_time: i64,
     remote_path: String,
-    client_id: String,
 }
 
 impl Default for SyncContext {
@@ -20,7 +19,6 @@ impl Default for SyncContext {
         Self {
             last_sync_time: 0,
             remote_path: "/neojoplin".to_string(),
-            client_id: String::new(),
         }
     }
 }
@@ -68,12 +66,6 @@ impl SyncEngine {
     /// Set the remote sync path
     pub fn with_remote_path(mut self, path: String) -> Self {
         self.context.remote_path = path;
-        self
-    }
-
-    /// Set the client ID
-    pub fn with_client_id(mut self, client_id: String) -> Self {
-        self.context.client_id = client_id;
         self
     }
 
@@ -215,7 +207,15 @@ impl SyncEngine {
             // 2. Delete corresponding remote files
             let total = deleted_items.len();
             for (i, deleted_item) in deleted_items.iter().enumerate() {
-                let remote_path = format!("{}/items/{}.md", self.context.remote_path, deleted_item.item_id);
+                // Try root level first, then subdirectories
+                let root_path = format!("{}/{}.md", self.context.remote_path, deleted_item.item_id);
+                let sub_path = format!("{}/items/{}.md", self.context.remote_path, deleted_item.item_id);
+
+                let remote_path = if self.webdav.exists(&root_path).await.unwrap_or(false) {
+                    root_path
+                } else {
+                    sub_path
+                };
 
                 if let Err(e) = self.webdav.delete(&remote_path).await {
                     let _ = self.event_tx.send(SyncEvent::Warning {
@@ -314,12 +314,12 @@ impl SyncEngine {
                     }
                 }
             }
-            Err(neojoplin_core::WebDavError::NotFound(_)) => {
+            Err(joplin_domain::WebDavError::NotFound(_)) => {
                 // No lock file - this is normal
             }
             Err(e) => {
                 // NotFound is expected for new sync targets - not a warning
-                if !matches!(e, neojoplin_core::WebDavError::NotFound(_)) {
+                if !matches!(e, joplin_domain::WebDavError::NotFound(_)) {
                     let _ = self.event_tx.send(SyncEvent::Warning {
                         message: format!("Failed to check lock status: {}", e)
                     });
@@ -342,8 +342,7 @@ impl SyncEngine {
             }
             Ok(None) => {
                 // Create new sync info - this is normal for new sync targets
-                let mut sync_info = SyncInfo::new();
-                sync_info.client_id = self.context.client_id.clone();
+                let sync_info = SyncInfo::new();
                 self.sync_info = Some(sync_info);
                 self.context.last_sync_time = 0;
             }
@@ -354,8 +353,7 @@ impl SyncEngine {
                     return Err(SyncError::Server(format!("Failed to load sync info: {}", e)).into());
                 }
                 // If it's a NotFound, create new sync info
-                let mut sync_info = SyncInfo::new();
-                sync_info.client_id = self.context.client_id.clone();
+                let sync_info = SyncInfo::new();
                 self.sync_info = Some(sync_info);
                 self.context.last_sync_time = 0;
             }
@@ -370,7 +368,7 @@ impl SyncEngine {
             // Update delta context timestamp
             let new_timestamp = now_ms();
             let updated_info = &mut self.sync_info.as_mut().unwrap();
-            updated_info.update_delta_timestamp(new_timestamp);
+            updated_info.update_delta_timestamp();
 
             // Save to remote
             updated_info.save_to_remote(self.webdav.as_ref(), &self.context.remote_path).await
@@ -401,7 +399,8 @@ impl SyncEngine {
     }
 
     async fn upload_folder(&self, folder: &Folder) -> Result<()> {
-        let remote_path = format!("{}/folders/{}.md", self.context.remote_path, folder.id);
+        // Upload to root level for Joplin compatibility
+        let remote_path = format!("{}/{}.md", self.context.remote_path, folder.id);
         let content = self.serialize_folder(folder)?;
 
         let _ = self.event_tx.send(SyncEvent::ItemUpload {
@@ -454,7 +453,8 @@ impl SyncEngine {
     }
 
     async fn upload_note(&self, note: &Note) -> Result<()> {
-        let remote_path = format!("{}/items/{}.md", self.context.remote_path, note.id);
+        // Upload to root level for Joplin compatibility
+        let remote_path = format!("{}/{}.md", self.context.remote_path, note.id);
         let content = self.serialize_note(note)?;
 
         let _ = self.event_tx.send(SyncEvent::ItemUpload {
@@ -496,6 +496,39 @@ impl SyncEngine {
 
     async fn list_remote_items(&self) -> Result<Vec<RemoteItem>> {
         let mut remote_items = Vec::new();
+
+        // First, scan root level for .md files (Joplin compatibility)
+        match self.webdav.list(&self.context.remote_path).await {
+            Ok(entries) => {
+                tracing::info!("Scanning root level for items in: {}", self.context.remote_path);
+                for entry in entries {
+                    // Only process .md files at root level (excluding known metadata files)
+                    if entry.path.ends_with(".md") &&
+                       !entry.path.contains("/.lock/") &&
+                       !entry.path.contains("/.sync/") &&
+                       !entry.path.contains("/temp/") &&
+                       !entry.path.contains("/.resource/") &&
+                       !entry.path.ends_with("/info.json") &&
+                       !entry.path.ends_with("/sync.json") {
+
+                        if let Some(id) = entry.path.strip_suffix(".md")
+                            .and_then(|path| path.rsplit('/').next()) {
+                            // Determine type by downloading and checking the file
+                            let item_type = self.get_remote_item_type(id).await.unwrap_or(ItemType::Note);
+                            remote_items.push(RemoteItem {
+                                id: id.to_string(),
+                                item_type,
+                            });
+                            tracing::debug!("Found root level item: {} (type: {:?})", id, item_type);
+                        }
+                    }
+                }
+                tracing::info!("Found {} root level items", remote_items.len());
+            }
+            Err(e) => {
+                tracing::warn!("Failed to list root level items: {}", e);
+            }
+        }
 
         // List items from /items/ directory (notes)
         let items_path = format!("{}/items", self.context.remote_path);
@@ -582,7 +615,36 @@ impl SyncEngine {
         Ok(remote_items)
     }
 
-    fn find_delta_items(&self, remote_items: &[RemoteItem], local_items: &[neojoplin_core::SyncItem]) -> Vec<RemoteItem> {
+    /// Determine the type of a remote item by downloading and checking its content
+    async fn get_remote_item_type(&self, id: &str) -> Result<ItemType> {
+        let remote_path = format!("{}/{}.md", self.context.remote_path, id);
+
+        match self.webdav.get(&remote_path).await {
+            Ok(mut content) => {
+                let mut text = String::new();
+                if futures::io::AsyncReadExt::read_to_string(&mut content, &mut text).await.is_ok() {
+                    // Check for type_ field in the content
+                    if text.contains("type_: 1") {
+                        return Ok(ItemType::Note);
+                    } else if text.contains("type_: 2") {
+                        return Ok(ItemType::Folder);
+                    } else if text.contains("type_: 3") {
+                        return Ok(ItemType::Tag);
+                    } else if text.contains("type_: 4") {
+                        return Ok(ItemType::Resource);
+                    }
+                }
+            }
+            Err(e) => {
+                tracing::warn!("Failed to download item {} for type detection: {}", id, e);
+            }
+        }
+
+        // Default to Note if we can't determine the type
+        Ok(ItemType::Note)
+    }
+
+    fn find_delta_items(&self, remote_items: &[RemoteItem], local_items: &[joplin_domain::SyncItem]) -> Vec<RemoteItem> {
         let mut items_to_download = Vec::new();
 
         tracing::debug!("Finding delta items: {} remote, {} local", remote_items.len(), local_items.len());
@@ -612,6 +674,19 @@ impl SyncEngine {
     }
 
     async fn download_item(&self, item_id: &str, item_type: &ItemType) -> Result<()> {
+        // Try root level first (Joplin compatibility), then fall back to subdirectories
+        let root_path = format!("{}/{}.md", self.context.remote_path, item_id);
+        let subdir_path = format!("{}/{}/{}.md",
+            self.context.remote_path,
+            match item_type {
+                ItemType::Folder => "folders",
+                ItemType::Note => "items",
+                ItemType::Tag => "tags",
+                ItemType::Resource => "resources",
+            },
+            item_id
+        );
+
         let (remote_path, type_name) = match item_type {
             ItemType::Folder => (format!("{}/folders/{}.md", self.context.remote_path, item_id), "folder"),
             ItemType::Note => (format!("{}/items/{}.md", self.context.remote_path, item_id), "note"),
@@ -619,7 +694,16 @@ impl SyncEngine {
             ItemType::Resource => (format!("{}/resources/{}.md", self.context.remote_path, item_id), "resource"),
         };
 
-        tracing::info!("Downloading {} {} from: {}", type_name, item_id, remote_path);
+        // Try root level first, then subdirectory
+        let final_path = if self.webdav.exists(&root_path).await.unwrap_or(false) {
+            tracing::debug!("Downloading from root level: {}", root_path);
+            root_path
+        } else {
+            tracing::debug!("Downloading from subdirectory: {}", remote_path);
+            remote_path.clone()
+        };
+
+        tracing::info!("Downloading {} {} from: {}", type_name, item_id, final_path);
 
         let _ = self.event_tx.send(SyncEvent::ItemDownload {
             item_type: type_name.to_string(),
@@ -627,7 +711,7 @@ impl SyncEngine {
         });
 
         // Download item content
-        let mut reader = self.webdav.get(&remote_path).await
+        let mut reader = self.webdav.get(&final_path).await
             .map_err(|e| {
                 tracing::error!("Failed to download {} {}: {}", type_name, item_id, e);
                 SyncError::Server(format!("Failed to download item {}: {}", item_id, e))
@@ -887,9 +971,17 @@ impl SyncEngine {
         let mut folder = Folder::default();
         folder.id = id.to_string();
 
-        // Parse title (first line)
+        // Parse title (first line without a colon) and other fields
         for line in content.lines() {
             if line.is_empty() || line.starts_with('#') {
+                continue;
+            }
+
+            // If the line doesn't contain a colon, it's the title
+            if !line.contains(':') {
+                if folder.title.is_empty() {
+                    folder.title = line.trim().to_string();
+                }
                 continue;
             }
 
@@ -897,12 +989,7 @@ impl SyncEngine {
                 let value = value.trim();
                 match key.trim() {
                     "id" => folder.id = value.to_string(),
-                    "title" => {
-                        // Title is the first line without a colon
-                        if folder.title.is_empty() {
-                            folder.title = value.to_string();
-                        }
-                    },
+                    "title" => folder.title = value.to_string(),
                     "parent_id" => folder.parent_id = value.to_string(),
                     "created_time" => folder.created_time = self.iso_to_ms(value)?,
                     "updated_time" => folder.updated_time = self.iso_to_ms(value)?,
@@ -971,7 +1058,7 @@ mod tests {
         // This test would require mock data
         // For now, just verify the method exists
         let remote_items = vec!["item1".to_string(), "item2".to_string()];
-        let _local_items: Vec<neojoplin_core::SyncItem> = vec![];
+        let _local_items: Vec<joplin_domain::SyncItem> = vec![];
 
         // Can't call self.find_delta_items in unit test without instance
         // This is just a placeholder to show the concept

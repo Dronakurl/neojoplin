@@ -1,7 +1,8 @@
 // NeoJoplin - Main entry point (CLI + TUI)
 
 use clap::{Parser, Subcommand};
-use neojoplin_core::{now_ms, Note, Folder, Storage, Editor};
+use joplin_domain::{now_ms, Note, Folder, Storage};
+use neojoplin_core::Editor;
 use neojoplin_storage::SqliteStorage;
 use std::sync::Arc;
 use std::path::PathBuf;
@@ -312,9 +313,9 @@ async fn main() -> Result<()> {
         }
 
         Commands::Sync { url, username, password, remote } => {
-            use neojoplin_sync::{SyncEngine, ReqwestWebDavClient, WebDavConfig, ClientIdManager};
+            use joplin_sync::{SyncEngine, ReqwestWebDavClient, WebDavConfig};
             use tokio::sync::mpsc;
-            use neojoplin_core::SyncEvent;
+            use joplin_domain::SyncEvent;
 
             let url = url.ok_or_else(|| anyhow::anyhow!("WebDAV URL is required"))?;
 
@@ -325,11 +326,6 @@ async fn main() -> Result<()> {
             let config = WebDavConfig::new(url, username, password);
             let webdav = Arc::new(ReqwestWebDavClient::new(config)?);
 
-            // Load or generate client ID
-            let data_dir = neojoplin_core::Config::data_dir()?;
-            let client_id_manager = ClientIdManager::new(data_dir)?;
-            let client_id = client_id_manager.load_or_generate().await?;
-
             let (event_tx, mut event_rx) = mpsc::unbounded_channel();
 
             let mut sync_engine = SyncEngine::new(
@@ -337,8 +333,7 @@ async fn main() -> Result<()> {
                 webdav,
                 event_tx,
             )
-            .with_remote_path(remote)
-            .with_client_id(client_id);
+            .with_remote_path(remote);
 
             println!("Starting sync...");
 

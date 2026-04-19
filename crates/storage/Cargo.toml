@@ -8,7 +8,8 @@ repository.workspace = true
 description = "Storage layer for NeoJoplin (SQLite)"
 
 [dependencies]
-neojoplin-core = { path = "../core", features = ["sqlx"] }
+joplin-domain = { path = "../joplin-domain", features = ["sqlx"] }
+neojoplin-core = { path = "../core" }
 tokio = { workspace = true }
 sqlx = { workspace = true }
 async-trait = { workspace = true }

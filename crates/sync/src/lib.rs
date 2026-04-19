@@ -1,12 +1,16 @@
-// Sync crate - WebDAV sync engine
+// neojoplin-sync - NeoJoplin-specific sync wrapper
+//
+// This crate provides NeoJoplin-specific convenience wrappers around
+// the generic joplin-sync functionality.
 
-mod webdav;
-mod webdav_trait;
-mod sync_engine;
-mod fake_webdav;
-mod sync_info;
+// Re-export from joplin-sync for convenience
+pub use joplin_sync::{
+    SyncEngine, ReqwestWebDavClient, WebDavConfig,
+    SyncInfo, DeltaContext
+};
 
-pub use webdav::{ReqwestWebDavClient, WebDavConfig};
-pub use sync_engine::SyncEngine;
-pub use fake_webdav::FakeWebDavClient;
-pub use sync_info::{SyncInfo, DeltaContext, ClientIdManager};
+// Re-export from joplin-domain for convenience
+pub use joplin_domain::{
+    WebDavClient, DavEntry, SyncEvent, LockHandle,
+    SyncPhase, SyncState, WebDavError, SyncError
+};

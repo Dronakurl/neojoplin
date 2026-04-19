@@ -1,7 +1,7 @@
 // WebDavClient trait implementation for ReqwestWebDavClient
 
 use crate::ReqwestWebDavClient;
-use neojoplin_core::{WebDavClient, DavEntry, WebDavError};
+use joplin_domain::{WebDavClient, DavEntry, WebDavError};
 use futures::io::{Cursor, AsyncRead};
 use async_trait::async_trait;
 

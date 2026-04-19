@@ -4,7 +4,7 @@ use sqlx::{sqlite::SqliteConnectOptions, SqlitePool, sqlite::SqlitePoolOptions};
 use std::path::PathBuf;
 use std::str::FromStr;
 
-use neojoplin_core::{
+use joplin_domain::{
     Storage, DatabaseError, Note, Folder, Tag, NoteTag,
     SyncItem, DeletedItem, now_ms
 };

@@ -2,7 +2,7 @@
 
 use reqwest::{Client, header};
 use std::time::Duration;
-use neojoplin_core::{WebDavError, FileMeta};
+use joplin_domain::{WebDavError, FileMeta};
 use std::net::{IpAddr, Ipv4Addr};
 
 // Use WebDavError directly in this module

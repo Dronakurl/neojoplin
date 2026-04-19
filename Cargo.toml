@@ -1,5 +1,8 @@
 [workspace]
 members = [
+    "crates/joplin-domain",
+    "crates/joplin",
+    "crates/joplin-sync",
     "crates/core",
     "crates/storage",
     "crates/sync",
@@ -13,7 +16,7 @@ resolver = "2"
 [workspace.package]
 version = "0.1.0"
 edition = "2021"
-authors = ["Konrad Urlichs <konrad.urlichs@gmx.de>"]
+authors = ["Dronakurl <dronakurl@proton.me>"]
 license = "MIT"
 repository = "https://github.com/Dronakurl/neojoplin"
 
