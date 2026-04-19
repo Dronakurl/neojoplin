@@ -128,6 +128,29 @@ neojoplin sync --url http://localhost:8080/webdav --remote /my-sync
 neojoplin sync --url https://webdav.mc.gmx.net -U user@gmx.de -P password --remote /kjoplin_test
 ```
 
+### Encryption State Changes
+
+NeoJoplin automatically handles transitions between encrypted and unencrypted states:
+
+**Enabling E2EE on existing data:**
+```bash
+# Previously synced without encryption
+neojoplin sync --url http://localhost:8080/webdav --remote /my-sync
+
+# Now sync with encryption — all items re-uploaded encrypted
+neojoplin sync --url http://localhost:8080/webdav --remote /my-sync --e2ee-password MyPassword
+```
+When E2EE is enabled on a previously unencrypted sync target, all items are automatically re-uploaded in encrypted format.
+
+**Disabling E2EE:**
+```bash
+neojoplin e2ee disable --force
+neojoplin sync --url http://localhost:8080/webdav --remote /my-sync
+```
+All items are re-uploaded unencrypted. Note: this does not delete the master key from the server.
+
+**Auto-enable**: If `--e2ee-password` is provided but no local encryption config exists, NeoJoplin automatically generates a master key and enables E2EE.
+
 ## Crate Architecture
 
 The sync functionality is organized into reusable crates:
