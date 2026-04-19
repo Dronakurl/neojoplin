@@ -319,7 +319,7 @@ impl App {
         Ok(false)
     }
 
-    /// Sync with local filesystem
+    /// Sync with WebDAV server
     async fn sync(&mut self) -> Result<()> {
         self.state.set_status("Starting sync...");
 
@@ -328,7 +328,7 @@ impl App {
 
         // Load sync configuration
         if !sync_config_path.exists() {
-            self.state.set_status("Sync not configured");
+            self.state.set_status("Sync not configured - run setup first");
             return Ok(());
         }
 
@@ -338,6 +338,73 @@ impl App {
         let sync_type = sync_config["type"].as_str().unwrap_or("local");
 
         match sync_type {
+            "webdav" => {
+                // Get WebDAV configuration
+                let url = sync_config.get("url")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("http://localhost:8080/webdav");
+
+                let remote_path = sync_config.get("remote_path")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("/neojoplin");
+
+                self.state.set_status(&format!("Syncing to {}{}...", url, remote_path));
+
+                // Create WebDAV client and sync engine
+                use joplin_sync::{ReqwestWebDavClient, WebDavConfig, SyncEngine};
+                use tokio::sync::mpsc;
+
+                let webdav_config = WebDavConfig {
+                    base_url: url.to_string(),
+                    username: String::new(), // Empty for local WebDAV
+                    password: String::new(), // Empty for local WebDAV
+                };
+
+                let webdav_client = Arc::new(ReqwestWebDavClient::new(webdav_config)?);
+                let (event_tx, mut event_rx) = mpsc::unbounded_channel();
+
+                let mut sync_engine = SyncEngine::new(
+                    self.storage.clone(),
+                    webdav_client,
+                    event_tx,
+                ).with_remote_path(remote_path.to_string());
+
+                // Spawn a task to handle sync events
+                let storage_clone = self.storage.clone();
+                tokio::spawn(async move {
+                    while let Some(event) = event_rx.recv().await {
+                        match event {
+                            joplin_sync::SyncEvent::Warning { message } => {
+                                eprintln!("Sync warning: {}", message);
+                            }
+                            joplin_sync::SyncEvent::Failed { error } => {
+                                eprintln!("Sync error: {}", error);
+                            }
+                            joplin_sync::SyncEvent::Completed { duration } => {
+                                eprintln!("Sync completed in {:?}", duration);
+                            }
+                            _ => {}
+                        }
+                    }
+                });
+
+                // Perform sync
+                match sync_engine.sync().await {
+                    Ok(_) => {
+                        self.state.set_status("Sync completed successfully");
+
+                        // Reload data
+                        let folders = storage_clone.list_folders().await?;
+                        self.state.set_folders(folders);
+
+                        let notes = storage_clone.list_notes(None).await?;
+                        self.state.set_notes(notes);
+                    }
+                    Err(e) => {
+                        self.state.set_status(&format!("Sync failed: {}", e));
+                    }
+                }
+            }
             "local" => {
                 // Get sync path from config
                 let sync_path = if let Some(path) = sync_config.get("path") {
@@ -346,12 +413,11 @@ impl App {
                     data_dir.join("sync")
                 };
 
-                self.state.set_status(&format!("Syncing to {}...", sync_path.display()));
+                self.state.set_status(&format!("Local sync to {}...", sync_path.display()));
 
                 // For now, just simulate sync with local filesystem
-                // In a full implementation, this would use the SyncEngine
                 tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
-                self.state.set_status("Sync completed (local)");
+                self.state.set_status("Local sync completed");
             }
             _ => {
                 self.state.set_status("Unknown sync type configured");

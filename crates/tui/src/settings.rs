@@ -1,6 +1,6 @@
 // Settings management for TUI
 
-use neojoplin_e2ee::MasterKey;
+use joplin_sync::{E2eeService, MasterKey, EncryptionMethod};
 use anyhow::Result;
 use std::path::PathBuf;
 
@@ -128,18 +128,18 @@ impl Settings {
             return Ok(());
         }
 
-        // Create master key
-        let master_key = MasterKey::new();
-        let key_id = master_key.id.clone();
+        // Create E2EE service and generate master key
+        let mut e2ee = E2eeService::new();
+        e2ee.set_master_password(password.to_string());
 
-        // Encrypt master key with password
-        let encrypted_master_key = master_key.encrypt_with_password(password)?;
+        let (key_id, master_key) = e2ee.generate_master_key(password)?;
 
-        // Save to file
+        // Save master key to file
         let keys_dir = data_dir.join("keys");
         tokio::fs::create_dir_all(&keys_dir).await?;
         let key_path = keys_dir.join(format!("{}.json", key_id));
-        tokio::fs::write(&key_path, encrypted_master_key).await?;
+        let master_key_json = serde_json::to_string_pretty(&master_key)?;
+        tokio::fs::write(&key_path, master_key_json).await?;
 
         // Save active key ID to config
         let config_path = data_dir.join("encryption.json");

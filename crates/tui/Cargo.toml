@@ -12,8 +12,6 @@ joplin-domain = { path = "../joplin-domain" }
 joplin-sync = { path = "../joplin-sync" }
 neojoplin-core = { path = "../core" }
 neojoplin-storage = { path = "../storage" }
-neojoplin-sync = { path = "../sync" }
-neojoplin-e2ee = { path = "../e2ee" }
 tokio = { workspace = true }
 ratatui = "0.28"
 crossterm = "0.28"
