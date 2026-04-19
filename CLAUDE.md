@@ -114,11 +114,24 @@ docker start neojoplin-webdav-1
 ```
 
 **Local WebDAV server details:**
-- URL: `http://localhost:8080/webdav`
+- URL: `http://localhost:8080/webdav/` (note trailing slash)
 - No authentication required
 - Auto-starts on port 8080
 - Persists data in Docker volume
 - Supports PROPFIND, GET, PUT, DELETE, MKCOL operations
+
+**Automated E2EE Setup:**
+```bash
+# Run the setup script to configure both neojoplin and joplin CLI
+./setup_local_e2ee.sh
+```
+
+This script will:
+- Check and start the Docker WebDAV server if needed
+- Configure NeoJoplin to use the local WebDAV server
+- Configure Joplin CLI to use the same WebDAV target
+- Create test data and verify cross-compatibility
+- Set up E2EE password from .env file for automated testing
 
 **Using local WebDAV for testing:**
 ```bash
@@ -128,7 +141,13 @@ rm -rf ~/.local/share/neojoplin/joplin.db && ~/.local/bin/neojoplin init
 ~/.local/bin/neojoplin mk-note "Test Note" --body "Content" --parent <folder-id>
 
 # Sync to local WebDAV
-~/.local/bin/neojoplin sync --url http://localhost:8080/webdav --remote /test-sync
+~/.local/bin/neojoplin sync --url http://localhost:8080/webdav/ --remote /test-sync
+
+# Enable E2EE in NeoJoplin TUI (press 'S' for settings, then Encryption tab)
+# Enable E2EE in Joplin CLI: joplin e2ee:enable
+
+# Test E2EE sync
+~/.local/bin/neojoplin sync --url http://localhost:8080/webdav/ --remote /test-sync
 
 # Verify contents
 curl -s -X PROPFIND "http://localhost:8080/webdav/test-sync/" -H "Depth: 1"
