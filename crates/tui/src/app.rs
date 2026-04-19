@@ -271,13 +271,16 @@ impl App {
                 }
             }
 
-            // Enter - edit selected note
+            // Enter - edit selected note, or switch to notes panel from notebooks
             KeyCode::Enter => {
                 if self.state.focus == FocusPanel::Notes {
                     if let Some(note) = self.state.selected_note() {
                         let note_clone = note.clone();
                         self.edit_note(&note_clone, terminal).await?;
                     }
+                } else if self.state.focus == FocusPanel::Notebooks {
+                    // Switch to notes panel when Enter is pressed on notebooks
+                    self.state.next_panel(); // Switch from Notebooks to Notes
                 }
             }
 
