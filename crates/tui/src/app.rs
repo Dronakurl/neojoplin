@@ -129,9 +129,9 @@ impl App {
             // Render UI
             terminal.draw(|f| {
                 if self.show_help {
-                    ui::render_help(f, self.help_scroll);
+                    ui::render_help(f, self.help_scroll, &self.state);
                 } else if self.state.show_quit_confirmation {
-                    ui::render_quit_confirmation(f);
+                    ui::render_quit_confirmation(f, &self.state);
                 } else if self.state.show_settings {
                     ui::render_settings(f, &self.state);
                 } else if self.state.show_rename_prompt {

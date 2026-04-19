@@ -70,24 +70,33 @@ fn render_notebooks_panel(f: &mut Frame, state: &AppState, area: Rect) {
             ListItem::new("Press N to create one").style(theme.dim()),
         ]
     } else {
-        state
-            .folders
-            .iter()
-            .enumerate()
-            .map(|(i, folder)| {
-                let is_selected = state.selected_folder == Some(i);
-                let style = if is_selected {
-                    theme.selection()
-                } else {
-                    theme.text()
-                };
+        let mut all_items = vec![];
 
-                // Extract emoji from folder icon, or use default
-                let emoji = extract_folder_emoji(&folder.icon).unwrap_or_else(|| "📁 ".to_string());
+        // Add "All Notebooks" option at the top
+        let is_all_selected = state.all_notebooks_mode;
+        let all_style = if is_all_selected {
+            theme.selection()
+        } else {
+            theme.text()
+        };
+        all_items.push(ListItem::new("📚 All Notebooks").style(all_style));
 
-                ListItem::new(format!("{}{}", emoji, folder.title)).style(style)
-            })
-            .collect()
+        // Add individual notebooks
+        for (i, folder) in state.folders.iter().enumerate() {
+            let is_selected = state.selected_folder == Some(i) && !state.all_notebooks_mode;
+            let style = if is_selected {
+                theme.selection()
+            } else {
+                theme.text()
+            };
+
+            // Extract emoji from folder icon, or use default
+            let emoji = extract_folder_emoji(&folder.icon).unwrap_or_else(|| "📁 ".to_string());
+
+            all_items.push(ListItem::new(format!("{}{}", emoji, folder.title)).style(style));
+        }
+
+        all_items
     };
 
     let list = List::new(items)
@@ -172,28 +181,12 @@ fn render_content_panel(f: &mut Frame, state: &AppState, area: Rect) {
 
     let content = if let Some(note) = state.selected_note() {
         if note.body.is_empty() {
-            Text::from(vec![
-                Line::from("This note is empty").style(theme.dim()),
-                Line::from(""),
-                Line::from("Press Enter to edit this note").style(theme.primary()),
-            ])
+            Text::from("This note is empty").style(theme.dim())
         } else {
             Text::from(note.body.clone())
         }
     } else {
-        Text::from(vec![
-            Line::from("No note selected").style(theme.dim()),
-            Line::from(""),
-            Line::from("Select a note to view its content").style(theme.dim()),
-            Line::from(""),
-            Line::from("Keybindings:").style(theme.primary()),
-            Line::from("  Tab/Shift-Tab - Switch panels").style(theme.text()),
-            Line::from("  hjkl/Arrows     - Move selection").style(theme.text()),
-            Line::from("  Enter           - Edit selected note").style(theme.text()),
-            Line::from("  n               - New note").style(theme.text()),
-            Line::from("  N               - New notebook").style(theme.text()),
-            Line::from("  d               - Delete selected").style(theme.text()),
-        ])
+        Text::from("Select a note to view its content").style(theme.dim())
     };
 
     let paragraph = Paragraph::new(content)
@@ -212,64 +205,71 @@ fn render_content_panel(f: &mut Frame, state: &AppState, area: Rect) {
     f.render_widget(paragraph, area);
 }
 
-/// Render keybinding ribbon (show available keybindings)
+/// Render keybinding ribbon (show available keybindings) with Zellij-style arrows
 fn render_keybinding_ribbon(f: &mut Frame, state: &AppState, area: Rect) {
-    let use_two_lines = area.height > 1;
     let theme = &state.theme;
 
-    let key_style = theme.accent();
+    // Define keybindings in the Zellij style: (key, action, is_alternate)
+    let bindings = &[
+        ("q", "QUIT", false),
+        ("?", "HELP", true),
+        ("Tab", "PANEL", false),
+        ("hjkl", "NAV", true),
+        ("Ent", "EDIT", false),
+        ("n", "NOTE", true),
+        ("N", "FOLDER", false),
+        ("d", "DELETE", true),
+        ("s", "SYNC", false),
+        ("S", "SETTINGS", true),
+    ];
 
-    let help_text = if use_two_lines {
-        vec![
-            Line::from(vec![
-                Span::styled("q", key_style),
-                Span::raw(":quit ").style(theme.muted()),
-                Span::styled("?", key_style),
-                Span::raw(":help ").style(theme.muted()),
-                Span::styled("Tab", key_style),
-                Span::raw(":panel ").style(theme.muted()),
-                Span::styled("hjkl", key_style),
-                Span::raw(":nav ").style(theme.muted()),
-                Span::styled("Ent", key_style),
-                Span::raw(":edit ").style(theme.muted()),
-                Span::styled("n", key_style),
-                Span::raw(":new ").style(theme.muted()),
-            ]),
-            Line::from(vec![
-                Span::styled("N", key_style),
-                Span::raw(":folder ").style(theme.muted()),
-                Span::styled("d", key_style),
-                Span::raw(":del ").style(theme.muted()),
-                Span::styled("s", key_style),
-                Span::raw(":sync ").style(theme.muted()),
-                Span::styled("S", key_style),
-                Span::raw(":settings ").style(theme.muted()),
-            ]),
-        ]
-    } else {
-        vec![Line::from(vec![
-            Span::styled("q", key_style),
-            Span::raw(":quit ").style(theme.muted()),
-            Span::styled("?", key_style),
-            Span::raw(":help ").style(theme.muted()),
-            Span::styled("Tab", key_style),
-            Span::raw(":panel ").style(theme.muted()),
-            Span::styled("hjkl", key_style),
-            Span::raw(":nav ").style(theme.muted()),
-            Span::styled("Ent", key_style),
-            Span::raw(":edit ").style(theme.muted()),
-            Span::styled("n", key_style),
-            Span::raw(":new ").style(theme.muted()),
-            Span::styled("N", key_style),
-            Span::raw(":nbk ").style(theme.muted()),
-            Span::styled("d", key_style),
-            Span::raw(":del ").style(theme.muted()),
-            Span::styled("s", key_style),
-            Span::raw(":sync ").style(theme.muted()),
-            Span::styled("S", key_style),
-            Span::raw(":set ").style(theme.muted()),
-        ])]
-    };
+    // Check which bindings fit on screen
+    let available_width = area.width as usize;
+    let arrow = "";
+    let mut rendered_width = 0;
+    let mut fitting_bindings = vec![];
+
+    for (key, action, is_alternate) in bindings {
+        // Calculate width: arrow (1) + " <" (2) + key + "> " (2) + action + " " (1)
+        let binding_width = 1 + 2 + key.len() + 2 + action.len() + 1;
+
+        if rendered_width + binding_width <= available_width {
+            fitting_bindings.push((*key, *action, *is_alternate));
+            rendered_width += binding_width;
+        } else {
+            break;
+        }
+    }
+
+    // Build the styled line with Zellij-style arrow format
+    let mut spans = vec![];
+    let mut is_first = true;
+
+    for (key, action, is_alternate) in fitting_bindings {
+        let background = if is_alternate {
+            theme.accent  // Use accent color for alternate bindings
+        } else {
+            theme.primary  // Use primary color for regular bindings
+        };
+
+        if is_first {
+            // First binding: no leading arrow, just " <key> ACTION "
+            spans.push(Span::styled(" <".to_string(), Style::default().fg(background).bg(theme.surface)));
+            spans.push(Span::styled(key.to_string(), Style::default().fg(theme.surface).bg(background).bold()));
+            spans.push(Span::styled("> ".to_string(), Style::default().fg(theme.surface).bg(background)));
+            spans.push(Span::styled(format!("{} ", action), Style::default().fg(theme.surface).bg(background).bold()));
+            is_first = false;
+        } else {
+            // Subsequent bindings: full arrow format "  <key> ACTION "
+            spans.push(Span::styled(arrow.to_string(), Style::default().fg(background).bg(theme.surface)));
+            spans.push(Span::styled(" <".to_string(), Style::default().fg(background).bg(theme.surface)));
+            spans.push(Span::styled(key.to_string(), Style::default().fg(theme.surface).bg(background).bold()));
+            spans.push(Span::styled("> ".to_string(), Style::default().fg(theme.surface).bg(background)));
+            spans.push(Span::styled(format!("{} ", action), Style::default().fg(theme.surface).bg(background).bold()));
+        }
+    }
+
+    let help_text = vec![Line::from(spans)];
 
     let paragraph = Paragraph::new(help_text)
         .alignment(Alignment::Left)
@@ -318,6 +318,22 @@ pub fn render_settings(f: &mut Frame, state: &AppState) {
         tabs[current_tab_idx]
     );
 
+    // Create bottom title with key hints
+    let bottom_title = Line::from(vec![
+        Span::styled("[", theme.muted()),
+        Span::styled("<", theme.accent()),
+        Span::styled("]", theme.muted()),
+        Span::raw(" prev ").style(theme.text()),
+        Span::styled("[", theme.muted()),
+        Span::styled(">", theme.accent()),
+        Span::styled("]", theme.muted()),
+        Span::raw(" next ").style(theme.text()),
+        Span::styled("[", theme.muted()),
+        Span::styled("q", theme.accent()),
+        Span::styled("]", theme.muted()),
+        Span::raw(" close ").style(theme.text()),
+    ]);
+
     // Render based on current tab
     let content = match state.settings.current_tab {
         SettingsTab::General => Text::from(render_general_settings_inline(state)),
@@ -329,6 +345,7 @@ pub fn render_settings(f: &mut Frame, state: &AppState) {
         .block(
             Block::default()
                 .title(title)
+                .title_bottom(bottom_title)
                 .borders(Borders::ALL)
                 .border_style(theme.border_focused())
         )
@@ -336,47 +353,6 @@ pub fn render_settings(f: &mut Frame, state: &AppState) {
         .alignment(Alignment::Left);
 
     f.render_widget(paragraph, area);
-
-    // Render tab navigation hint at bottom
-    let hint_area = Rect {
-        x: area.x,
-        y: area.bottom() - 3,
-        width: area.width,
-        height: 3,
-    };
-
-    let hint_text = Text::from(vec![
-        Line::from(vec![
-            Span::styled("[", theme.muted()),
-            Span::styled("<", theme.accent()),
-            Span::styled("]", theme.muted()),
-            Span::raw(" prev tab "),
-            Span::styled("[", theme.muted()),
-            Span::styled(">", theme.accent()),
-            Span::styled("]", theme.muted()),
-            Span::raw(" next tab "),
-            Span::styled("[", theme.muted()),
-            Span::styled("q", theme.accent()),
-            Span::styled("]", theme.muted()),
-            Span::raw(" close "),
-        ]),
-        Line::from(vec![
-            Span::styled("[", theme.muted()),
-            Span::styled("e", theme.accent()),
-            Span::styled("]", theme.muted()),
-            Span::raw(" enable encryption "),
-            Span::styled("[", theme.muted()),
-            Span::styled("d", theme.accent()),
-            Span::styled("]", theme.muted()),
-            Span::raw(" disable encryption "),
-        ]),
-    ]);
-
-    let hint_paragraph = Paragraph::new(hint_text)
-        .alignment(Alignment::Center)
-        .block(Block::default().bg(theme.surface));
-
-    f.render_widget(hint_paragraph, hint_area);
 }
 
 /// Render general settings (inline)
@@ -607,15 +583,27 @@ fn render_about_settings_inline() -> Vec<Line<'static>> {
 }
 
 /// Render help popup
-pub fn render_help(f: &mut Frame, scroll: u16) {
+pub fn render_help(f: &mut Frame, scroll: u16, state: &AppState) {
     let area = centered_rect(80, 80, f.area());
+    let theme = &state.theme;
+
+    let bottom_title = Line::from(vec![
+        Span::styled("[", theme.muted()),
+        Span::styled("q", theme.accent()),
+        Span::styled("]", theme.muted()),
+        Span::raw(" close ").style(theme.text()),
+        Span::styled("[", theme.muted()),
+        Span::styled("j/k", theme.accent()),
+        Span::styled("]", theme.muted()),
+        Span::raw(" scroll ").style(theme.text()),
+    ]);
 
     let text = Text::from(vec![
-        Line::from("NEOJOPLIN").bold(),
+        Line::from("NEOJOPLIN").style(theme.primary()),
         Line::from(""),
-        Line::from("Joplin-compatible terminal note-taking client").dim(),
+        Line::from("Joplin-compatible terminal note-taking client").style(theme.muted()),
         Line::from(""),
-        Line::from("Keybindings").bold(),
+        Line::from("Keybindings").style(theme.primary()),
         Line::from(""),
         Line::from("Navigation:"),
         Line::from("  Tab/Shift-Tab  Switch panels"),
@@ -636,9 +624,10 @@ pub fn render_help(f: &mut Frame, scroll: u16) {
     let paragraph = Paragraph::new(text)
         .block(
             Block::default()
-                .title("Help (q: close, j/k: scroll)")
+                .title("Help")
+                .title_bottom(bottom_title)
                 .borders(Borders::ALL)
-                .border_style(Style::default().bold()),
+                .border_style(theme.border_focused()),
         )
         .wrap(Wrap { trim: false })
         .scroll((scroll, 0))
@@ -648,37 +637,38 @@ pub fn render_help(f: &mut Frame, scroll: u16) {
 }
 
 /// Render quit confirmation popup
-pub fn render_quit_confirmation(f: &mut Frame) {
+pub fn render_quit_confirmation(f: &mut Frame, state: &AppState) {
     let area = centered_rect(50, 25, f.area());
+    let theme = &state.theme;
+
+    let bottom_title = Line::from(vec![
+        Span::styled("[", theme.muted()),
+        Span::styled("q", theme.accent()),
+        Span::styled("]", theme.muted()),
+        Span::raw(" or ").style(theme.text()),
+        Span::styled("[", theme.muted()),
+        Span::styled("y", theme.accent()),
+        Span::styled("]", theme.muted()),
+        Span::raw(" quit ").style(theme.text()),
+        Span::styled("[", theme.muted()),
+        Span::styled("any", theme.accent()),
+        Span::styled("]", theme.muted()),
+        Span::raw(" cancel ").style(theme.text()),
+    ]);
 
     let text = Text::from(vec![
-        Line::from("Quit NeoJoplin?").bold(),
         Line::from(""),
+        Line::from("Quit NeoJoplin?").style(theme.primary()),
         Line::from(""),
-        Line::from(vec![
-            Span::styled("[", Style::default().dim()),
-            Span::styled("q", Style::default().bold()),
-            Span::styled("]", Style::default().dim()),
-            Span::raw(" or "),
-            Span::styled("[", Style::default().dim()),
-            Span::styled("y", Style::default().bold()),
-            Span::styled("]", Style::default().dim()),
-            Span::raw(" to quit "),
-        ]),
-        Line::from(vec![
-            Span::styled("[", Style::default().dim()),
-            Span::styled("any", Style::default().bold()),
-            Span::styled("]", Style::default().dim()),
-            Span::raw(" other key to cancel "),
-        ]),
     ]);
 
     let paragraph = Paragraph::new(text)
         .block(
             Block::default()
                 .title("Confirm Quit")
+                .title_bottom(bottom_title)
                 .borders(Borders::ALL)
-                .border_style(Style::default().bold()),
+                .border_style(theme.border_focused()),
         )
         .wrap(Wrap { trim: true })
         .alignment(Alignment::Center);
@@ -688,7 +678,7 @@ pub fn render_quit_confirmation(f: &mut Frame) {
 
 /// Render rename prompt
 pub fn render_rename_prompt(f: &mut Frame, state: &AppState) {
-    let area = centered_rect(40, 15, f.area());
+    let area = centered_rect_with_min_width(40, 15, 50, f.area());
     let theme = &state.theme;
 
     let item_name = if state.focus == FocusPanel::Notes {
@@ -709,19 +699,17 @@ pub fn render_rename_prompt(f: &mut Frame, state: &AppState) {
         Span::raw(" cancel ").style(theme.text()),
     ]);
 
-    // Input field with visual highlighting
-    let input_text = format!("New name: {}", state.rename_input);
-    let input_paragraph = Paragraph::new(input_text)
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .border_style(theme.border_focused())
-                .style(theme.primary()),
-        )
-        .padding(Padding::horizontal(1));
+    // Input field with visual highlighting using a styled paragraph
+    let input_text = vec![
+        Span::styled("New name: ", theme.muted()),
+        Span::styled(&state.rename_input, theme.primary()),
+        Span::styled("█", theme.muted()), // Cursor indicator
+    ];
 
-    // Main dialog content
+    // Main dialog content with centered input
     let text = Text::from(vec![
+        Line::from(""),
+        Line::from(input_text),
         Line::from(""),
     ]);
 
@@ -737,10 +725,6 @@ pub fn render_rename_prompt(f: &mut Frame, state: &AppState) {
         .alignment(Alignment::Left);
 
     f.render_widget(paragraph, area);
-
-    // Render input field inside the dialog
-    let input_area = centered_rect(38, 13, f.area());
-    f.render_widget(input_paragraph, input_area);
 }
 
 /// Extract emoji from folder icon JSON field
@@ -789,6 +773,55 @@ fn centered_rect(percent_x: u16, percent_y: u16, r: Rect) -> Rect {
             .as_ref(),
         )
         .split(popup_layout[1])[1]
+}
+
+/// Helper to create centered rectangle with minimum width
+fn centered_rect_with_min_width(percent_x: u16, percent_y: u16, min_width: u16, r: Rect) -> Rect {
+    let popup_layout = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints(
+            [
+                Constraint::Percentage((100 - percent_y) / 2),
+                Constraint::Percentage(percent_y),
+                Constraint::Percentage((100 - percent_y) / 2),
+            ]
+            .as_ref(),
+        )
+        .split(r);
+
+    // Calculate the width as percentage, but ensure minimum width
+    let calculated_width = (r.width * percent_x) / 100;
+    let actual_width = calculated_width.max(min_width);
+
+    // If the calculated width is smaller than minimum, we need a different approach
+    if actual_width > calculated_width {
+        // Use fixed width centered
+        let horizontal_padding = r.width.saturating_sub(actual_width) / 2;
+        Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints(
+                [
+                    Constraint::Length(horizontal_padding),
+                    Constraint::Length(actual_width),
+                    Constraint::Length(horizontal_padding),
+                ]
+                .as_ref(),
+            )
+            .split(popup_layout[1])[1]
+    } else {
+        // Use percentage-based layout
+        Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints(
+                [
+                    Constraint::Percentage((100 - percent_x) / 2),
+                    Constraint::Percentage(percent_x),
+                    Constraint::Percentage((100 - percent_x) / 2),
+                ]
+                .as_ref(),
+            )
+            .split(popup_layout[1])[1]
+    }
 }
 
 #[cfg(test)]

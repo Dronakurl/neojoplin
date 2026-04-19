@@ -17,8 +17,10 @@ pub enum FocusPanel {
 pub struct AppState {
     /// List of all folders
     pub folders: Vec<Folder>,
-    /// Currently selected folder index
+    /// Currently selected folder index (None = "All Notebooks")
     pub selected_folder: Option<usize>,
+    /// Whether "All Notebooks" mode is active
+    pub all_notebooks_mode: bool,
     /// List of notes in selected folder
     pub notes: Vec<Note>,
     /// Currently selected note index
@@ -50,6 +52,7 @@ impl Default for AppState {
         Self {
             folders: Vec::new(),
             selected_folder: None,
+            all_notebooks_mode: false,
             notes: Vec::new(),
             selected_note: None,
             current_note_content: String::new(),
@@ -75,10 +78,23 @@ impl AppState {
     /// Set folders list
     pub fn set_folders(&mut self, folders: Vec<Folder>) {
         self.folders = folders;
-        // Select first folder if available
-        if !self.folders.is_empty() && self.selected_folder.is_none() {
+        // Select first folder if available (not in "All Notebooks" mode)
+        if !self.folders.is_empty() && self.selected_folder.is_none() && !self.all_notebooks_mode {
             self.selected_folder = Some(0);
         }
+    }
+
+    /// Set selected folder by index and return whether it changed
+    pub fn set_folder(&mut self, index: Option<usize>) -> bool {
+        let old_folder = self.selected_folder;
+        self.selected_folder = index;
+        self.all_notebooks_mode = index.is_none();
+        old_folder != index
+    }
+
+    /// Check if folder selection changed and needs notes reload
+    pub fn has_folder_changed(&self, old_folder: Option<usize>) -> bool {
+        self.selected_folder != old_folder || self.all_notebooks_mode
     }
 
     /// Set notes list for current folder
@@ -91,15 +107,42 @@ impl AppState {
         }
     }
 
-    /// Move selection in current panel
-    pub fn move_selection(&mut self, delta: isize) {
+    /// Move selection in current panel, returns true if folder changed
+    pub fn move_selection(&mut self, delta: isize) -> bool {
+        let mut folder_changed = false;
+
         match self.focus {
             FocusPanel::Notebooks => {
-                if let Some(ref mut idx) = self.selected_folder {
-                    let len = self.folders.len();
-                    if len > 0 {
-                        let new_idx = (*idx as isize + delta).rem_euclid(len as isize) as usize;
-                        *idx = new_idx;
+                let len = self.folders.len();
+                if len > 0 {
+                    // Handle "All Notebooks" option
+                    if self.all_notebooks_mode {
+                        if delta > 0 {
+                            // Moving down from "All Notebooks" to first notebook
+                            self.all_notebooks_mode = false;
+                            self.selected_folder = Some(0);
+                            folder_changed = true;
+                        }
+                        // Moving up from "All Notebooks" stays there
+                    } else if let Some(ref mut idx) = self.selected_folder {
+                        let old_idx = *idx;
+                        // Calculate new index with special handling for "All Notebooks"
+                        let new_idx_raw = (*idx as isize + delta).rem_euclid(len as isize) as usize;
+
+                        if delta < 0 && *idx == 0 {
+                            // Moving up from first notebook goes to "All Notebooks"
+                            self.all_notebooks_mode = true;
+                            self.selected_folder = None;
+                            folder_changed = true;
+                        } else {
+                            *idx = new_idx_raw;
+                            folder_changed = old_idx != new_idx_raw;
+                        }
+                    } else {
+                        // No folder selected, select first one
+                        self.selected_folder = Some(0);
+                        self.all_notebooks_mode = false;
+                        folder_changed = true;
                     }
                 }
             }
@@ -117,6 +160,8 @@ impl AppState {
                 // Scroll content (not implemented yet)
             }
         }
+
+        folder_changed
     }
 
     /// Switch focus to next panel
