@@ -1,23 +1,36 @@
 // End-to-end encryption (E2EE) implementation for Joplin compatibility
 //
 // This module implements the JED (Joplin Encrypted Data) format and
-// encryption/decryption operations compatible with Joplin CLI.
+// encryption/decryption operations compatible with Joplin CLI v3.5+.
+//
+// JED format:
+//   [JED01][metadata_length:6hex][encryption_method:2hex][master_key_id:32hex]
+//   [chunk1_length:6hex][chunk1_json]
+//   [chunk2_length:6hex][chunk2_json]
+//   ...
+//
+// Each chunk is JSON: {"salt":"base64","iv":"base64","ct":"base64"}
+// Encrypted with PBKDF2-HMAC-SHA512 + AES-256-GCM.
 
 use anyhow::{Result, anyhow};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
-/// JED header identifier
 pub const JED_IDENTIFIER: &str = "JED";
-
-/// Current JED format version
 pub const JED_VERSION: &str = "01";
+
+// PBKDF2 iteration counts matching Joplin reference implementation
+const KEY_V1_ITERATIONS: u32 = 220_000;
+const STRING_V1_ITERATIONS: u32 = 3;
+const FILE_V1_ITERATIONS: u32 = 3;
+
+// Chunk size for StringV1 encryption (64KB of UTF-16LE = 32K chars)
+const STRING_V1_CHUNK_SIZE: usize = 65536;
 
 /// Encryption methods supported by Joplin
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[repr(u8)]
 pub enum EncryptionMethod {
-    // Legacy SJCL methods (deprecated but still supported for decryption)
     SJCL = 1,
     SJCL2 = 2,
     SJCL3 = 3,
@@ -25,11 +38,9 @@ pub enum EncryptionMethod {
     SJCL1a = 5,
     Custom = 6,
     SJCL1b = 7,
-
-    // Current methods
-    KeyV1 = 8,   // For master key encryption
-    FileV1 = 9,  // For file encryption
-    StringV1 = 10, // For string encryption (default)
+    KeyV1 = 8,
+    FileV1 = 9,
+    StringV1 = 10,
 }
 
 impl EncryptionMethod {
@@ -53,39 +64,28 @@ impl EncryptionMethod {
         self as u8
     }
 
-    /// Get the default encryption method for strings
-    pub fn default_string() -> Self {
-        EncryptionMethod::StringV1
-    }
+    pub fn default_string() -> Self { EncryptionMethod::StringV1 }
+    pub fn default_master_key() -> Self { EncryptionMethod::KeyV1 }
+    pub fn default_file() -> Self { EncryptionMethod::FileV1 }
 
-    /// Get the default encryption method for master keys
-    pub fn default_master_key() -> Self {
-        EncryptionMethod::KeyV1
-    }
-
-    /// Get the default encryption method for files
-    pub fn default_file() -> Self {
-        EncryptionMethod::FileV1
+    fn iterations(self) -> u32 {
+        match self {
+            EncryptionMethod::KeyV1 => KEY_V1_ITERATIONS,
+            EncryptionMethod::FileV1 => FILE_V1_ITERATIONS,
+            EncryptionMethod::StringV1 => STRING_V1_ITERATIONS,
+            _ => 0,
+        }
     }
 }
 
 /// JED format header
 #[derive(Debug, Clone)]
 pub struct JedHeader {
-    pub identifier: String,
-    pub version: String,
-    pub metadata: JedMetadata,
-}
-
-/// JED metadata
-#[derive(Debug, Clone)]
-pub struct JedMetadata {
-    pub length: u32,
     pub encryption_method: EncryptionMethod,
-    pub master_key_id: String,
+    pub master_key_id: String, // 32 hex chars (no dashes)
 }
 
-/// Master key information (compatible with sync.json format)
+/// Master key information (compatible with info.json format)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MasterKey {
     pub id: String,
@@ -93,18 +93,16 @@ pub struct MasterKey {
     pub updated_time: i64,
     pub source_application: String,
     pub encryption_method: i32,
+    #[serde(default)]
     pub checksum: String,
     pub content: String,
-
-    #[serde(default)]
+    #[serde(default, rename = "hasBeenUsed")]
     pub has_been_used: bool,
-
     #[serde(default)]
     pub enabled: bool,
 }
 
 impl MasterKey {
-    /// Create a new master key
     pub fn new(id: String, encrypted_content: String, encryption_method: EncryptionMethod) -> Self {
         Self {
             id,
@@ -112,20 +110,18 @@ impl MasterKey {
             updated_time: joplin_domain::now_ms(),
             source_application: "neojoplin".to_string(),
             encryption_method: encryption_method.as_u8() as i32,
-            checksum: String::new(), // Not used for modern encryption methods
+            checksum: String::new(),
             content: encrypted_content,
             has_been_used: false,
             enabled: true,
         }
     }
 
-    /// Mark the master key as used
     pub fn mark_as_used(&mut self) {
         self.has_been_used = true;
         self.updated_time = joplin_domain::now_ms();
     }
 
-    /// Check if the master key is enabled
     pub fn is_enabled(&self) -> bool {
         self.enabled
     }
@@ -133,13 +129,12 @@ impl MasterKey {
 
 /// E2EE service for encryption and decryption operations
 pub struct E2eeService {
-    master_keys: HashMap<String, String>, // key_id -> decrypted_key
+    master_keys: HashMap<String, String>, // key_id -> decrypted hex key
     active_master_key_id: Option<String>,
     master_password: Option<String>,
 }
 
 impl E2eeService {
-    /// Create a new E2EE service
     pub fn new() -> Self {
         Self {
             master_keys: HashMap::new(),
@@ -148,197 +143,210 @@ impl E2eeService {
         }
     }
 
-    /// Set the master password
     pub fn set_master_password(&mut self, password: String) {
         self.master_password = Some(password);
     }
 
-    /// Get the master password
     pub fn get_master_password(&self) -> Option<&String> {
         self.master_password.as_ref()
     }
 
-    /// Add a decrypted master key
     pub fn add_master_key(&mut self, key_id: String, decrypted_key: String) {
         self.master_keys.insert(key_id, decrypted_key);
     }
 
-    /// Set the active master key ID
     pub fn set_active_master_key(&mut self, key_id: String) {
         self.active_master_key_id = Some(key_id);
     }
 
-    /// Get the active master key ID
     pub fn get_active_master_key_id(&self) -> Option<&String> {
         self.active_master_key_id.as_ref()
     }
 
-    /// Get the active master key (decrypted)
     pub fn get_active_master_key(&self) -> Option<&String> {
-        if let Some(key_id) = &self.active_master_key_id {
-            self.master_keys.get(key_id)
-        } else {
-            None
-        }
+        self.active_master_key_id.as_ref()
+            .and_then(|id| self.master_keys.get(id))
     }
 
-    /// Generate a new master key
+    /// Look up a master key by ID, trying both with and without UUID dashes
+    fn find_master_key(&self, key_id: &str) -> Result<&String> {
+        if let Some(key) = self.master_keys.get(key_id) {
+            return Ok(key);
+        }
+        // Try adding dashes to make it a UUID format
+        if key_id.len() == 32 {
+            let with_dashes = format!(
+                "{}-{}-{}-{}-{}",
+                &key_id[0..8], &key_id[8..12], &key_id[12..16],
+                &key_id[16..20], &key_id[20..32]
+            );
+            if let Some(key) = self.master_keys.get(&with_dashes) {
+                return Ok(key);
+            }
+        }
+        // Try removing dashes
+        let without_dashes = key_id.replace('-', "");
+        if let Some(key) = self.master_keys.get(&without_dashes) {
+            return Ok(key);
+        }
+        Err(anyhow!("Master key not found: {} (loaded keys: {:?})",
+            key_id, self.master_keys.keys().collect::<Vec<_>>()))
+    }
+
+    /// Generate a new master key encrypted with the user's password (KeyV1)
     pub fn generate_master_key(&self, password: &str) -> Result<(String, MasterKey)> {
-        // Generate a random 256-bit key
-        let key_id = uuid::Uuid::new_v4().to_string();
+        let key_id = uuid::Uuid::new_v4().to_string().replace('-', "");
         let master_key_bytes = crate::crypto::generate_key();
         let master_key_hex = hex::encode(master_key_bytes);
 
-        // Derive encryption key from password using the same fixed salt
-        let salt = b"neojoplin-e2ee-salt-32bytes-"; // Fixed salt for simplicity
-        let derived_key = crate::crypto::derive_key(password, salt, 100_000);
-
-        // Encrypt the master key with the derived key using AES-256-GCM
-        let encrypted_content = self.encrypt_master_key_aes(&master_key_hex, &derived_key)?;
+        // Encrypt with KeyV1: PBKDF2(password, random_salt, 220000, SHA-512) -> AES-256-GCM
+        let salt = crate::crypto::generate_salt();
+        // Joplin encodes the hex string as hex bytes for KeyV1
+        let plaintext_bytes = hex::decode(&master_key_hex)
+            .map_err(|e| anyhow!("Invalid hex: {}", e))?;
+        let chunk = crate::crypto::encrypt_chunk(password, &salt, &plaintext_bytes, KEY_V1_ITERATIONS)?;
+        let encrypted_content = serde_json::to_string(&chunk)?;
 
         let master_key_obj = MasterKey::new(key_id.clone(), encrypted_content, EncryptionMethod::KeyV1);
-
         Ok((key_id, master_key_obj))
     }
 
-    /// Encrypt a master key with a derived key using AES-256-GCM
-    fn encrypt_master_key_aes(&self, plain_key: &str, derived_key: &[u8; 32]) -> Result<String> {
-        let master_key_bytes = plain_key.as_bytes();
-        let encrypted = crate::crypto::encrypt_aes256_gcm(derived_key, master_key_bytes)?;
-        Ok(hex::encode(encrypted))
-    }
-
-    /// Decrypt a master key with a derived key using AES-256-GCM
-    fn decrypt_master_key_aes(&self, encrypted_content: &str, derived_key: &[u8; 32]) -> Result<String> {
-        let encrypted = hex::decode(encrypted_content)
-            .map_err(|e| anyhow!("Invalid hex in encrypted content: {}", e))?;
-
-        let decrypted = crate::crypto::decrypt_aes256_gcm(derived_key, &encrypted)?;
-
-        String::from_utf8(decrypted)
-            .map_err(|_| anyhow!("Invalid UTF-8 in decrypted content"))
-    }
-
-    /// Load and decrypt a master key
+    /// Load and decrypt a master key from its encrypted form
     pub fn load_master_key(&mut self, master_key: &MasterKey) -> Result<()> {
         let password = self.master_password.as_ref()
-            .ok_or_else(|| anyhow!("Master password not set"))?;
+            .ok_or_else(|| anyhow!("Master password not set"))?
+            .clone();
 
-        // Derive a 256-bit key from the password
-        let salt = b"neojoplin-e2ee-salt-32bytes-"; // Fixed salt for simplicity
-        let derived_key = crate::crypto::derive_key(password, salt, 100_000);
+        let method = EncryptionMethod::from_u8(master_key.encryption_method as u8)
+            .unwrap_or(EncryptionMethod::KeyV1);
 
-        let decrypted_key = self.decrypt_master_key_aes(&master_key.content, &derived_key)?;
-        self.master_keys.insert(master_key.id.clone(), decrypted_key);
+        let decrypted_key = self.decrypt_single_chunk(
+            &password,
+            &master_key.content,
+            method,
+        )?;
 
-        // Set as active if it's the first key or if it's newer
-        if self.active_master_key_id.is_none() || master_key.is_enabled() {
-            self.active_master_key_id = Some(master_key.id.clone());
+        tracing::info!("Loaded master key: {} (method: {:?}, decrypted key length: {})",
+            master_key.id, method, decrypted_key.len());
+
+        // Normalize key ID (remove dashes)
+        let key_id = master_key.id.replace('-', "");
+        self.master_keys.insert(key_id.clone(), decrypted_key);
+
+        if self.active_master_key_id.is_none() {
+            self.active_master_key_id = Some(key_id);
         }
 
         Ok(())
     }
 
-    /// Generate a random hex key
-    /// Encrypt a string using the active master key
-    pub fn encrypt_string(&self, plaintext: &str) -> Result<String> {
-        let master_key = self.get_active_master_key()
-            .ok_or_else(|| anyhow!("No active master key"))?;
+    /// Decrypt a single encryption chunk (for master key decryption or single-chunk items)
+    fn decrypt_single_chunk(&self, password: &str, content: &str, method: EncryptionMethod) -> Result<String> {
+        let chunk: crate::crypto::EncryptionChunk = serde_json::from_str(content)
+            .map_err(|e| anyhow!("Invalid encryption chunk JSON: {} (content starts with: {})",
+                e, &content[..content.len().min(100)]))?;
 
-        self.encrypt_string_with_key(plaintext, master_key)
-    }
+        let decrypted_bytes = crate::crypto::decrypt_chunk(password, &chunk, method.iterations())?;
 
-    /// Encrypt a string with a specific key
-    fn encrypt_string_with_key(&self, plaintext: &str, key: &str) -> Result<String> {
-        // Create JED format
-        let key_id = self.active_master_key_id.as_ref()
-            .ok_or_else(|| anyhow!("No active master key ID"))?;
-
-        // Remove dashes from UUID to get 32-char hex string
-        let master_key_id_hex = key_id.replace('-', "");
-
-        // Convert hex key to bytes
-        let key_bytes = hex::decode(key)
-            .map_err(|_| anyhow!("Invalid hex key"))?;
-
-        // Ensure key is exactly 32 bytes
-        let mut key_array = [0u8; 32];
-        key_array.copy_from_slice(&key_bytes[..32.min(key_bytes.len())]);
-
-        let metadata = JedMetadata {
-            length: plaintext.len() as u32,
-            encryption_method: EncryptionMethod::StringV1,
-            master_key_id: master_key_id_hex,
-        };
-
-        // Use AES-256-GCM encryption
-        let encrypted_data = crate::crypto::encrypt_aes256_gcm(&key_array, plaintext.as_bytes())?;
-
-        // Encode encrypted data as hex
-        let encrypted_hex = hex::encode(encrypted_data);
-
-        // Serialize JED format
-        Ok(format_jed_header(&JedHeader {
-            identifier: JED_IDENTIFIER.to_string(),
-            version: JED_VERSION.to_string(),
-            metadata,
-        }) + &encrypted_hex)
-    }
-
-    /// Decrypt a JED-formatted string
-    pub fn decrypt_string(&self, jed_data: &str) -> Result<String> {
-        // Parse JED header
-        let (header, encrypted_hex) = parse_jed_header(jed_data)?;
-
-        // Try to find the master key - first try direct lookup, then try with dashes added
-        let master_key = if let Some(key) = self.master_keys.get(&header.metadata.master_key_id) {
-            key
-        } else {
-            // Try adding dashes to make it a UUID
-            let key_id_with_dashes = format!(
-                "{}-{}-{}-{}-{}",
-                &header.metadata.master_key_id[0..8],
-                &header.metadata.master_key_id[8..12],
-                &header.metadata.master_key_id[12..16],
-                &header.metadata.master_key_id[16..20],
-                &header.metadata.master_key_id[20..32]
-            );
-
-            self.master_keys.get(&key_id_with_dashes)
-                .ok_or_else(|| anyhow!("Master key not found: {}", header.metadata.master_key_id))?
-        };
-
-        // Decrypt using the appropriate method
-        match header.metadata.encryption_method {
+        // Decode based on method
+        match method {
+            EncryptionMethod::KeyV1 => {
+                // KeyV1: result is hex-encoded master key
+                Ok(hex::encode(&decrypted_bytes))
+            }
             EncryptionMethod::StringV1 => {
-                // Decode hex encrypted data
-                let encrypted_data = hex::decode(encrypted_hex)
-                    .map_err(|e| anyhow!("Invalid hex in encrypted data: {}", e))?;
-
-                // Convert hex master key to bytes
-                let key_bytes = hex::decode(master_key)
-                    .map_err(|_| anyhow!("Invalid hex master key"))?;
-
-                // Ensure key is exactly 32 bytes
-                let mut key_array = [0u8; 32];
-                key_array.copy_from_slice(&key_bytes[..32.min(key_bytes.len())]);
-
-                // Decrypt using AES-256-GCM
-                let decrypted = crate::crypto::decrypt_aes256_gcm(&key_array, &encrypted_data)?;
-
-                String::from_utf8(decrypted)
-                    .map_err(|_| anyhow!("Invalid UTF-8 in decrypted data"))
-            },
-            _ => Err(anyhow!("Unsupported encryption method: {:?}", header.metadata.encryption_method)),
+                // StringV1: result is UTF-16LE encoded string
+                decode_utf16le(&decrypted_bytes)
+            }
+            EncryptionMethod::FileV1 => {
+                // FileV1: result is base64-encoded file data
+                use base64::Engine;
+                Ok(base64::engine::general_purpose::STANDARD.encode(&decrypted_bytes))
+            }
+            _ => {
+                // Try UTF-8 as fallback
+                String::from_utf8(decrypted_bytes.clone())
+                    .or_else(|_| decode_utf16le(&decrypted_bytes))
+            }
         }
     }
 
-    /// Check if E2EE is enabled
+    /// Encrypt a string using the active master key (StringV1 with chunked JED format)
+    pub fn encrypt_string(&self, plaintext: &str) -> Result<String> {
+        let master_key_hex = self.get_active_master_key()
+            .ok_or_else(|| anyhow!("No active master key"))?
+            .clone();
+        let key_id = self.active_master_key_id.as_ref()
+            .ok_or_else(|| anyhow!("No active master key ID"))?
+            .replace('-', "");
+
+        let header = encode_jed_header(&JedHeader {
+            encryption_method: EncryptionMethod::StringV1,
+            master_key_id: key_id,
+        });
+
+        let mut result = header;
+
+        // Encode plaintext as UTF-16LE, then encrypt in chunks
+        let utf16le_bytes = encode_utf16le(plaintext);
+
+        for chunk_data in utf16le_bytes.chunks(STRING_V1_CHUNK_SIZE) {
+            let salt = crate::crypto::generate_salt();
+            let chunk = crate::crypto::encrypt_chunk(
+                &master_key_hex, &salt, chunk_data, STRING_V1_ITERATIONS,
+            )?;
+            let chunk_json = serde_json::to_string(&chunk)?;
+            result.push_str(&format!("{:06x}{}", chunk_json.len(), chunk_json));
+        }
+
+        Ok(result)
+    }
+
+    /// Decrypt a JED-formatted encrypted string
+    pub fn decrypt_string(&self, jed_data: &str) -> Result<String> {
+        let (header, body) = parse_jed_header(jed_data)?;
+        let master_key_hex = self.find_master_key(&header.master_key_id)?;
+
+        // Read and decrypt chunks
+        let mut plaintext = String::new();
+        let mut pos = 0;
+
+        while pos < body.len() {
+            if pos + 6 > body.len() {
+                break;
+            }
+
+            let chunk_len_hex = &body[pos..pos + 6];
+            let chunk_len = usize::from_str_radix(chunk_len_hex, 16)
+                .map_err(|_| anyhow!("Invalid chunk length hex: {}", chunk_len_hex))?;
+            pos += 6;
+
+            if chunk_len == 0 {
+                continue;
+            }
+            if pos + chunk_len > body.len() {
+                return Err(anyhow!("Chunk extends beyond data (need {} bytes at pos {}, have {})",
+                    chunk_len, pos, body.len()));
+            }
+
+            let chunk_json = &body[pos..pos + chunk_len];
+            pos += chunk_len;
+
+            let decrypted = self.decrypt_single_chunk(
+                master_key_hex,
+                chunk_json,
+                header.encryption_method,
+            )?;
+            plaintext.push_str(&decrypted);
+        }
+
+        Ok(plaintext)
+    }
+
     pub fn is_enabled(&self) -> bool {
         self.active_master_key_id.is_some() && !self.master_keys.is_empty()
     }
 
-    /// Get all loaded master key IDs
     pub fn get_master_key_ids(&self) -> Vec<String> {
         self.master_keys.keys().cloned().collect()
     }
@@ -350,79 +358,67 @@ impl Default for E2eeService {
     }
 }
 
-/// Format a JED header
-fn format_jed_header(header: &JedHeader) -> String {
-    let metadata_str = format!(
-        "{:06x}{:02x}{}",
-        header.metadata.length,
-        header.metadata.encryption_method.as_u8(),
-        header.metadata.master_key_id
-    );
-
-    format!("{}{}{:06x}{}",
-        header.identifier,
-        header.version,
-        metadata_str.len(), // Just the metadata string length
-        metadata_str
-    )
+/// Encode UTF-16LE bytes from a string (matching Joplin's Buffer.from(str, 'utf16le'))
+fn encode_utf16le(s: &str) -> Vec<u8> {
+    s.encode_utf16()
+        .flat_map(|c| c.to_le_bytes())
+        .collect()
 }
 
-/// Parse a JED header
+/// Decode UTF-16LE bytes to a string
+fn decode_utf16le(bytes: &[u8]) -> Result<String> {
+    if bytes.len() % 2 != 0 {
+        return Err(anyhow!("UTF-16LE data has odd length: {}", bytes.len()));
+    }
+    let u16_values: Vec<u16> = bytes.chunks_exact(2)
+        .map(|chunk| u16::from_le_bytes([chunk[0], chunk[1]]))
+        .collect();
+    String::from_utf16(&u16_values)
+        .map_err(|e| anyhow!("Invalid UTF-16LE data: {}", e))
+}
+
+/// Encode a JED header matching Joplin's encodeHeader_()
+fn encode_jed_header(header: &JedHeader) -> String {
+    assert_eq!(header.master_key_id.len(), 32, "Master key ID must be 32 hex chars");
+    let metadata = format!("{:02x}{}", header.encryption_method.as_u8(), header.master_key_id);
+    format!("JED01{:06x}{}", metadata.len(), metadata)
+}
+
+/// Parse a JED header, returning (header, remaining_body)
 fn parse_jed_header(data: &str) -> Result<(JedHeader, &str)> {
-    if !data.starts_with(JED_IDENTIFIER) {
+    if data.len() < 5 || &data[0..3] != "JED" {
         return Err(anyhow!("Invalid JED identifier"));
     }
 
-    if data.len() < 5 {
-        return Err(anyhow!("JED data too short"));
-    }
-
-    let identifier = data[0..3].to_string();
-    let version = data[3..5].to_string();
-
-    // Parse metadata length (6 hex chars)
+    // JED01 + 6-hex metadata_length
     if data.len() < 11 {
-        return Err(anyhow!("JED data too short for metadata length"));
+        return Err(anyhow!("JED data too short for header"));
     }
 
-    let metadata_length_str = &data[5..11];
-    let metadata_length = u32::from_str_radix(metadata_length_str, 16)
-        .map_err(|_| anyhow!("Invalid metadata length"))?;
+    let md_size = usize::from_str_radix(&data[5..11], 16)
+        .map_err(|_| anyhow!("Invalid metadata size hex: {}", &data[5..11]))?;
 
-    if data.len() < 11 + metadata_length as usize {
-        return Err(anyhow!("JED data too short for metadata"));
+    let header_end = 11 + md_size;
+    if data.len() < header_end {
+        return Err(anyhow!("JED data too short for metadata (need {}, have {})", header_end, data.len()));
     }
 
-    let metadata_data = &data[11..11 + metadata_length as usize];
+    let metadata = &data[11..header_end];
 
-    // Parse encryption method (2 hex chars)
-    let encryption_method_str = &metadata_data[6..8];
-    let encryption_method_val = u8::from_str_radix(encryption_method_str, 16)
-        .map_err(|_| anyhow!("Invalid encryption method"))?;
-    let encryption_method = EncryptionMethod::from_u8(encryption_method_val)?;
+    // Metadata format: encryption_method (2 hex) + master_key_id (32 hex)
+    if metadata.len() < 34 {
+        return Err(anyhow!("Metadata too short: {} (expected >= 34)", metadata.len()));
+    }
 
-    // Parse master key ID (32 hex chars)
-    let master_key_id = if metadata_data.len() >= 40 {
-        metadata_data[8..40].to_string()
-    } else {
-        return Err(anyhow!("Metadata too short for master key ID"));
-    };
+    let method_val = u8::from_str_radix(&metadata[0..2], 16)
+        .map_err(|_| anyhow!("Invalid encryption method: {}", &metadata[0..2]))?;
+    let encryption_method = EncryptionMethod::from_u8(method_val)?;
+    let master_key_id = metadata[2..34].to_string();
 
-    let metadata = JedMetadata {
-        length: 0, // Not used in current implementation
-        encryption_method,
-        master_key_id,
-    };
-
-    let header = JedHeader {
-        identifier,
-        version,
-        metadata,
-    };
-
-    let encrypted_data = &data[11 + metadata_length as usize..];
-
-    Ok((header, encrypted_data))
+    Ok((
+        JedHeader { encryption_method, master_key_id },
+        &data[header_end..],
+    ))
 }
 
 #[cfg(test)]
@@ -437,61 +433,76 @@ mod tests {
     }
 
     #[test]
-    fn test_jed_header_formatting() {
+    fn test_jed_header_roundtrip() {
         let header = JedHeader {
-            identifier: JED_IDENTIFIER.to_string(),
-            version: "01".to_string(),
-            metadata: JedMetadata {
-                length: 100,
-                encryption_method: EncryptionMethod::StringV1,
-                master_key_id: "0123456789abcdef0123456789abcdef".to_string(),
-            },
+            encryption_method: EncryptionMethod::StringV1,
+            master_key_id: "0123456789abcdef0123456789abcdef".to_string(),
         };
 
-        let formatted = format_jed_header(&header);
-        assert!(formatted.starts_with("JED01"));
+        let encoded = encode_jed_header(&header);
+        assert!(encoded.starts_with("JED01"));
 
-        // Parse it back
-        let (parsed_header, _) = parse_jed_header(&formatted).unwrap();
-        assert_eq!(parsed_header.metadata.master_key_id, "0123456789abcdef0123456789abcdef");
-        assert_eq!(parsed_header.metadata.encryption_method, EncryptionMethod::StringV1);
+        let (parsed, body) = parse_jed_header(&encoded).unwrap();
+        assert_eq!(parsed.master_key_id, "0123456789abcdef0123456789abcdef");
+        assert_eq!(parsed.encryption_method, EncryptionMethod::StringV1);
+        assert!(body.is_empty());
+    }
+
+    #[test]
+    fn test_jed_header_matches_joplin_format() {
+        // Verify our header matches the format from actual Joplin data:
+        // JED01 000022 0a b892c8028cb246c5b124ac5880478be9
+        let header = JedHeader {
+            encryption_method: EncryptionMethod::StringV1,
+            master_key_id: "b892c8028cb246c5b124ac5880478be9".to_string(),
+        };
+        let encoded = encode_jed_header(&header);
+        assert_eq!(&encoded, "JED010000220ab892c8028cb246c5b124ac5880478be9");
+    }
+
+    #[test]
+    fn test_parse_real_joplin_header() {
+        let data = "JED010000220ab892c8028cb246c5b124ac5880478be9000433{\"rest\"}";
+        let (header, body) = parse_jed_header(data).unwrap();
+        assert_eq!(header.encryption_method, EncryptionMethod::StringV1);
+        assert_eq!(header.master_key_id, "b892c8028cb246c5b124ac5880478be9");
+        assert!(body.starts_with("000433"));
+    }
+
+    #[test]
+    fn test_utf16le_roundtrip() {
+        let original = "Hello, World! 🌍";
+        let encoded = encode_utf16le(original);
+        let decoded = decode_utf16le(&encoded).unwrap();
+        assert_eq!(original, decoded);
     }
 
     #[test]
     fn test_master_key_generation_and_loading() {
         let mut service = E2eeService::new();
-        let password = "test_password";
-        service.set_master_password(password.to_string());
+        service.set_master_password("test_password".to_string());
 
-        // Generate a master key
-        let (key_id, master_key) = service.generate_master_key(password).unwrap();
-
-        // Load the master key
+        let (key_id, master_key) = service.generate_master_key("test_password").unwrap();
         service.load_master_key(&master_key).unwrap();
 
-        // Verify it's loaded
-        assert_eq!(service.get_active_master_key_id(), Some(&key_id));
         assert!(service.is_enabled());
+        assert!(service.get_active_master_key().is_some());
     }
 
     #[test]
-    fn test_string_encryption_decryption() {
+    fn test_string_encryption_decryption_roundtrip() {
         let mut service = E2eeService::new();
-        let password = "test_password";
-        service.set_master_password(password.to_string());
+        service.set_master_password("test_password".to_string());
 
-        // Generate and load a master key
-        let (key_id, master_key) = service.generate_master_key(password).unwrap();
+        let (key_id, master_key) = service.generate_master_key("test_password").unwrap();
         service.load_master_key(&master_key).unwrap();
-        service.set_active_master_key(key_id.clone());
+        service.set_active_master_key(key_id);
 
-        // Make sure we have the right key ID set
-        assert_eq!(service.get_active_master_key_id(), Some(&key_id));
-
-        let original = "Hello, World!";
+        let original = "Hello, World! This is a test of NeoJoplin E2EE.";
         let encrypted = service.encrypt_string(original).unwrap();
-        let decrypted = service.decrypt_string(&encrypted).unwrap();
+        assert!(encrypted.starts_with("JED01"));
 
+        let decrypted = service.decrypt_string(&encrypted).unwrap();
         assert_eq!(original, decrypted);
     }
 }

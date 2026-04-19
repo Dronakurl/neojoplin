@@ -4,6 +4,11 @@ use serde::{Deserialize, Serialize};
 use chrono::{DateTime, Utc};
 use uuid::Uuid;
 
+/// Generate a Joplin-compatible ID (32-char hex, no dashes)
+pub fn joplin_id() -> String {
+    Uuid::new_v4().simple().to_string()
+}
+
 /// Item types as defined in Joplin database
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[repr(i32)]
@@ -76,7 +81,7 @@ pub struct Note {
 impl Default for Note {
     fn default() -> Self {
         Self {
-            id: Uuid::new_v4().to_string(),
+            id: joplin_id(),
             title: String::new(),
             body: String::new(),
             created_time: now_ms(),
@@ -155,7 +160,7 @@ pub struct Folder {
 impl Default for Folder {
     fn default() -> Self {
         Self {
-            id: Uuid::new_v4().to_string(),
+            id: joplin_id(),
             title: String::new(),
             created_time: now_ms(),
             updated_time: now_ms(),
@@ -188,7 +193,7 @@ pub struct Tag {
 impl Default for Tag {
     fn default() -> Self {
         Self {
-            id: Uuid::new_v4().to_string(),
+            id: joplin_id(),
             title: String::new(),
             created_time: now_ms(),
             updated_time: now_ms(),
@@ -214,7 +219,7 @@ pub struct NoteTag {
 impl Default for NoteTag {
     fn default() -> Self {
         Self {
-            id: Uuid::new_v4().to_string(),
+            id: joplin_id(),
             note_id: String::new(),
             tag_id: String::new(),
             created_time: now_ms(),
@@ -249,7 +254,7 @@ pub struct Resource {
 impl Default for Resource {
     fn default() -> Self {
         Self {
-            id: Uuid::new_v4().to_string(),
+            id: joplin_id(),
             title: String::new(),
             filename: String::new(),
             file_extension: String::new(),

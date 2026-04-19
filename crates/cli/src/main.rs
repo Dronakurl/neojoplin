@@ -77,15 +77,39 @@ enum Commands {
         /// WebDAV URL
         #[arg(long)]
         url: Option<String>,
-        /// Username
+        /// WebDAV username
         #[arg(short = 'U', long)]
         username: Option<String>,
-        /// Password
+        /// WebDAV password
         #[arg(short = 'P', long)]
         password: Option<String>,
         /// Remote path
         #[arg(short = 'r', long, default_value = "/neojoplin")]
         remote: String,
+        /// E2EE master password (overrides E2EE_PASSWORD env var and .env file)
+        #[arg(long)]
+        e2ee_password: Option<String>,
+    },
+
+    /// Create a new todo
+    MkTodo {
+        /// Todo title
+        title: String,
+        /// Parent folder ID (optional, uses root if not specified)
+        #[arg(short, long)]
+        parent: Option<String>,
+        /// Todo body (optional)
+        #[arg(short, long)]
+        body: Option<String>,
+        /// Due date in ISO 8601 format (e.g., 2026-04-20T12:00:00Z)
+        #[arg(short, long)]
+        due: Option<String>,
+    },
+
+    /// Toggle a todo's completion status
+    TodoToggle {
+        /// Todo ID or title
+        todo: String,
     },
 
     /// List all folders
@@ -143,19 +167,40 @@ enum E2eeCommands {
 }
 
 /// Load E2EE service if encryption is enabled
-async fn load_e2ee_service() -> Result<E2eeService> {
+async fn load_e2ee_service(password_override: Option<String>) -> Result<E2eeService> {
     use neojoplin_core::Config;
     use joplin_sync::MasterKey;
 
     let data_dir = Config::data_dir()?;
 
-    // Load master password from settings or environment
-    let master_password = std::env::var("E2EE_PASSWORD")
-        .unwrap_or_else(|_| String::from("Adidas123")); // Default fallback
+    // Load .env file if it exists (project root)
+    if let Ok(env_path) = std::env::current_dir() {
+        let env_file = env_path.join(".env");
+        if env_file.exists() {
+            if let Ok(content) = std::fs::read_to_string(&env_file) {
+                for line in content.lines() {
+                    if let Some((key, value)) = line.split_once('=') {
+                        let key = key.trim();
+                        let value = value.trim();
+                        if !key.is_empty() && !key.starts_with('#') && std::env::var(key).is_err() {
+                            std::env::set_var(key, value);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Priority: CLI arg > env var > no default
+    let master_password = password_override
+        .or_else(|| std::env::var("E2EE_PASSWORD").ok())
+        .unwrap_or_default();
 
     // Create E2EE service
     let mut e2ee = E2eeService::new();
-    e2ee.set_master_password(master_password);
+    if !master_password.is_empty() {
+        e2ee.set_master_password(master_password);
+    }
 
     // Check if encryption is enabled
     let encryption_config_path = data_dir.join("encryption.json");
@@ -232,7 +277,7 @@ async fn main() -> Result<()> {
             };
 
             let note = Note {
-                id: uuid::Uuid::new_v4().to_string(),
+                id: joplin_domain::joplin_id(),
                 title: title.clone(),
                 body: note_body,
                 parent_id: parent.unwrap_or_default(),
@@ -265,6 +310,85 @@ async fn main() -> Result<()> {
 
             storage.create_note(&note).await?;
             println!("Created note: {} ({})", title, note.id);
+            Ok(())
+        }
+
+        Commands::MkTodo { title, parent, body, due } => {
+            let todo_body = body.unwrap_or_default();
+            let todo_due = if let Some(due_str) = due {
+                chrono::DateTime::parse_from_rfc3339(&due_str)
+                    .map(|dt| dt.timestamp_millis())
+                    .unwrap_or_else(|_| {
+                        eprintln!("Warning: Invalid date format '{}', using 0", due_str);
+                        0
+                    })
+            } else {
+                0
+            };
+
+            let note = Note {
+                id: joplin_domain::joplin_id(),
+                title: title.clone(),
+                body: todo_body,
+                parent_id: parent.unwrap_or_default(),
+                created_time: now_ms(),
+                updated_time: now_ms(),
+                user_created_time: 0,
+                user_updated_time: 0,
+                is_shared: 0,
+                share_id: None,
+                master_key_id: None,
+                encryption_applied: 0,
+                encryption_cipher_text: None,
+                is_conflict: 0,
+                is_todo: 1,
+                todo_completed: 0,
+                todo_due,
+                source: String::new(),
+                source_application: String::new(),
+                order: 0,
+                latitude: 0,
+                longitude: 0,
+                altitude: 0,
+                author: String::new(),
+                source_url: String::new(),
+                application_data: String::new(),
+                markup_language: 1,
+                encryption_blob_encrypted: 0,
+                conflict_original_id: String::new(),
+            };
+
+            storage.create_note(&note).await?;
+            println!("Created todo: {} ({})", title, note.id);
+            Ok(())
+        }
+
+        Commands::TodoToggle { todo } => {
+            // Find the note by ID or title
+            let note_obj = if let Some(found) = storage.get_note(&todo).await? {
+                found
+            } else {
+                let notes = storage.list_notes(None).await?;
+                let found = notes.iter()
+                    .find(|n| n.title == todo)
+                    .ok_or_else(|| anyhow::anyhow!("Todo not found: {}", todo))?;
+                storage.get_note(&found.id).await?.unwrap()
+            };
+
+            if note_obj.is_todo != 1 {
+                return Err(anyhow::anyhow!("'{}' is not a todo", note_obj.title));
+            }
+
+            let mut updated = note_obj.clone();
+            if updated.todo_completed > 0 {
+                updated.todo_completed = 0;
+                println!("󰄱 Uncompleted: {}", updated.title);
+            } else {
+                updated.todo_completed = now_ms();
+                println!("󰄲 Completed: {}", updated.title);
+            }
+            updated.updated_time = now_ms();
+            storage.update_note(&updated).await?;
             Ok(())
         }
 
@@ -307,7 +431,7 @@ async fn main() -> Result<()> {
 
         Commands::MkBook { title, parent } => {
             let folder = Folder {
-                id: uuid::Uuid::new_v4().to_string(),
+                id: joplin_domain::joplin_id(),
                 title: title.clone(),
                 parent_id: parent.unwrap_or_default(),
                 created_time: now_ms(),
@@ -341,7 +465,12 @@ async fn main() -> Result<()> {
                 let notes = storage.list_notes(None).await?;
                 for note in notes {
                     if pattern.as_ref().map_or(true, |p| note.title.contains(p)) {
-                        println!("📝 {} ({})", note.title, note.id);
+                        let icon = if note.is_todo == 1 {
+                            if note.todo_completed > 0 { "󰄲" } else { "󰄱" }
+                        } else {
+                            "📝"
+                        };
+                        println!("{} {} ({})", icon, note.title, note.id);
                     }
                 }
             }
@@ -369,7 +498,7 @@ async fn main() -> Result<()> {
             Ok(())
         }
 
-        Commands::Sync { url, username, password, remote } => {
+        Commands::Sync { url, username, password, remote, e2ee_password } => {
             use joplin_sync::{SyncEngine, ReqwestWebDavClient, WebDavConfig};
             use tokio::sync::mpsc;
             use joplin_domain::SyncEvent;
@@ -386,7 +515,7 @@ async fn main() -> Result<()> {
             let (event_tx, mut event_rx) = mpsc::unbounded_channel();
 
             // Load E2EE service if encryption is enabled
-            let e2ee_service = match load_e2ee_service().await {
+            let e2ee_service = match load_e2ee_service(e2ee_password).await {
                 Ok(service) => Some(service),
                 Err(_e) => {
                     // Silently continue without encryption - errors shown in sync result
@@ -406,8 +535,11 @@ async fn main() -> Result<()> {
                 sync_engine = sync_engine.with_e2ee(e2ee);
             }
 
-            // Handle progress events (minimal output for cleaner UX)
+            // Handle progress events — track download/upload counts
             let handle = tokio::spawn(async move {
+                let mut uploaded = 0u32;
+                let mut downloaded = 0u32;
+                let mut deleted = 0u32;
                 while let Some(event) = event_rx.recv().await {
                     match event {
                         SyncEvent::Failed { error } => {
@@ -416,16 +548,31 @@ async fn main() -> Result<()> {
                         SyncEvent::Warning { message } => {
                             eprintln!("Sync warning: {}", message);
                         }
-                        _ => {
-                            // Other events are consumed silently - sync result handles feedback
+                        SyncEvent::ItemUploadComplete { .. } => {
+                            uploaded += 1;
                         }
+                        SyncEvent::ItemDownloadComplete { .. } => {
+                            downloaded += 1;
+                        }
+                        SyncEvent::Completed { duration } => {
+                            let secs = duration.as_secs_f32();
+                            if uploaded > 0 || downloaded > 0 || deleted > 0 {
+                                println!("  Uploaded: {}, Downloaded: {}, Deleted: {} ({:.1}s)", uploaded, downloaded, deleted, secs);
+                            } else {
+                                println!("  No changes ({:.1}s)", secs);
+                            }
+                        }
+                        _ => {}
                     }
                 }
             });
 
             match sync_engine.sync().await {
                 Ok(_) => {
-                    handle.abort();
+                    // Drop the sync engine to close the event channel
+                    drop(sync_engine);
+                    // Wait for event handler to process remaining events
+                    let _ = handle.await;
                     println!("✓ Sync completed successfully");
                     Ok(())
                 }
@@ -519,8 +666,8 @@ async fn main() -> Result<()> {
                     }
 
                     // Verify password strength (basic check)
-                    if password.len() < 8 {
-                        return Err(anyhow::anyhow!("Password must be at least 8 characters"));
+                    if password.len() < 1 {
+                        return Err(anyhow::anyhow!("Password cannot be empty"));
                     }
 
                     // Create E2EE service and generate master key

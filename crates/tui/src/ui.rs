@@ -154,7 +154,13 @@ fn render_notes_panel(f: &mut Frame, state: &AppState, area: Rect) {
                     theme.text()
                 };
 
-                ListItem::new(format!("📝 {}", note.title)).style(style)
+                let icon = if note.is_todo == 1 {
+                    if note.todo_completed > 0 { "󰄲" } else { "󰄱" }
+                } else {
+                    "📝"
+                };
+
+                ListItem::new(format!("{} {}", icon, note.title)).style(style)
             })
             .collect()
     };
@@ -409,6 +415,8 @@ fn render_keybinding_ribbon(f: &mut Frame, state: &AppState, area: Rect) {
         ("hjkl", "NAV"),
         ("Ent", "EDIT"),
         ("n", "NOTE"),
+        ("T", "TODO"),
+        ("t", "TOGGLE"),
         ("N", "NOTEBOOK"),
         ("d", "DELETE"),
         ("s", "SYNC"),

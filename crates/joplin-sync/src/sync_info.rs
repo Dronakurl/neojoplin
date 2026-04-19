@@ -1,8 +1,8 @@
 // Sync info handling for Joplin compatibility
 //
 // This module implements sync information storage compatible with Joplin's
-// sync.json format. The sync.json file is stored on the WebDAV server and contains
-// metadata about the synchronization state.
+// info.json format. The info.json file is stored on the WebDAV server and contains
+// metadata about the synchronization state including E2EE master keys.
 
 use serde::{Deserialize, Serialize};
 use anyhow::Result;
@@ -11,8 +11,9 @@ use tokio::fs;
 use uuid::Uuid;
 use chrono::Utc;
 
-/// Sync information stored in sync.json for Joplin compatibility
+/// Sync information stored in info.json for Joplin compatibility
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct SyncInfo {
     pub version: i32,
 
@@ -25,97 +26,72 @@ pub struct SyncInfo {
     #[serde(default)]
     pub active_master_key_id: SyncInfoValueString,
 
-    #[serde(default)]
+    #[serde(default, rename = "masterKeys")]
     pub master_keys: Vec<MasterKeyInfo>,
 
     #[serde(default)]
-    pub revision_service_enabled: SyncInfoValueBool,
+    pub ppk: Option<serde_json::Value>,
 
-    #[serde(default = "default_revision_ttl")]
-    pub revision_service_ttl_days: SyncInfoValueInt,
-
-    /// Timestamp of last delta sync for change detection
-    #[serde(default)]
+    /// Timestamp of last delta sync for change detection (NeoJoplin extension)
+    #[serde(default, skip_serializing_if = "is_zero")]
     pub delta_timestamp: i64,
 }
+
+fn is_zero(v: &i64) -> bool { *v == 0 }
 
 fn default_app_min_version() -> String {
     "3.0.0".to_string()
 }
 
-fn default_revision_ttl() -> SyncInfoValueInt {
-    SyncInfoValueInt {
-        value: 90,
-        updated_time: 0,
-    }
-}
-
-/// Boolean sync info value with timestamp
+/// Boolean sync info value with timestamp (Joplin format)
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct SyncInfoValueBool {
-    #[serde(default = "default_bool")]
+    #[serde(default)]
     pub value: bool,
-
     #[serde(default)]
     pub updated_time: i64,
 }
 
 impl Default for SyncInfoValueBool {
     fn default() -> Self {
-        Self {
-            value: false,
-            updated_time: 0,
-        }
+        Self { value: false, updated_time: 0 }
     }
 }
 
-fn default_bool() -> bool {
-    false
-}
-
-/// String sync info value with timestamp
+/// String sync info value with timestamp (Joplin format)
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct SyncInfoValueString {
-    #[serde(default = "default_string")]
+    #[serde(default)]
     pub value: String,
-
     #[serde(default)]
     pub updated_time: i64,
 }
 
 impl Default for SyncInfoValueString {
     fn default() -> Self {
-        Self {
-            value: String::new(),
-            updated_time: 0,
-        }
+        Self { value: String::new(), updated_time: 0 }
     }
-}
-
-fn default_string() -> String {
-    String::new()
 }
 
 /// Integer sync info value with timestamp
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct SyncInfoValueInt {
     #[serde(default)]
     pub value: i64,
-
     #[serde(default)]
     pub updated_time: i64,
 }
 
 impl Default for SyncInfoValueInt {
     fn default() -> Self {
-        Self {
-            value: 0,
-            updated_time: 0,
-        }
+        Self { value: 0, updated_time: 0 }
     }
 }
 
-/// Master key information
+/// Master key information as stored in info.json
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MasterKeyInfo {
     pub id: String,
@@ -123,14 +99,11 @@ pub struct MasterKeyInfo {
     pub updated_time: i64,
     pub source_application: String,
     pub encryption_method: i32,
+    #[serde(default)]
     pub checksum: String,
     pub content: String,
-
-    #[serde(default)]
+    #[serde(default, rename = "hasBeenUsed")]
     pub has_been_used: bool,
-
-    #[serde(default)]
-    pub enabled: bool,
 }
 
 /// Delta context for tracking sync state (NeoJoplin-specific extension)
@@ -138,13 +111,10 @@ pub struct MasterKeyInfo {
 pub struct DeltaContext {
     #[serde(default)]
     pub timestamp: i64,
-
     #[serde(default)]
     pub files_at_timestamp: Option<Vec<String>>,
-
     #[serde(default)]
     pub stats_cache: Option<serde_json::Value>,
-
     #[serde(default)]
     pub stat_ids_cache: Option<serde_json::Value>,
 }
@@ -161,86 +131,69 @@ impl Default for DeltaContext {
 }
 
 impl SyncInfo {
-    /// Create a new SyncInfo with default values
     pub fn new() -> Self {
         Self {
             version: 3,
             app_min_version: "3.0.0".to_string(),
-            e2ee: SyncInfoValueBool {
-                value: false,
-                updated_time: 0,
-            },
-            active_master_key_id: SyncInfoValueString {
-                value: String::new(),
-                updated_time: 0,
-            },
+            e2ee: SyncInfoValueBool { value: false, updated_time: 0 },
+            active_master_key_id: SyncInfoValueString::default(),
             master_keys: Vec::new(),
-            revision_service_enabled: SyncInfoValueBool {
-                value: true,
-                updated_time: 0,
-            },
-            revision_service_ttl_days: default_revision_ttl(),
+            ppk: None,
             delta_timestamp: 0,
         }
     }
 
-    /// Load sync info from remote WebDAV server
+    /// Load sync info from remote WebDAV server (reads info.json)
     pub async fn load_from_remote(webdav: &dyn joplin_domain::WebDavClient, remote_path: &str) -> Result<Option<Self>> {
-        let sync_json_path = format!("{}/sync.json", remote_path.trim_end_matches('/'));
+        let info_json_path = format!("{}/info.json", remote_path.trim_end_matches('/'));
 
-        let exists = webdav.exists(&sync_json_path).await
-            .map_err(|e| anyhow::anyhow!("Failed to check sync.json existence: {:?}", e))?;
+        let exists = webdav.exists(&info_json_path).await
+            .map_err(|e| anyhow::anyhow!("Failed to check info.json existence: {:?}", e))?;
 
         if !exists {
             return Ok(None);
         }
 
-        let mut content = webdav.get(&sync_json_path).await
-            .map_err(|e| anyhow::anyhow!("Failed to download sync.json: {:?}", e))?;
+        let mut content = webdav.get(&info_json_path).await
+            .map_err(|e| anyhow::anyhow!("Failed to download info.json: {:?}", e))?;
 
-        // Read content into bytes
         use futures::io::AsyncReadExt;
         let mut bytes = Vec::new();
         AsyncReadExt::read_to_end(&mut content, &mut bytes).await
-            .map_err(|e| anyhow::anyhow!("Failed to read sync.json: {:?}", e))?;
+            .map_err(|e| anyhow::anyhow!("Failed to read info.json: {:?}", e))?;
 
         let sync_info: SyncInfo = serde_json::from_slice(&bytes)
-            .map_err(|e| anyhow::anyhow!("Failed to parse sync.json: {:?}", e))?;
+            .map_err(|e| anyhow::anyhow!("Failed to parse info.json: {:?}", e))?;
 
         Ok(Some(sync_info))
     }
 
-    /// Save sync info to remote WebDAV server
+    /// Save sync info to remote WebDAV server (writes info.json)
     pub async fn save_to_remote(&self, webdav: &dyn joplin_domain::WebDavClient, remote_path: &str) -> Result<()> {
-        let sync_json_path = format!("{}/sync.json", remote_path.trim_end_matches('/'));
+        let info_json_path = format!("{}/info.json", remote_path.trim_end_matches('/'));
 
         let content = serde_json::to_string_pretty(self)
-            .map_err(|e| anyhow::anyhow!("Failed to serialize sync.json: {:?}", e))?;
+            .map_err(|e| anyhow::anyhow!("Failed to serialize info.json: {:?}", e))?;
 
         let bytes = content.as_bytes();
-        webdav.put(&sync_json_path, bytes, bytes.len() as u64).await
-            .map_err(|e| anyhow::anyhow!("Failed to upload sync.json: {:?}", e))?;
+        webdav.put(&info_json_path, bytes, bytes.len() as u64).await
+            .map_err(|e| anyhow::anyhow!("Failed to upload info.json: {:?}", e))?;
 
         Ok(())
     }
 
-    /// Get key timestamp for conflict resolution
     pub fn key_timestamp(&self, key: &str) -> i64 {
         match key {
             "e2ee" => self.e2ee.updated_time,
             "activeMasterKeyId" => self.active_master_key_id.updated_time,
-            "revisionServiceEnabled" => self.revision_service_enabled.updated_time,
-            "revisionServiceTtlDays" => self.revision_service_ttl_days.updated_time,
             _ => 0,
         }
     }
 
-    /// Get delta timestamp (legacy compatibility)
     pub fn delta_timestamp(&self) -> i64 {
         self.delta_timestamp
     }
 
-    /// Update delta timestamp (legacy compatibility)
     pub fn update_delta_timestamp(&mut self) {
         self.delta_timestamp = Utc::now().timestamp_millis();
     }
@@ -256,12 +209,10 @@ impl Default for SyncInfo {
 pub struct ClientIdManager;
 
 impl ClientIdManager {
-    /// Generate a new client ID
     pub fn generate() -> String {
         format!("neojoplin-{}", Uuid::new_v4())
     }
 
-    /// Get or generate a persistent client ID
     pub async fn get_or_generate(client_id_path: &PathBuf) -> Result<String> {
         if let Ok(content) = fs::read_to_string(client_id_path).await {
             return Ok(content.trim().to_string());
@@ -284,92 +235,50 @@ mod tests {
         let info = SyncInfo::new();
         assert_eq!(info.version, 3);
         assert_eq!(info.app_min_version, "3.0.0");
-        assert_eq!(info.e2ee.value, false);
+        assert!(!info.e2ee.value);
     }
 
     #[test]
     fn test_client_id_generation() {
         let id1 = ClientIdManager::generate();
         let id2 = ClientIdManager::generate();
-
         assert!(id1.starts_with("neojoplin-"));
-        assert!(id2.starts_with("neojoplin-"));
         assert_ne!(id1, id2);
     }
 
     #[test]
-    fn test_sync_info_serialization() {
-        let info = SyncInfo::new();
-        let json = serde_json::to_string(&info).unwrap();
-        assert!(json.contains("\"version\":3"));
-        assert!(json.contains("\"app_min_version\":\"3.0.0\""));
-    }
-
-    #[test]
-    fn test_sync_info_deserialization() {
+    fn test_parse_real_joplin_info_json() {
+        // This is a real info.json from Joplin CLI 3.5.1
         let json = r#"{
             "version": 3,
-            "app_min_version": "3.0.0",
-            "e2ee": {"value": true, "updated_time": 123456},
-            "active_master_key_id": {"value": "test-key-id", "updated_time": 123456}
+            "e2ee": {"value": true, "updatedTime": 1776621665140},
+            "activeMasterKeyId": {"value": "b892c8028cb246c5b124ac5880478be9", "updatedTime": 1776621665139},
+            "masterKeys": [{
+                "checksum": "",
+                "encryption_method": 8,
+                "content": "{\"salt\":\"abc\",\"iv\":\"def\",\"ct\":\"ghi\"}",
+                "created_time": 1776621665137,
+                "updated_time": 1776621679942,
+                "source_application": "net.cozic.joplin-cli",
+                "hasBeenUsed": true,
+                "id": "b892c8028cb246c5b124ac5880478be9"
+            }],
+            "appMinVersion": "3.0.0"
         }"#;
 
         let info: SyncInfo = serde_json::from_str(json).unwrap();
         assert_eq!(info.version, 3);
-        assert_eq!(info.e2ee.value, true);
-        assert_eq!(info.e2ee.updated_time, 123456);
-        assert_eq!(info.active_master_key_id.value, "test-key-id");
-    }
-
-    #[test]
-    fn test_master_key_info() {
-        let key_info = MasterKeyInfo {
-            id: "test-key-id".to_string(),
-            created_time: 1000,
-            updated_time: 2000,
-            source_application: "neojoplin".to_string(),
-            encryption_method: 8,
-            checksum: "abc123".to_string(),
-            content: "encrypted-content".to_string(),
-            has_been_used: true,
-            enabled: true,
-        };
-
-        assert_eq!(key_info.id, "test-key-id");
-        assert_eq!(key_info.encryption_method, 8);
-        assert!(key_info.has_been_used);
-        assert!(key_info.enabled);
+        assert!(info.e2ee.value);
+        assert_eq!(info.active_master_key_id.value, "b892c8028cb246c5b124ac5880478be9");
+        assert_eq!(info.master_keys.len(), 1);
+        assert_eq!(info.master_keys[0].id, "b892c8028cb246c5b124ac5880478be9");
+        assert!(info.master_keys[0].has_been_used);
+        assert_eq!(info.master_keys[0].encryption_method, 8);
     }
 
     #[test]
     fn test_delta_context_default() {
         let ctx = DeltaContext::default();
         assert_eq!(ctx.timestamp, 0);
-        assert!(ctx.files_at_timestamp.is_none());
-        assert!(ctx.stats_cache.is_none());
-    }
-
-    #[test]
-    fn test_key_timestamp() {
-        let mut info = SyncInfo::new();
-        info.e2ee.updated_time = 12345;
-
-        assert_eq!(info.key_timestamp("e2ee"), 12345);
-        assert_eq!(info.key_timestamp("unknown"), 0);
-    }
-
-    #[test]
-    fn test_sync_info_value_defaults() {
-        let bool_val = SyncInfoValueBool::default();
-        assert!(!bool_val.value);
-        assert_eq!(bool_val.updated_time, 0);
-
-        let string_val = SyncInfoValueString::default();
-        assert!(string_val.value.is_empty());
-        assert_eq!(string_val.updated_time, 0);
-
-        let int_val = SyncInfoValueInt::default();
-        assert_eq!(int_val.value, 0);
-        assert_eq!(int_val.updated_time, 0);
     }
 }

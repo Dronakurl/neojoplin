@@ -22,10 +22,17 @@
 ### ❌ Known Issues
 
 1. **Joplin CLI Compatibility**: Joplin CLI does not download NeoJoplin items
-   - NeoJoplin items appear on WebDAV server
-   - Joplin CLI sync process completes successfully
-   - But Joplin CLI local database does not contain the NeoJoplin items
-   - This appears to be a Joplin CLI issue, not a NeoJoplin issue
+   - **ROOT CAUSE IDENTIFIED**: E2EE mismatch between `sync.json` and `info.json`
+   - NeoJoplin updates `sync.json` but not `info.json`
+   - Joplin CLI uses `info.json` to determine if E2EE is enabled
+   - When E2EE settings don't match, Joplin fails to download items silently
+   - **TEMPORARY FIX**: Manually update `info.json` to match `sync.json`
+   - **PERMANENT FIX NEEDED**: NeoJoplin must manage both `sync.json` and `info.json`
+
+2. **Cross-Client Sync Algorithm**: Even after fixing E2EE mismatch, sync issues remain
+   - Joplin CLI and NeoJoplin may have different interpretations of the sync protocol
+   - Timestamp-based change detection might work differently
+   - Further investigation of Joplin's sync algorithm needed
 
 2. **E2EE (End-to-End Encryption) Compatibility**: 
    - Existing encrypted notes from Joplin CLI cannot be decrypted by NeoJoplin

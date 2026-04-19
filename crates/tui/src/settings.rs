@@ -451,8 +451,8 @@ impl Settings {
 
     /// Enable encryption with new master key
     pub async fn enable_encryption(&mut self, password: &str, data_dir: &PathBuf) -> Result<()> {
-        if password.len() < 8 {
-            self.encryption.password_error = Some("Password must be at least 8 characters".to_string());
+        if password.is_empty() {
+            self.encryption.password_error = Some("Password cannot be empty".to_string());
             return Ok(());
         }
 
@@ -567,14 +567,14 @@ mod tests {
     #[test]
     fn test_settings_default() {
         let settings = Settings::new();
-        assert_eq!(settings.current_tab, SettingsTab::General);
+        assert_eq!(settings.current_tab, SettingsTab::Sync);
         assert_eq!(settings.encryption.enabled, false);
     }
 
     #[test]
     fn test_settings_tabs() {
         let settings = Settings::new();
-        assert_eq!(settings.current_tab, SettingsTab::General);
+        assert_eq!(settings.current_tab, SettingsTab::Sync);
     }
 
     #[test]

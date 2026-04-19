@@ -133,6 +133,14 @@ impl ReqwestWebDavClient {
     }
 
     pub async fn list_impl(&self, path: &str) -> Result<Vec<String>> {
+        Ok(self.list_with_timestamps_impl(path).await?
+            .into_iter()
+            .map(|(name, _)| name)
+            .collect())
+    }
+
+    /// List files in a WebDAV directory, returning (filename, modified_timestamp_ms) pairs
+    pub async fn list_with_timestamps_impl(&self, path: &str) -> Result<Vec<(String, Option<i64>)>> {
         let url = self.build_url(path);
         let method = reqwest::Method::from_bytes(b"PROPFIND")
             .map_err(|e| WebDavError::RequestFailed(format!("Invalid method: {}", e)))?;
@@ -144,6 +152,7 @@ impl ReqwestWebDavClient {
                 <D:propfind xmlns:D="DAV:">
                     <D:prop>
                         <D:displayname/>
+                        <D:getlastmodified/>
                     </D:prop>
                 </D:propfind>"#)
             .send()
@@ -157,10 +166,9 @@ impl ReqwestWebDavClient {
         let body = response.text().await
             .map_err(|e| WebDavError::RequestFailed(format!("Failed to read response: {}", e)))?;
 
-        // Parse PROPFIND response using robust XML parser
-        let files = crate::webdav_xml::parse_propfind_files(&body, &self.config.base_url)
+        let entries = crate::webdav_xml::parse_propfind_entries(&body, &self.config.base_url)
             .map_err(|e| WebDavError::RequestFailed(format!("Failed to parse PROPFIND response: {}", e)))?;
-        Ok(files)
+        Ok(entries.into_iter().map(|e| (e.filename, e.modified)).collect())
     }
 
     pub async fn exists_impl(&self, path: &str) -> Result<bool> {

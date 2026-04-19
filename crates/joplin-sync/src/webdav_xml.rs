@@ -7,49 +7,93 @@ use quick_xml::events::Event;
 use quick_xml::Reader;
 use anyhow::Result;
 
-/// Parse WebDAV PROPFIND response to extract file names
-pub fn parse_propfind_files(xml_body: &str, _base_url: &str) -> Result<Vec<String>> {
+/// Parsed entry from PROPFIND with optional metadata
+#[derive(Debug, Clone)]
+pub struct PropfindEntry {
+    pub filename: String,
+    pub href: String,
+    pub modified: Option<i64>,
+    pub is_directory: bool,
+}
+
+/// Parse WebDAV PROPFIND response to extract file names (legacy, no timestamps)
+pub fn parse_propfind_files(xml_body: &str, base_url: &str) -> Result<Vec<String>> {
+    Ok(parse_propfind_entries(xml_body, base_url)?
+        .into_iter()
+        .map(|e| e.filename)
+        .collect())
+}
+
+/// Parse WebDAV PROPFIND response to extract file entries with metadata
+pub fn parse_propfind_entries(xml_body: &str, _base_url: &str) -> Result<Vec<PropfindEntry>> {
     let mut reader = Reader::from_str(xml_body);
     reader.config_mut().trim_text(true);
 
-    let mut files = Vec::new();
+    let mut entries = Vec::new();
     let mut current_buffer = Vec::new();
-    let mut in_href = false;
+    // Per-response state
+    let mut current_href = String::new();
+    let mut current_modified: Option<i64> = None;
+    let mut current_is_dir = false;
+    let mut current_tag = String::new();
+    let mut in_response = false;
 
     loop {
         match reader.read_event_into(&mut current_buffer) {
             Ok(Event::Start(ref e)) => {
                 let name = e.name();
-                match name.as_ref() {
-                    b"D:href" | b"href" => {
-                        in_href = true;
+                current_tag = String::from_utf8_lossy(name.as_ref()).to_string();
+                match current_tag.as_str() {
+                    "D:response" | "response" => {
+                        in_response = true;
+                        current_href.clear();
+                        current_modified = None;
+                        current_is_dir = false;
+                    }
+                    "D:collection" | "collection" => {
+                        current_is_dir = true;
                     }
                     _ => {}
                 }
             }
             Ok(Event::Text(e)) => {
-                if in_href {
-                    if let Ok(href) = e.unescape() {
-                        let href_string = href.into_owned();
-                        // Filter out directory entries (those ending with /)
-                        if !href_string.ends_with('/') {
-                            if let Some(filename) = href_string.rsplit('/').next() {
-                                if !filename.is_empty() {
-                                    files.push(filename.to_string());
+                if in_response {
+                    if let Ok(text) = e.unescape() {
+                        let text_string = text.into_owned();
+                        match current_tag.as_str() {
+                            "D:href" | "href" => {
+                                current_href = text_string;
+                            }
+                            "D:getlastmodified" | "getlastmodified" => {
+                                if let Ok(date) = chrono::DateTime::parse_from_rfc2822(&text_string) {
+                                    current_modified = Some(date.timestamp_millis());
                                 }
                             }
+                            _ => {}
                         }
                     }
                 }
             }
             Ok(Event::End(ref e)) => {
                 let name = e.name();
-                match name.as_ref() {
-                    b"D:href" | b"href" => {
-                        in_href = false;
+                let tag = String::from_utf8_lossy(name.as_ref()).to_string();
+                if tag == "D:response" || tag == "response" {
+                    // Emit entry if it's a file (not directory)
+                    if !current_href.ends_with('/') && !current_is_dir {
+                        if let Some(filename) = current_href.rsplit('/').next() {
+                            if !filename.is_empty() {
+                                entries.push(PropfindEntry {
+                                    filename: filename.to_string(),
+                                    href: current_href.clone(),
+                                    modified: current_modified,
+                                    is_directory: false,
+                                });
+                            }
+                        }
                     }
-                    _ => {}
+                    in_response = false;
                 }
+                current_tag.clear();
             }
             Ok(Event::Eof) => break,
             Err(e) => {
@@ -60,7 +104,7 @@ pub fn parse_propfind_files(xml_body: &str, _base_url: &str) -> Result<Vec<Strin
         current_buffer.clear();
     }
 
-    Ok(files)
+    Ok(entries)
 }
 
 /// Parse file metadata from WebDAV PROPFIND response

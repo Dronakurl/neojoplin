@@ -9,7 +9,6 @@ use crossterm::{
 use ratatui::{backend::CrosstermBackend, Terminal};
 use std::sync::Arc;
 use std::time::Duration;
-use uuid::Uuid;
 
 use joplin_domain::{Storage, Note, Folder, now_ms};
 use neojoplin_storage::SqliteStorage;
@@ -53,9 +52,8 @@ impl App {
 
         // Create default notebook if none exist
         if folders.is_empty() {
-            use uuid::Uuid;
             let default_folder = Folder {
-                id: Uuid::new_v4().to_string(),
+                id: joplin_domain::joplin_id(),
                 title: "My Notebook".to_string(),
                 parent_id: String::new(),
                 created_time: now_ms(),
@@ -334,6 +332,16 @@ impl App {
                 self.delete_selected().await?;
             }
 
+            // Toggle todo completion
+            KeyCode::Char('t') => {
+                self.toggle_todo().await?;
+            }
+
+            // Create todo
+            KeyCode::Char('T') => {
+                self.create_todo().await?;
+            }
+
             // Rename
             KeyCode::Char('r') => {
                 if self.state.focus == FocusPanel::Notes {
@@ -556,9 +564,9 @@ impl App {
         self.state.set_status("Creating new note...");
 
         // For simplicity, create a note with a default title
-        let title = format!("New Note {}", Uuid::new_v4().to_string()[..8].to_string());
+        let title = format!("New Note {}", joplin_domain::joplin_id()[..8].to_string());
         let note = Note {
-            id: Uuid::new_v4().to_string(),
+            id: joplin_domain::joplin_id(),
             title: title.clone(),
             body: String::new(),
             parent_id: parent_id.clone(),
@@ -598,13 +606,103 @@ impl App {
         Ok(())
     }
 
+    /// Create a new todo
+    async fn create_todo(&mut self) -> Result<()> {
+        let parent_id = if self.state.all_notebooks_mode {
+            if let Some(folder) = self.state.folders.first() {
+                folder.id.clone()
+            } else {
+                self.create_notebook().await?;
+                if let Some(folder) = self.state.folders.first() {
+                    folder.id.clone()
+                } else {
+                    return Err(anyhow::anyhow!("Failed to create notebook for todo"));
+                }
+            }
+        } else if let Some(folder) = self.state.selected_folder() {
+            folder.id.clone()
+        } else {
+            return Err(anyhow::anyhow!("No notebook selected"));
+        };
+
+        self.state.set_status("Creating new todo...");
+
+        let title = format!("New Todo {}", joplin_domain::joplin_id()[..8].to_string());
+        let note = Note {
+            id: joplin_domain::joplin_id(),
+            title: title.clone(),
+            body: String::new(),
+            parent_id: parent_id.clone(),
+            created_time: now_ms(),
+            updated_time: now_ms(),
+            user_created_time: 0,
+            user_updated_time: 0,
+            is_shared: 0,
+            share_id: None,
+            master_key_id: None,
+            encryption_applied: 0,
+            encryption_cipher_text: None,
+            is_conflict: 0,
+            is_todo: 1,
+            todo_completed: 0,
+            todo_due: 0,
+            source: String::new(),
+            source_application: String::new(),
+            order: 0,
+            latitude: 0,
+            longitude: 0,
+            altitude: 0,
+            author: String::new(),
+            source_url: String::new(),
+            application_data: String::new(),
+            markup_language: 1,
+            encryption_blob_encrypted: 0,
+            conflict_original_id: String::new(),
+        };
+
+        self.storage.create_note(&note).await?;
+        self.reload_notes().await?;
+
+        self.state.set_status(&format!("Created todo: {}", title));
+        Ok(())
+    }
+
+    /// Toggle todo completion status
+    async fn toggle_todo(&mut self) -> Result<()> {
+        if self.state.focus != FocusPanel::Notes {
+            self.state.set_status("Select a todo in the notes panel first");
+            return Ok(());
+        }
+
+        if let Some(note) = self.state.selected_note() {
+            if note.is_todo != 1 {
+                self.state.set_status("Selected item is not a todo");
+                return Ok(());
+            }
+
+            let mut updated = note.clone();
+            if updated.todo_completed > 0 {
+                updated.todo_completed = 0;
+                self.state.set_status(&format!("󰄱 Uncompleted: {}", updated.title));
+            } else {
+                updated.todo_completed = now_ms();
+                self.state.set_status(&format!("󰄲 Completed: {}", updated.title));
+            }
+            updated.updated_time = now_ms();
+            self.storage.update_note(&updated).await?;
+            self.reload_notes().await?;
+        }
+
+        Ok(())
+    }
+
     /// Create a new notebook
     async fn create_notebook(&mut self) -> Result<()> {
         self.state.set_status("Creating new notebook...");
 
         let title = "New notebook".to_string();
         let folder = Folder {
-            id: Uuid::new_v4().to_string(),
+            id: joplin_domain::joplin_id(),
             title: title.clone(),
             parent_id: String::new(), // Root notebook
             created_time: now_ms(),
@@ -989,9 +1087,9 @@ impl App {
         let target = crate::settings::SyncTarget {
             id: if sync.show_edit_form {
                 sync.editing_target_index.and_then(|i| sync.targets.get(i).map(|t| t.id.clone()))
-                    .unwrap_or_else(|| uuid::Uuid::new_v4().to_string())
+                    .unwrap_or_else(|| joplin_domain::joplin_id())
             } else {
-                uuid::Uuid::new_v4().to_string()
+                joplin_domain::joplin_id()
             },
             name: sync.name_input.trim().to_string(),
             target_type: crate::settings::SyncTargetType::WebDAV,

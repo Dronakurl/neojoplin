@@ -17,7 +17,7 @@ pub use webdav::{ReqwestWebDavClient, WebDavConfig};
 pub use sync_engine::SyncEngine;
 pub use sync_info::{SyncInfo, DeltaContext};
 pub use e2ee::{E2eeService, MasterKey, EncryptionMethod};
-pub use crypto::{encrypt_aes256_gcm, decrypt_aes256_gcm, generate_key, derive_key};
+pub use crypto::{generate_key, encrypt_chunk, decrypt_chunk, derive_key_pbkdf2};
 
 // Re-export from joplin-domain for convenience
 pub use joplin_domain::{
