@@ -207,73 +207,54 @@ fn render_content_panel(f: &mut Frame, state: &AppState, area: Rect) {
     f.render_widget(paragraph, area);
 }
 
-/// Render keybinding ribbon (show available keybindings) with Zellij-style arrows
+/// Render keybinding ribbon (show available keybindings) - simplified Zellij style
 fn render_keybinding_ribbon(f: &mut Frame, state: &AppState, area: Rect) {
     let theme = &state.theme;
 
-    // Define keybindings in the Zellij style: (key, action, is_alternate)
+    // Define keybindings with simpler format
     let bindings = &[
-        ("q", "QUIT", false),
-        ("?", "HELP", true),
-        ("Tab", "PANEL", false),
-        ("hjkl", "NAV", true),
-        ("Ent", "EDIT", false),
-        ("n", "NOTE", true),
-        ("N", "FOLDER", false),
-        ("d", "DELETE", true),
-        ("s", "SYNC", false),
-        ("S", "SETTINGS", true),
+        ("q", "Quit"),
+        ("?", "Help"),
+        ("Tab", "Panel"),
+        ("↕", "Move"),
+        ("Ent", "Edit"),
+        ("n", "Note"),
+        ("N", "Folder"),
+        ("d", "Delete"),
+        ("s", "Sync"),
+        ("S", "Settings"),
     ];
 
-    // Check which bindings fit on screen
-    let available_width = area.width as usize;
-    let arrow = "";
-    let mut rendered_width = 0;
-    let mut fitting_bindings = vec![];
+    // Build text with simple separator format like Zellij
+    let mut parts = vec![];
+    let mut total_width = 0;
 
-    for (key, action, is_alternate) in bindings {
-        // Calculate width: arrow (1) + " <" (2) + key + "> " (2) + action + " " (1)
-        let binding_width = 1 + 2 + key.len() + 2 + action.len() + 1;
+    for (i, (key, action)) in bindings.iter().enumerate() {
+        let binding_text = format!("<{}> {}", key, action);
+        let binding_width = binding_text.chars().count();
 
-        if rendered_width + binding_width <= available_width {
-            fitting_bindings.push((*key, *action, *is_alternate));
-            rendered_width += binding_width;
-        } else {
+        // Add separator if not first
+        if i > 0 {
+            let separator = " / ";
+            total_width += separator.chars().count();
+            parts.push(separator.to_string());
+        }
+
+        total_width += binding_width;
+
+        // Stop if we're running out of space
+        if total_width > area.width.saturating_sub(4) as usize {
+            parts.push("...".to_string());
             break;
         }
+
+        parts.push(binding_text);
     }
 
-    // Build the styled line with Zellij-style arrow format
-    let mut spans = vec![];
-    let mut is_first = true;
+    let ribbon_text = parts.join("");
+    let text = vec![Line::from(ribbon_text).style(theme.muted())];
 
-    for (key, action, is_alternate) in fitting_bindings {
-        let background = if is_alternate {
-            theme.accent  // Use accent color for alternate bindings
-        } else {
-            theme.primary  // Use primary color for regular bindings
-        };
-
-        if is_first {
-            // First binding: no leading arrow, just " <key> ACTION "
-            spans.push(Span::styled(" <".to_string(), Style::default().fg(background).bg(theme.surface)));
-            spans.push(Span::styled(key.to_string(), Style::default().fg(theme.surface).bg(background).bold()));
-            spans.push(Span::styled("> ".to_string(), Style::default().fg(theme.surface).bg(background)));
-            spans.push(Span::styled(format!("{} ", action), Style::default().fg(theme.surface).bg(background).bold()));
-            is_first = false;
-        } else {
-            // Subsequent bindings: full arrow format "  <key> ACTION "
-            spans.push(Span::styled(arrow.to_string(), Style::default().fg(background).bg(theme.surface)));
-            spans.push(Span::styled(" <".to_string(), Style::default().fg(background).bg(theme.surface)));
-            spans.push(Span::styled(key.to_string(), Style::default().fg(theme.surface).bg(background).bold()));
-            spans.push(Span::styled("> ".to_string(), Style::default().fg(theme.surface).bg(background)));
-            spans.push(Span::styled(format!("{} ", action), Style::default().fg(theme.surface).bg(background).bold()));
-        }
-    }
-
-    let help_text = vec![Line::from(spans)];
-
-    let paragraph = Paragraph::new(help_text)
+    let paragraph = Paragraph::new(text)
         .alignment(Alignment::Left)
         .block(Block::default().bg(theme.surface));
 
@@ -640,7 +621,7 @@ pub fn render_help(f: &mut Frame, scroll: u16, state: &AppState) {
 
 /// Render quit confirmation popup
 pub fn render_quit_confirmation(f: &mut Frame, state: &AppState) {
-    let area = centered_rect(50, 25, f.area());
+    let area = centered_rect(35, 15, f.area()); // Smaller: 35% width, 15% height
     let theme = &state.theme;
 
     let bottom_title = Line::from(vec![
