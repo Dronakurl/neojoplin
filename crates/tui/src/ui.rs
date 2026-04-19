@@ -212,25 +212,26 @@ fn render_keybinding_ribbon(f: &mut Frame, state: &AppState, area: Rect) {
     let theme = &state.theme;
     let arrow = ""; // Powerline separator
 
-    // Define keybindings: (key, action, use_alternate_color)
+    // Define keybindings: (key, action)
+    // All actions use the same primary color
     let bindings = &[
-        ("q", "QUIT", false),
-        ("?", "HELP", true),
-        ("Tab", "PANEL", false),
-        ("hjkl", "NAV", true),
-        ("Ent", "EDIT", false),
-        ("n", "NOTE", true),
-        ("N", "FOLDER", false),
-        ("d", "DELETE", true),
-        ("s", "SYNC", false),
-        ("S", "SETTINGS", true),
+        ("q", "QUIT"),
+        ("?", "HELP"),
+        ("Tab", "PANEL"),
+        ("hjkl", "NAV"),
+        ("Ent", "EDIT"),
+        ("n", "NOTE"),
+        ("N", "FOLDER"),
+        ("d", "DELETE"),
+        ("s", "SYNC"),
+        ("S", "SETTINGS"),
     ];
 
     let mut spans = vec![];
     let mut total_width = 0;
     let available_width = area.width as usize;
 
-    for (_i, (key, action, use_alternate)) in bindings.iter().enumerate() {
+    for (_i, (key, action)) in bindings.iter().enumerate() {
         // Calculate segment width
         let key_width = key.chars().count();
         let action_width = action.chars().count();
@@ -243,12 +244,8 @@ fn render_keybinding_ribbon(f: &mut Frame, state: &AppState, area: Rect) {
             break; // Stop if we're out of space
         }
 
-        // Choose action background color (alternate between primary and accent)
-        let action_bg = if *use_alternate {
-            theme.accent
-        } else {
-            theme.primary
-        };
+        // Use single primary color for all actions (not alternating)
+        let action_bg = theme.primary;
 
         // Get the actual colors from the theme
         let surface_color = theme.surface; // Background color
@@ -262,24 +259,24 @@ fn render_keybinding_ribbon(f: &mut Frame, state: &AppState, area: Rect) {
         ));
         total_width += key_width + 1;
 
-        // Left arrow: points INTO the action box (action_bg color on surface background)
+        // Left arrow: NOT inverted - surface on action_bg (points TO action)
         spans.push(Span::styled(
             arrow,
-            Style::default().fg(action_bg).bg(surface_color),
+            Style::default().fg(surface_color).bg(action_bg),
         ));
         total_width += arrow_width;
 
-        // Action text: white on action background (inverted)
+        // Action text: black on action background (inverted)
         spans.push(Span::styled(
             format!(" {} ", action),
             Style::default().fg(action_fg_color).bg(action_bg).bold(),
         ));
         total_width += 1 + action_width + 1;
 
-        // Right arrow: points OUT of the action box (surface color on action background)
+        // Right arrow: INVERTED - action_bg on surface (points AWAY from action)
         spans.push(Span::styled(
             arrow,
-            Style::default().fg(surface_color).bg(action_bg),
+            Style::default().fg(action_bg).bg(surface_color),
         ));
         total_width += arrow_width;
     }
