@@ -372,22 +372,13 @@ impl App {
                     event_tx,
                 ).with_remote_path(remote_path.to_string());
 
-                // Spawn a task to handle sync events
-                let storage_clone = self.storage.clone();
+                // Spawn a task to consume sync events (prevents channel from filling up)
+                // Events are already handled via the sync result status messages below
+                let storage_clone = self.storage.clone(); // Keep for data reload after sync
                 tokio::spawn(async move {
-                    while let Some(event) = event_rx.recv().await {
-                        match event {
-                            joplin_sync::SyncEvent::Warning { message } => {
-                                eprintln!("Sync warning: {}", message);
-                            }
-                            joplin_sync::SyncEvent::Failed { error } => {
-                                eprintln!("Sync error: {}", error);
-                            }
-                            joplin_sync::SyncEvent::Completed { duration } => {
-                                eprintln!("Sync completed in {:?}", duration);
-                            }
-                            _ => {}
-                        }
+                    while let Some(_event) = event_rx.recv().await {
+                        // Events are consumed but not printed to avoid TUI rendering issues
+                        // Status messages are handled via the main sync result below
                     }
                 });
 
