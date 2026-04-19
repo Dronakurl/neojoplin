@@ -2,7 +2,7 @@
 
 use ratatui::{
     layout::{Alignment, Constraint, Direction, Layout, Rect},
-    style::{Style, Stylize},
+    style::{Color, Style, Stylize},
     text::{Line, Span, Text},
     widgets::{Block, Borders, List, ListItem, Paragraph, Wrap},
     Frame,
@@ -207,54 +207,86 @@ fn render_content_panel(f: &mut Frame, state: &AppState, area: Rect) {
     f.render_widget(paragraph, area);
 }
 
-/// Render keybinding ribbon (show available keybindings) - simplified Zellij style
+/// Render keybinding ribbon (show available keybindings) - Zellij-style arrow separators
 fn render_keybinding_ribbon(f: &mut Frame, state: &AppState, area: Rect) {
     let theme = &state.theme;
+    let arrow = ""; // Powerline separator
 
-    // Define keybindings with simpler format
+    // Define keybindings: (key, action, use_alternate_color)
     let bindings = &[
-        ("q", "Quit"),
-        ("?", "Help"),
-        ("Tab", "Panel"),
-        ("↕", "Move"),
-        ("Ent", "Edit"),
-        ("n", "Note"),
-        ("N", "Folder"),
-        ("d", "Delete"),
-        ("s", "Sync"),
-        ("S", "Settings"),
+        ("q", "QUIT", false),
+        ("?", "HELP", true),
+        ("Tab", "PANEL", false),
+        ("hjkl", "NAV", true),
+        ("Ent", "EDIT", false),
+        ("n", "NOTE", true),
+        ("N", "FOLDER", false),
+        ("d", "DELETE", true),
+        ("s", "SYNC", false),
+        ("S", "SETTINGS", true),
     ];
 
-    // Build text with simple separator format like Zellij
-    let mut parts = vec![];
+    let mut spans = vec![];
     let mut total_width = 0;
+    let available_width = area.width as usize;
 
-    for (i, (key, action)) in bindings.iter().enumerate() {
-        let binding_text = format!("<{}> {}", key, action);
-        let binding_width = binding_text.chars().count();
+    for (i, (key, action, use_alternate)) in bindings.iter().enumerate() {
+        // Calculate segment width
+        let key_width = key.chars().count();
+        let action_width = action.chars().count();
+        let arrow_width = arrow.chars().count();
 
-        // Add separator if not first
-        if i > 0 {
-            let separator = " / ";
-            total_width += separator.chars().count();
-            parts.push(separator.to_string());
+        // Pattern: "KEY arrow ACTION arrow" where arrows create the colored box effect
+        let segment_width = key_width + 1 + arrow_width + 1 + action_width + 1 + arrow_width;
+
+        if total_width + segment_width > available_width {
+            break; // Stop if we're out of space
         }
 
-        total_width += binding_width;
+        // Choose action background color (alternate between primary and accent)
+        let action_bg = if *use_alternate {
+            theme.accent
+        } else {
+            theme.primary
+        };
 
-        // Stop if we're running out of space
-        if total_width > area.width.saturating_sub(4) as usize {
-            parts.push("...".to_string());
-            break;
-        }
+        // Get the actual colors from the theme
+        let surface_color = theme.surface; // Background color
+        let key_color = theme.text_muted; // Muted text color for keys
+        let action_fg_color = Color::White; // White text on colored background
 
-        parts.push(binding_text);
+        // Key in normal text
+        spans.push(Span::styled(
+            format!("{} ", key),
+            Style::default().fg(key_color).bg(surface_color),
+        ));
+        total_width += key_width + 1;
+
+        // Left arrow: points INTO the action box (action_bg color on surface background)
+        spans.push(Span::styled(
+            arrow,
+            Style::default().fg(action_bg).bg(surface_color),
+        ));
+        total_width += arrow_width;
+
+        // Action text: white on action background (inverted)
+        spans.push(Span::styled(
+            format!(" {} ", action),
+            Style::default().fg(action_fg_color).bg(action_bg).bold(),
+        ));
+        total_width += 1 + action_width + 1;
+
+        // Right arrow: points OUT of the action box (surface color on action background)
+        spans.push(Span::styled(
+            arrow,
+            Style::default().fg(surface_color).bg(action_bg),
+        ));
+        total_width += arrow_width;
     }
 
-    let ribbon_text = parts.join("");
-    let text = vec![Line::from(ribbon_text).style(theme.muted())];
+    let help_text = vec![Line::from(spans)];
 
-    let paragraph = Paragraph::new(text)
+    let paragraph = Paragraph::new(help_text)
         .alignment(Alignment::Left)
         .block(Block::default().bg(theme.surface));
 
