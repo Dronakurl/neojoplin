@@ -27,6 +27,8 @@ pub struct AppState {
     pub selected_note: Option<usize>,
     /// Content of currently selected note
     pub current_note_content: String,
+    /// Content scroll offset
+    pub content_scroll_offset: usize,
     /// Currently focused panel
     pub focus: FocusPanel,
     /// Whether to show quit confirmation
@@ -60,6 +62,7 @@ impl Default for AppState {
             notes: Vec::new(),
             selected_note: None,
             current_note_content: String::new(),
+            content_scroll_offset: 0,
             focus: FocusPanel::Notebooks,
             show_quit_confirmation: false,
             show_settings: false,
@@ -193,6 +196,8 @@ impl AppState {
         if let Some(idx) = self.selected_note {
             if idx < self.notes.len() {
                 self.current_note_content = self.notes[idx].body.clone();
+                // Reset scroll offset when loading new note
+                self.content_scroll_offset = 0;
             }
         }
     }

@@ -8,6 +8,9 @@ use ratatui::{
     Frame,
 };
 
+use crate::settings::{FormField, ConnectionResult};
+use crate::theme::Theme;
+
 use crate::state::{AppState, FocusPanel};
 use crate::settings::SettingsTab;
 
@@ -181,20 +184,59 @@ fn render_content_panel(f: &mut Frame, state: &AppState, area: Rect) {
     };
     let theme = &state.theme;
 
-    let content = if let Some(note) = state.selected_note() {
+    // Get note content as markdown
+    let markdown_text = if let Some(note) = state.selected_note() {
         if note.body.is_empty() {
-            Text::from("This note is empty").style(theme.dim())
+            "*This note is empty*".to_string()
         } else {
-            Text::from(note.body.clone())
+            note.body.clone()
         }
     } else {
-        Text::from("Select a note to view its content").style(theme.dim())
+        "*Select a note to view its content*".to_string()
+    };
+
+    // Basic markdown formatting - convert markdown to styled lines
+    let content_lines: Vec<Line> = markdown_to_lines(&markdown_text, theme);
+
+    // Calculate visible area for scrolling
+    let visible_height = area.height.saturating_sub(2) as usize; // Subtract border and padding
+    let total_lines = content_lines.len();
+
+    // Ensure scroll offset is valid
+    let max_scroll = if total_lines > visible_height {
+        total_lines - visible_height
+    } else {
+        0
+    };
+
+    let scroll_offset = state.content_scroll_offset.min(max_scroll);
+
+    // Get visible lines based on scroll offset
+    let visible_lines: Vec<Line> = content_lines.iter()
+        .skip(scroll_offset)
+        .take(visible_height)
+        .cloned()
+        .collect();
+
+    let content = Text::from(visible_lines);
+
+    // Create scroll indicator
+    let scroll_indicator = if total_lines > visible_height {
+        let position = if visible_height >= total_lines {
+            100
+        } else {
+            ((scroll_offset * 100) / (total_lines - visible_height)).min(100)
+        };
+        format!(" {}% ", position)
+    } else {
+        " All ".to_string()
     };
 
     let paragraph = Paragraph::new(content)
         .block(
             Block::default()
                 .title(title)
+                .title_bottom(Line::from(scroll_indicator).style(theme.muted()))
                 .borders(Borders::ALL)
                 .border_style(if state.focus == FocusPanel::Content {
                     theme.border_focused()
@@ -205,6 +247,152 @@ fn render_content_panel(f: &mut Frame, state: &AppState, area: Rect) {
         .wrap(Wrap { trim: false });
 
     f.render_widget(paragraph, area);
+}
+
+/// Basic markdown to styled lines converter
+fn markdown_to_lines<'a>(text: &'a str, theme: &Theme) -> Vec<Line<'a>> {
+    let mut lines = Vec::new();
+
+    for line in text.lines() {
+        let spans = parse_markdown_line(line, theme);
+        lines.push(Line::from(spans));
+    }
+
+    if lines.is_empty() {
+        lines.push(Line::from(vec![Span::styled("", theme.text())]));
+    }
+
+    lines
+}
+
+/// Parse markdown line and convert to styled spans
+fn parse_markdown_line<'a>(line: &'a str, theme: &Theme) -> Vec<Span<'a>> {
+    let mut spans = Vec::new();
+    let mut current = String::new();
+    let mut chars = line.chars().peekable();
+    let mut in_bold = false;
+    let mut in_italic = false;
+    let mut in_code = false;
+
+    while let Some(c) = chars.next() {
+        match c {
+            '*' => {
+                // Check for emphasis
+                let next_char = chars.peek();
+                if let Some(&'*') = next_char {
+                    chars.next(); // consume second *
+                    if in_bold {
+                        // End bold
+                        if !current.is_empty() {
+                            spans.push(Span::styled(
+                                current.clone(),
+                                Style::default().add_modifier(ratatui::style::Modifier::BOLD)
+                            ));
+                            current.clear();
+                        }
+                        in_bold = false;
+                    } else {
+                        // Start bold
+                        if !current.is_empty() {
+                            spans.push(Span::styled(current.clone(), Style::default()));
+                            current.clear();
+                        }
+                        in_bold = true;
+                    }
+                } else {
+                    // Single * for italic
+                    if in_italic {
+                        if !current.is_empty() {
+                            spans.push(Span::styled(
+                                current.clone(),
+                                Style::default().add_modifier(ratatui::style::Modifier::ITALIC)
+                            ));
+                            current.clear();
+                        }
+                        in_italic = false;
+                    } else {
+                        if !current.is_empty() {
+                            spans.push(Span::styled(current.clone(), Style::default()));
+                            current.clear();
+                        }
+                        in_italic = true;
+                    }
+                }
+            }
+            '`' => {
+                // Code span
+                if in_code {
+                    if !current.is_empty() {
+                        spans.push(Span::styled(
+                            current.clone(),
+                            Style::default().fg(ratatui::style::Color::Cyan)
+                        ));
+                        current.clear();
+                    }
+                    in_code = false;
+                } else {
+                    if !current.is_empty() {
+                        spans.push(Span::styled(current.clone(), Style::default()));
+                        current.clear();
+                    }
+                    in_code = true;
+                }
+            }
+            '#' => {
+                // Headers
+                let header_level = count_consecutive_hashes(&line, current.len() + line[current.len()..].len());
+                if header_level > 0 && current.is_empty() {
+                    // This is a header line
+                    let header_style = match header_level {
+                        1 => Style::default().add_modifier(ratatui::style::Modifier::BOLD),
+                        _ => Style::default(),
+                    };
+                    spans.push(Span::styled(line[header_level..].trim(), header_style));
+                    break;
+                } else {
+                    current.push(c);
+                }
+            }
+            '-' => {
+                // Check for list item or horizontal rule
+                if current.is_empty() && line.starts_with("---") {
+                    // Horizontal rule
+                    spans.push(Span::styled("─".repeat(20), theme.muted()));
+                    break;
+                } else {
+                    current.push(c);
+                }
+            }
+            _ => {
+                current.push(c);
+            }
+        }
+    }
+
+    // Handle any remaining text
+    if !current.is_empty() {
+        let style = if in_code {
+            Style::default().fg(ratatui::style::Color::Cyan)
+        } else if in_bold {
+            Style::default().add_modifier(ratatui::style::Modifier::BOLD)
+        } else if in_italic {
+            Style::default().add_modifier(ratatui::style::Modifier::ITALIC)
+        } else {
+            Style::default()
+        };
+        spans.push(Span::styled(current, style));
+    }
+
+    if spans.is_empty() {
+        spans.push(Span::from(line.to_string()));
+    }
+
+    spans
+}
+
+/// Count consecutive '#' characters at position
+fn count_consecutive_hashes(line: &str, start: usize) -> usize {
+    line[start..].chars().take_while(|&c| c == '#').count()
 }
 
 /// Render keybinding ribbon (show available keybindings) - Zellij-style arrow separators
@@ -221,7 +409,7 @@ fn render_keybinding_ribbon(f: &mut Frame, state: &AppState, area: Rect) {
         ("hjkl", "NAV"),
         ("Ent", "EDIT"),
         ("n", "NOTE"),
-        ("N", "FOLDER"),
+        ("N", "NOTEBOOK"),
         ("d", "DELETE"),
         ("s", "SYNC"),
         ("S", "SETTINGS"),
@@ -324,9 +512,9 @@ pub fn render_settings(f: &mut Frame, state: &AppState) {
     let area = centered_rect(70, 80, f.area());
     let theme = &state.theme;
 
-    let tabs = vec!["General", "Encryption", "About"];
+    let tabs = vec!["Sync", "Encryption", "About"];
     let current_tab_idx = match state.settings.current_tab {
-        SettingsTab::General => 0,
+        SettingsTab::Sync => 0,
         SettingsTab::Encryption => 1,
         SettingsTab::About => 2,
     };
@@ -355,7 +543,11 @@ pub fn render_settings(f: &mut Frame, state: &AppState) {
 
     // Render based on current tab
     let content = match state.settings.current_tab {
-        SettingsTab::General => Text::from(render_general_settings_inline(state)),
+        SettingsTab::Sync => {
+            // Sync tab gets special rendering with forms
+            render_sync_settings_content(f, state, area);
+            return;
+        }
         SettingsTab::Encryption => Text::from(render_encryption_settings_inline(state)),
         SettingsTab::About => Text::from(render_about_settings_inline()),
     };
@@ -372,107 +564,6 @@ pub fn render_settings(f: &mut Frame, state: &AppState) {
         .alignment(Alignment::Left);
 
     f.render_widget(paragraph, area);
-}
-
-/// Render general settings (inline)
-fn render_general_settings_inline(state: &AppState) -> Vec<Line<'_>> {
-    let enc = &state.settings.encryption;
-    let theme = &state.theme;
-
-    let mut lines = vec![
-        Line::from("End-to-End Encryption").style(theme.primary()),
-        Line::from(""),
-    ];
-
-    // Status
-    lines.push(Line::from(vec![
-        Span::raw("Status: ").style(theme.text()),
-        Span::styled(&enc.status_message, theme.primary()),
-    ]));
-
-    lines.push(Line::from(""));
-
-    // Master key info
-    if let Some(ref key_id) = enc.active_master_key_id {
-        lines.push(Line::from(vec![
-            Span::raw("Active Key: ").style(theme.text()),
-            Span::styled(&key_id[..8], theme.accent()),
-            Span::raw("...").style(theme.text()),
-        ]));
-    }
-
-    lines.push(Line::from(format!("Available Keys: {}", enc.master_key_count)).style(theme.text()));
-    lines.push(Line::from(""));
-
-    // Actions
-    if !enc.enabled {
-        lines.push(Line::from(vec![
-            Span::styled("[e]", theme.accent()),
-            Span::raw(" Enable encryption with master password").style(theme.text()),
-        ]));
-    } else {
-        lines.push(Line::from(vec![
-            Span::styled("[d]", theme.accent()),
-            Span::raw(" Disable encryption").style(theme.text()),
-        ]));
-    }
-
-    // Password prompt
-    if enc.show_new_key_prompt {
-        lines.push(Line::from(""));
-        lines.push(Line::from("─────────────────────────────────").style(theme.primary()));
-        lines.push(Line::from("Setup Master Password").style(theme.primary()));
-        lines.push(Line::from(""));
-
-        if !enc.password_input.is_empty() || !enc.confirm_password_input.is_empty() {
-            let masked_password = "•".repeat(enc.password_input.len());
-            let masked_confirm = "•".repeat(enc.confirm_password_input.len());
-
-            lines.push(Line::from(vec![
-                Span::raw("Password:      ").style(theme.text()),
-                Span::styled(masked_password, theme.primary()),
-            ]));
-
-            lines.push(Line::from(vec![
-                Span::raw("Confirm:       ").style(theme.text()),
-                Span::styled(masked_confirm, theme.primary()),
-            ]));
-        } else {
-            lines.push(Line::from("Type password (min 8 characters)").style(theme.muted()));
-        }
-
-        // Error message
-        if let Some(ref error) = enc.password_error {
-            lines.push(Line::from(""));
-            lines.push(Line::from(vec![
-                Span::styled("⚠ ", theme.warning()),
-                Span::styled(error, theme.error()),
-            ]));
-        }
-
-        // Success message
-        if enc.password_success {
-            lines.push(Line::from(""));
-            lines.push(Line::from(vec![
-                Span::styled("✓ ", theme.success()),
-                Span::styled("Encryption enabled successfully!", theme.success()),
-            ]));
-        }
-
-        lines.push(Line::from(""));
-        lines.push(Line::from(vec![
-            Span::styled("[", theme.muted()),
-            Span::styled("Enter", theme.accent()),
-            Span::styled("]", theme.muted()),
-            Span::raw(" to confirm ").style(theme.text()),
-            Span::styled("[", theme.muted()),
-            Span::styled("Esc", theme.accent()),
-            Span::styled("]", theme.muted()),
-            Span::raw(" to cancel").style(theme.text()),
-        ]));
-    }
-
-    lines
 }
 
 /// Render encryption settings (inline)
@@ -599,6 +690,308 @@ fn render_about_settings_inline() -> Vec<Line<'static>> {
         Line::from(""),
         Line::from("Press 'q' to close settings"),
     ]
+}
+
+/// Render sync settings content (special handling for forms)
+fn render_sync_settings_content(f: &mut Frame, state: &AppState, area: Rect) {
+    let theme = &state.theme;
+
+    // Create a block for sync settings
+    let block = Block::default()
+        .title(" Sync Settings ")
+        .borders(Borders::ALL)
+        .border_style(theme.border_focused());
+
+    // Get inner area for content
+    let content_area = block.inner(area);
+
+    f.render_widget(block, area);
+
+    // Split into target list (left) and form/details (right)
+    let chunks = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Percentage(40), Constraint::Percentage(60)].as_ref())
+        .margin(1)
+        .split(content_area);
+
+    // Render target list
+    render_target_list(f, state, chunks[0]);
+
+    // Render form or details based on state
+    if state.settings.sync.show_add_form || state.settings.sync.show_edit_form {
+        render_target_form(f, state, chunks[1]);
+    } else {
+        render_target_details(f, state, chunks[1]);
+    }
+}
+
+/// Render target list
+fn render_target_list(f: &mut Frame, state: &AppState, area: Rect) {
+    let theme = &state.theme;
+    let sync = &state.settings.sync;
+
+    let items: Vec<ListItem> = if sync.targets.is_empty() {
+        vec![
+            ListItem::new(Line::from(vec![
+                Span::styled("No sync targets configured", theme.muted()),
+            ])),
+            ListItem::new(Line::from(vec![
+                Span::raw("Press "),
+                Span::styled("'n'", theme.accent()),
+                Span::raw(" to add one"),
+            ])),
+        ]
+    } else {
+        sync.targets.iter().enumerate().map(|(i, target)| {
+            let is_active = sync.current_target_index == Some(i);
+            let prefix = if is_active { "● " } else { "○ " };
+            let style = if is_active { theme.primary() } else { theme.text() };
+
+            ListItem::new(Line::from(vec![
+                Span::styled(prefix, style),
+                Span::styled(&target.name, style),
+            ]))
+        }).collect()
+    };
+
+    let list = List::new(items)
+        .block(Block::default()
+            .title(" Sync Targets ")
+            .borders(Borders::ALL)
+            .border_style(theme.border_normal()))
+        .highlight_style(theme.selection());
+
+    f.render_widget(list, area);
+}
+
+/// Render target details (when no form is active)
+fn render_target_details(f: &mut Frame, state: &AppState, area: Rect) {
+    let theme = &state.theme;
+    let sync = &state.settings.sync;
+
+    if sync.targets.is_empty() {
+        let help_text = vec![
+            Line::from("Sync Target Management").bold(),
+            Line::from(""),
+            Line::from("Configure your WebDAV sync targets here."),
+            Line::from(""),
+            Line::from("Key bindings:"),
+            Line::from(vec![
+                Span::raw("  "),
+                Span::styled("'n'", theme.accent()),
+                Span::raw(" - Add new target"),
+            ]),
+            Line::from(vec![
+                Span::raw("  "),
+                Span::styled("'e'", theme.accent()),
+                Span::raw(" - Edit selected target"),
+            ]),
+            Line::from(vec![
+                Span::raw("  "),
+                Span::styled("'d'", theme.accent()),
+                Span::raw(" - Delete selected target"),
+            ]),
+            Line::from(vec![
+                Span::raw("  "),
+                Span::styled("Enter", theme.accent()),
+                Span::raw(" - Set as active"),
+            ]),
+            Line::from(vec![
+                Span::raw("  "),
+                Span::styled("↑/↓", theme.accent()),
+                Span::raw(" - Navigate targets"),
+            ]),
+        ];
+
+        let paragraph = Paragraph::new(help_text)
+            .block(Block::default()
+                .title(" Instructions ")
+                .borders(Borders::ALL)
+                .border_style(theme.border_normal()))
+            .wrap(Wrap { trim: false })
+            .alignment(Alignment::Left);
+
+        f.render_widget(paragraph, area);
+        return;
+    }
+
+    // Show details of current target
+    if let Some(idx) = sync.current_target_index {
+        if let Some(target) = sync.targets.get(idx) {
+            let details = vec![
+                Line::from(vec![
+                    Span::styled("Target Details: ", theme.primary()),
+                    Span::styled(&target.name, theme.text()).bold(),
+                ]),
+                Line::from(""),
+                Line::from(vec![
+                    Span::styled("Type: ", theme.muted()),
+                    Span::styled(format!("{:?}", target.target_type), theme.text()),
+                ]),
+                Line::from(vec![
+                    Span::styled("URL: ", theme.muted()),
+                    Span::styled(&target.url, theme.text()),
+                ]),
+                Line::from(vec![
+                    Span::styled("Username: ", theme.muted()),
+                    Span::styled(if target.username.is_empty() { "(none)" } else { &target.username }, theme.text()),
+                ]),
+                Line::from(vec![
+                    Span::styled("Password: ", theme.muted()),
+                    Span::styled(if target.password.is_empty() { "(not set)" } else { "•••• (set)" }, theme.text()),
+                ]),
+                Line::from(vec![
+                    Span::styled("Path: ", theme.muted()),
+                    Span::styled(&target.remote_path, theme.text()),
+                ]),
+                Line::from(""),
+                Line::from("Actions:"),
+                Line::from(vec![
+                    Span::raw("  Press "),
+                    Span::styled("'e'", theme.accent()),
+                    Span::raw(" to edit"),
+                ]),
+                Line::from(vec![
+                    Span::raw("  Press "),
+                    Span::styled("'d'", theme.accent()),
+                    Span::raw(" to delete"),
+                ]),
+            ];
+
+            let paragraph = Paragraph::new(details)
+                .block(Block::default()
+                    .title(" Selected Target ")
+                    .borders(Borders::ALL)
+                    .border_style(theme.border_normal()))
+                .wrap(Wrap { trim: false })
+                .alignment(Alignment::Left);
+
+            f.render_widget(paragraph, area);
+        }
+    }
+}
+
+/// Render target form (add/edit)
+fn render_target_form(f: &mut Frame, state: &AppState, area: Rect) {
+    let theme = &state.theme;
+    let sync = &state.settings.sync;
+
+    let _title = if sync.show_edit_form { "Edit Target" } else { "Add Target" };
+
+    // Form layout with input fields
+    let form_chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(3), // Name
+            Constraint::Length(3), // URL
+            Constraint::Length(3), // Username
+            Constraint::Length(3), // Password
+            Constraint::Length(3), // Path
+            Constraint::Length(2), // Error message
+            Constraint::Length(3), // Buttons
+        ].as_ref())
+        .split(area);
+
+    // Highlight active field
+    let is_name_active = sync.active_field == Some(FormField::Name);
+    let is_url_active = sync.active_field == Some(FormField::Url);
+    let is_username_active = sync.active_field == Some(FormField::Username);
+    let is_password_active = sync.active_field == Some(FormField::Password);
+    let is_path_active = sync.active_field == Some(FormField::Path);
+
+    // Render each form field
+    render_form_field(f, "Name:", &sync.name_input, form_chunks[0], theme, is_name_active);
+    render_form_field(f, "URL:", &sync.url_input, form_chunks[1], theme, is_url_active);
+    render_form_field(f, "Username:", &sync.username_input, form_chunks[2], theme, is_username_active);
+    render_form_field_with_placeholder(f, "Password:", &sync.password_input, form_chunks[3], theme, is_password_active);
+    render_form_field(f, "Path:", &sync.path_input, form_chunks[4], theme, is_path_active);
+
+    // Error message
+    if let Some(ref error) = sync.form_error {
+        let error_text = Paragraph::new(error.clone())
+            .style(theme.error())
+            .alignment(Alignment::Center);
+        f.render_widget(error_text, form_chunks[5]);
+    } else if let Some(ref result) = sync.connection_result {
+        match result {
+            ConnectionResult::Success => {
+                let success_text = Paragraph::new("✓ Connection successful!")
+                    .style(theme.success())
+                    .alignment(Alignment::Center);
+                f.render_widget(success_text, form_chunks[5]);
+            }
+            ConnectionResult::Failed(err) => {
+                let error_text = Paragraph::new(format!("✗ Connection failed: {}", err))
+                    .style(theme.error())
+                    .alignment(Alignment::Center);
+                f.render_widget(error_text, form_chunks[5]);
+            }
+        }
+    }
+
+    // Buttons
+    let buttons = Line::from(vec![
+        Span::styled("[Enter]", theme.accent()),
+        Span::raw(" Save "),
+        Span::styled("[Esc]", theme.muted()),
+        Span::raw(" Cancel "),
+        Span::styled("[Tab]", theme.accent()),
+        Span::raw(" Next field "),
+        Span::styled("[Ctrl+T]", theme.accent()),
+        Span::raw(" Test "),
+    ]);
+
+    let button_paragraph = Paragraph::new(buttons)
+        .alignment(Alignment::Center);
+    f.render_widget(button_paragraph, form_chunks[6]);
+}
+
+/// Helper function to render a form field
+fn render_form_field(f: &mut Frame, label: &str, value: &str, area: Rect, theme: &Theme, is_active: bool) {
+    let cursor = if is_active { "█" } else { "" };
+    let style = if is_active { theme.primary() } else { theme.text() };
+
+    let text = Line::from(vec![
+        Span::styled(label, theme.muted()),
+        Span::styled(value, style),
+        Span::styled(cursor, theme.primary()),
+    ]);
+
+    let border_style = if is_active { theme.border_focused() } else { theme.border_normal() };
+
+    let paragraph = Paragraph::new(text)
+        .block(Block::default()
+            .borders(Borders::ALL)
+            .border_style(border_style));
+    f.render_widget(paragraph, area);
+}
+
+/// Helper function to render a password field (masked with placeholder)
+fn render_form_field_with_placeholder(f: &mut Frame, label: &str, value: &str, area: Rect, theme: &Theme, is_active: bool) {
+    let display_value = if value.is_empty() {
+        "(not set)".to_string()
+    } else if is_active {
+        "•".repeat(value.len())
+    } else {
+        "•••• (set)".to_string()
+    };
+
+    let cursor = if is_active { "█" } else { "" };
+    let style = if is_active { theme.primary() } else { theme.text() };
+
+    let text = Line::from(vec![
+        Span::styled(label, theme.muted()),
+        Span::styled(&display_value, style),
+        Span::styled(cursor, theme.primary()),
+    ]);
+
+    let border_style = if is_active { theme.border_focused() } else { theme.border_normal() };
+
+    let paragraph = Paragraph::new(text)
+        .block(Block::default()
+            .borders(Borders::ALL)
+            .border_style(border_style));
+    f.render_widget(paragraph, area);
 }
 
 /// Render help popup

@@ -3,18 +3,212 @@
 use joplin_sync::E2eeService;
 use anyhow::Result;
 use std::path::PathBuf;
+use serde::{Serialize, Deserialize};
 
 /// Settings menu tabs
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SettingsTab {
-    General,
+    Sync,
     Encryption,
     About,
 }
 
 impl Default for SettingsTab {
     fn default() -> Self {
-        Self::General
+        Self::Sync
+    }
+}
+
+/// Sync target types (matching Joplin's target IDs)
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum SyncTargetType {
+    None = 0,           // No sync
+    Memory = 1,         // Memory sync (testing)
+    FileSystem = 2,     // Local filesystem
+    OneDrive = 3,       // Microsoft OneDrive
+    Nextcloud = 5,      // Nextcloud
+    WebDAV = 6,         // WebDAV
+    Dropbox = 7,        // Dropbox
+    AmazonS3 = 8,       // Amazon S3
+    JoplinServer = 9,   // Joplin Server
+}
+
+/// WebDAV sync target configuration
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SyncTarget {
+    pub id: String,
+    pub name: String,
+    pub target_type: SyncTargetType,
+    pub url: String,
+    pub username: String,
+    pub password: String,
+    pub remote_path: String,
+    pub ignore_tls_errors: bool,
+}
+
+/// Form field for sync target input
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FormField {
+    Name,
+    Url,
+    Username,
+    Password,
+    Path,
+}
+
+/// Connection test result
+#[derive(Debug, Clone)]
+pub enum ConnectionResult {
+    Success,
+    Failed(String),
+}
+
+/// Sync settings state
+#[derive(Debug, Clone)]
+pub struct SyncSettings {
+    pub targets: Vec<SyncTarget>,
+    pub current_target_index: Option<usize>,
+    pub show_add_form: bool,
+    pub show_edit_form: bool,
+    pub editing_target_index: Option<usize>,
+
+    // Form input state
+    pub active_field: Option<FormField>,
+    pub name_input: String,
+    pub url_input: String,
+    pub username_input: String,
+    pub password_input: String,
+    pub path_input: String,
+
+    // Form validation and feedback
+    pub form_error: Option<String>,
+    pub testing_connection: bool,
+    pub connection_result: Option<ConnectionResult>,
+}
+
+impl Default for SyncSettings {
+    fn default() -> Self {
+        Self {
+            targets: Vec::new(),
+            current_target_index: None,
+            show_add_form: false,
+            show_edit_form: false,
+            editing_target_index: None,
+            active_field: None,
+            name_input: String::new(),
+            url_input: String::new(),
+            username_input: String::new(),
+            password_input: String::new(),
+            path_input: String::new(),
+            form_error: None,
+            testing_connection: false,
+            connection_result: None,
+        }
+    }
+}
+
+impl SyncSettings {
+    /// Clear all form inputs
+    pub fn clear_form(&mut self) {
+        self.name_input.clear();
+        self.url_input.clear();
+        self.username_input.clear();
+        self.password_input.clear();
+        self.path_input.clear();
+        self.form_error = None;
+        self.connection_result = None;
+        self.active_field = None;
+    }
+
+    /// Add character to name input
+    pub fn add_name_char(&mut self, c: char) {
+        self.name_input.push(c);
+        self.form_error = None;
+    }
+
+    /// Add character to URL input
+    pub fn add_url_char(&mut self, c: char) {
+        self.url_input.push(c);
+        self.form_error = None;
+    }
+
+    /// Add character to username input
+    pub fn add_username_char(&mut self, c: char) {
+        self.username_input.push(c);
+        self.form_error = None;
+    }
+
+    /// Add character to password input
+    pub fn add_password_char(&mut self, c: char) {
+        self.password_input.push(c);
+        self.form_error = None;
+    }
+
+    /// Add character to path input
+    pub fn add_path_char(&mut self, c: char) {
+        self.path_input.push(c);
+        self.form_error = None;
+    }
+
+    /// Remove last character from name input
+    pub fn remove_name_char(&mut self) {
+        self.name_input.pop();
+    }
+
+    /// Remove last character from URL input
+    pub fn remove_url_char(&mut self) {
+        self.url_input.pop();
+    }
+
+    /// Remove last character from username input
+    pub fn remove_username_char(&mut self) {
+        self.username_input.pop();
+    }
+
+    /// Remove last character from password input
+    pub fn remove_password_char(&mut self) {
+        self.password_input.pop();
+    }
+
+    /// Remove last character from path input
+    pub fn remove_path_char(&mut self) {
+        self.path_input.pop();
+    }
+
+    /// Cycle to next form field
+    pub fn cycle_field_forward(&mut self) {
+        self.active_field = match self.active_field {
+            Some(FormField::Name) => Some(FormField::Url),
+            Some(FormField::Url) => Some(FormField::Username),
+            Some(FormField::Username) => Some(FormField::Password),
+            Some(FormField::Password) => Some(FormField::Path),
+            Some(FormField::Path) => Some(FormField::Name),
+            None => Some(FormField::Name),
+        };
+    }
+
+    /// Cycle to previous form field
+    pub fn cycle_field_backward(&mut self) {
+        self.active_field = match self.active_field {
+            Some(FormField::Name) => Some(FormField::Path),
+            Some(FormField::Url) => Some(FormField::Name),
+            Some(FormField::Username) => Some(FormField::Url),
+            Some(FormField::Password) => Some(FormField::Username),
+            Some(FormField::Path) => Some(FormField::Password),
+            None => Some(FormField::Name),
+        };
+    }
+
+    /// Load target data into form for editing
+    pub fn load_target_to_form(&mut self, index: usize) {
+        if let Some(target) = self.targets.get(index) {
+            self.name_input = target.name.clone();
+            self.url_input = target.url.clone();
+            self.username_input = target.username.clone();
+            self.password_input = target.password.clone();
+            self.path_input = target.remote_path.clone();
+            self.active_field = Some(FormField::Name);
+        }
     }
 }
 
@@ -54,13 +248,15 @@ impl Default for EncryptionSettings {
 #[derive(Debug, Clone)]
 pub struct Settings {
     pub current_tab: SettingsTab,
+    pub sync: SyncSettings,
     pub encryption: EncryptionSettings,
 }
 
 impl Default for Settings {
     fn default() -> Self {
         Self {
-            current_tab: SettingsTab::General,
+            current_tab: SettingsTab::Sync,
+            sync: SyncSettings::default(),
             encryption: EncryptionSettings::default(),
         }
     }
@@ -70,6 +266,143 @@ impl Settings {
     /// Create new settings
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Cycle to next settings tab
+    pub fn cycle_tab_forward(&mut self) {
+        self.current_tab = match self.current_tab {
+            SettingsTab::Sync => SettingsTab::Encryption,
+            SettingsTab::Encryption => SettingsTab::About,
+            SettingsTab::About => SettingsTab::Sync,
+        };
+    }
+
+    /// Cycle to previous settings tab
+    pub fn cycle_tab_backward(&mut self) {
+        self.current_tab = match self.current_tab {
+            SettingsTab::Sync => SettingsTab::About,
+            SettingsTab::About => SettingsTab::Encryption,
+            SettingsTab::Encryption => SettingsTab::Sync,
+        };
+    }
+
+    /// Load all settings from disk
+    pub async fn load_all_settings(&mut self, data_dir: &PathBuf) -> Result<()> {
+        self.load_encryption_settings(data_dir).await?;
+        self.load_sync_settings(data_dir).await?;
+        Ok(())
+    }
+
+    /// Load sync settings from Joplin-compatible format
+    pub async fn load_sync_settings(&mut self, data_dir: &PathBuf) -> Result<()> {
+        let config_path = data_dir.join("settings.json");
+
+        if !config_path.exists() {
+            // Try to load from old sync-config.json format
+            return self.migrate_old_sync_config(data_dir).await;
+        }
+
+        let content = tokio::fs::read_to_string(&config_path).await?;
+        let config: serde_json::Value = serde_json::from_str(&content)?;
+
+        // Parse active target ID
+        let active_id = config.get("sync.target")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0) as u32;
+
+        // Load WebDAV target (ID 6)
+        if active_id == 6 {
+            let url = config.get("sync.6.path")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+
+            let username = config.get("sync.6.username")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+
+            let password = config.get("sync.6.password")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+
+            let target = SyncTarget {
+                id: "webdav-default".to_string(),
+                name: "WebDAV".to_string(),
+                target_type: SyncTargetType::WebDAV,
+                url,
+                username,
+                password,
+                remote_path: "/neojoplin".to_string(),
+                ignore_tls_errors: false,
+            };
+
+            self.sync.targets.push(target);
+            self.sync.current_target_index = Some(0);
+        } else if self.sync.targets.is_empty() {
+            // No targets configured, set to None
+            self.sync.current_target_index = None;
+        }
+
+        Ok(())
+    }
+
+    /// Save sync settings to Joplin-compatible format
+    pub async fn save_sync_settings(&self, data_dir: &PathBuf) -> Result<()> {
+        let config_path = data_dir.join("settings.json");
+
+        let mut config = serde_json::json!({
+            "$schema": "https://joplinapp.org/schema/settings.json",
+            "sync.target": 6,  // WebDAV
+        });
+
+        // Save current WebDAV target
+        if let Some(idx) = self.sync.current_target_index {
+            if let Some(target) = self.sync.targets.get(idx) {
+                if target.target_type == SyncTargetType::WebDAV {
+                    config["sync.6.path"] = serde_json::json!(target.url);
+                    config["sync.6.username"] = serde_json::json!(target.username);
+                    config["sync.6.password"] = serde_json::json!(target.password);
+                }
+            }
+        }
+
+        let content = serde_json::to_string_pretty(&config)?;
+        tokio::fs::write(&config_path, content).await?;
+
+        Ok(())
+    }
+
+    /// Migrate old sync-config.json to new format
+    async fn migrate_old_sync_config(&mut self, data_dir: &PathBuf) -> Result<()> {
+        let old_path = data_dir.join("sync-config.json");
+
+        if old_path.exists() {
+            let content = tokio::fs::read_to_string(&old_path).await?;
+            if let Ok(old_config) = serde_json::from_str::<serde_json::Value>(&content) {
+                let url = old_config.get("url").and_then(|v| v.as_str()).unwrap_or("");
+
+                let target = SyncTarget {
+                    id: "migrated".to_string(),
+                    name: "Migrated WebDAV".to_string(),
+                    target_type: SyncTargetType::WebDAV,
+                    url: url.to_string(),
+                    username: String::new(),
+                    password: String::new(),
+                    remote_path: "/neojoplin".to_string(),
+                    ignore_tls_errors: false,
+                };
+
+                self.sync.targets.push(target);
+                self.sync.current_target_index = Some(0);
+
+                // Save in new format
+                self.save_sync_settings(data_dir).await?;
+            }
+        }
+
+        Ok(())
     }
 
     /// Load encryption settings from disk

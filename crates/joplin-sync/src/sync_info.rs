@@ -33,6 +33,10 @@ pub struct SyncInfo {
 
     #[serde(default = "default_revision_ttl")]
     pub revision_service_ttl_days: SyncInfoValueInt,
+
+    /// Timestamp of last delta sync for change detection
+    #[serde(default)]
+    pub delta_timestamp: i64,
 }
 
 fn default_app_min_version() -> String {
@@ -176,6 +180,7 @@ impl SyncInfo {
                 updated_time: 0,
             },
             revision_service_ttl_days: default_revision_ttl(),
+            delta_timestamp: 0,
         }
     }
 
@@ -232,13 +237,12 @@ impl SyncInfo {
 
     /// Get delta timestamp (legacy compatibility)
     pub fn delta_timestamp(&self) -> i64 {
-        // Return current time as fallback
-        Utc::now().timestamp_millis()
+        self.delta_timestamp
     }
 
     /// Update delta timestamp (legacy compatibility)
     pub fn update_delta_timestamp(&mut self) {
-        // Delta timestamp is handled separately
+        self.delta_timestamp = Utc::now().timestamp_millis();
     }
 }
 

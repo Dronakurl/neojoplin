@@ -120,19 +120,6 @@ docker start neojoplin-webdav-1
 - Persists data in Docker volume
 - Supports PROPFIND, GET, PUT, DELETE, MKCOL operations
 
-**Automated E2EE Setup:**
-```bash
-# Run the setup script to configure both neojoplin and joplin CLI
-./setup_local_e2ee.sh
-```
-
-This script will:
-- Check and start the Docker WebDAV server if needed
-- Configure NeoJoplin to use the local WebDAV server
-- Configure Joplin CLI to use the same WebDAV target
-- Create test data and verify cross-compatibility
-- Set up E2EE password from .env file for automated testing
-
 **Using local WebDAV for testing:**
 ```bash
 # Create test data
@@ -263,6 +250,7 @@ joplin sync
 3. **Use milliseconds for timestamps** - Joplin uses ms, not seconds
 4. **FTS5 limitations** - Virtual tables don't support UPSERT, use DELETE + INSERT
 5. **Type coercion** - SQLite stores some numbers as INTEGER despite schema saying NUMERIC
+6. **NEVER modify joplin-desktop configuration** - Only modify the `joplin` CLI tool configuration, not `~/.config/joplin-desktop/` or `~/.local/share/joplin-desktop/`. The user's joplin-desktop application must remain untouched.
 
 ### Configuration Files
 

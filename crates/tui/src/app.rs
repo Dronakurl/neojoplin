@@ -82,8 +82,8 @@ impl App {
         let notes = storage.list_notes(None).await?;
         state.set_notes(notes);
 
-        // Load encryption settings
-        state.settings.load_encryption_settings(&data_dir).await?;
+        // Load all settings (encryption and sync)
+        state.settings.load_all_settings(&data_dir).await?;
 
         Ok(Self {
             state,
@@ -270,17 +270,37 @@ impl App {
                 self.state.prev_panel();
             }
 
+            // Vim-style horizontal panel navigation
+            KeyCode::Char('h') => {
+                // Move left (previous panel)
+                self.state.prev_panel();
+            }
+            KeyCode::Char('l') => {
+                // Move right (next panel)
+                self.state.next_panel();
+            }
+
             // Vim-style navigation
             KeyCode::Char('j') | KeyCode::Down => {
-                let folder_changed = self.state.move_selection(1);
-                if folder_changed {
-                    self.reload_notes().await?;
+                if self.state.focus == FocusPanel::Content {
+                    // Scroll content down
+                    self.state.content_scroll_offset = self.state.content_scroll_offset.saturating_add(1);
+                } else {
+                    let folder_changed = self.state.move_selection(1);
+                    if folder_changed {
+                        self.reload_notes().await?;
+                    }
                 }
             }
             KeyCode::Char('k') | KeyCode::Up => {
-                let folder_changed = self.state.move_selection(-1);
-                if folder_changed {
-                    self.reload_notes().await?;
+                if self.state.focus == FocusPanel::Content {
+                    // Scroll content up
+                    self.state.content_scroll_offset = self.state.content_scroll_offset.saturating_sub(1);
+                } else {
+                    let folder_changed = self.state.move_selection(-1);
+                    if folder_changed {
+                        self.reload_notes().await?;
+                    }
                 }
             }
 
@@ -614,9 +634,7 @@ impl App {
             self.state.current_note_content.clear();
         }
 
-        // Automatically start rename mode for the new notebook
-        self.state.rename_input = title;
-        self.state.show_rename_prompt();
+        self.state.set_status(&format!("Created notebook: {}", title));
 
         Ok(())
     }
@@ -727,31 +745,44 @@ impl App {
             KeyCode::Char('q') | KeyCode::Esc => {
                 self.state.hide_settings();
                 self.state.settings.hide_password_prompts();
+                self.state.settings.sync.show_add_form = false;
+                self.state.settings.sync.show_edit_form = false;
                 return Ok(false);
             }
 
             // Tab navigation
             KeyCode::Char('>') | KeyCode::Tab => {
-                self.state.settings.current_tab = match self.state.settings.current_tab {
-                    SettingsTab::General => SettingsTab::Encryption,
-                    SettingsTab::Encryption => SettingsTab::About,
-                    SettingsTab::About => SettingsTab::General,
-                };
+                self.state.settings.cycle_tab_forward();
             }
 
             KeyCode::Char('<') | KeyCode::BackTab => {
-                self.state.settings.current_tab = match self.state.settings.current_tab {
-                    SettingsTab::General => SettingsTab::About,
-                    SettingsTab::Encryption => SettingsTab::General,
-                    SettingsTab::About => SettingsTab::Encryption,
-                };
+                self.state.settings.cycle_tab_backward();
             }
 
-            // Encryption tab actions
+            // Sync tab actions
+            KeyCode::Char('n') => {
+                if self.state.settings.current_tab == SettingsTab::Sync {
+                    // Show add form
+                    self.state.settings.sync.show_add_form = true;
+                    self.state.settings.sync.clear_form();
+                    self.state.settings.sync.active_field = Some(crate::settings::FormField::Name);
+                }
+            }
+
             KeyCode::Char('e') => {
                 if self.state.settings.current_tab == SettingsTab::Encryption
                     && !self.state.settings.encryption.enabled {
                     self.state.settings.show_new_key_prompt();
+                } else if self.state.settings.current_tab == SettingsTab::Sync {
+                    // Edit current target
+                    let sync = &mut self.state.settings.sync;
+                    if let Some(idx) = sync.current_target_index {
+                        if idx < sync.targets.len() {
+                            sync.show_edit_form = true;
+                            sync.editing_target_index = Some(idx);
+                            sync.load_target_to_form(idx);
+                        }
+                    }
                 }
             }
 
@@ -761,6 +792,66 @@ impl App {
                     let data_dir = neojoplin_core::Config::data_dir()?;
                     self.state.settings.disable_encryption(&data_dir).await?;
                     self.state.set_status("Encryption disabled");
+                } else if self.state.settings.current_tab == SettingsTab::Sync {
+                    // Delete current target
+                    let sync = &mut self.state.settings.sync;
+                    if let Some(idx) = sync.current_target_index {
+                        if !sync.targets.is_empty() {
+                            sync.targets.remove(idx);
+                            if sync.targets.is_empty() {
+                                sync.current_target_index = None;
+                            } else if idx >= sync.targets.len() {
+                                sync.current_target_index = Some(sync.targets.len() - 1);
+                            }
+
+                            // Save to file
+                            let data_dir = neojoplin_core::Config::data_dir()?;
+                            let _ = self.state.settings.save_sync_settings(&data_dir).await;
+                            self.state.set_status("Target deleted");
+                        }
+                    }
+                }
+            }
+
+            // Target navigation
+            KeyCode::Up | KeyCode::Char('k') => {
+                if self.state.settings.current_tab == SettingsTab::Sync {
+                    let sync = &mut self.state.settings.sync;
+                    if let Some(ref mut idx) = sync.current_target_index {
+                        if *idx > 0 {
+                            *idx -= 1;
+                        }
+                    }
+                }
+            }
+
+            KeyCode::Down | KeyCode::Char('j') => {
+                if self.state.settings.current_tab == SettingsTab::Sync {
+                    let sync = &mut self.state.settings.sync;
+                    if let Some(ref mut idx) = sync.current_target_index {
+                        if *idx + 1 < sync.targets.len() {
+                            *idx += 1;
+                        }
+                    }
+                }
+            }
+
+            // Set target as active
+            KeyCode::Enter => {
+                if self.state.settings.current_tab == SettingsTab::Sync {
+                    let sync = &mut self.state.settings.sync;
+                    if sync.show_add_form || sync.show_edit_form {
+                        // Handle form submission
+                        return self.handle_target_form_key_event(key).await;
+                    } else {
+                        // Set current target as active
+                        if let Some(_idx) = sync.current_target_index {
+                            // Save to file
+                            let data_dir = neojoplin_core::Config::data_dir()?;
+                            let _ = self.state.settings.save_sync_settings(&data_dir).await;
+                            self.state.set_status("Target saved as active");
+                        }
+                    }
                 }
             }
 
@@ -789,22 +880,191 @@ impl App {
                 }
             }
 
-            // Confirm password
-            KeyCode::Enter => {
-                if self.state.settings.encryption.show_new_key_prompt {
-                    let password = self.state.settings.encryption.password_input.clone();
-                    self.state.settings.encryption.confirm_password_input = password.clone();
-
-                    let data_dir = neojoplin_core::Config::data_dir()?;
-                    self.state.settings.enable_encryption(&password, &data_dir).await?;
-                    self.state.set_status("Encryption enabled successfully");
+            // Handle sync form events
+            _ => {
+                if self.state.settings.sync.show_add_form || self.state.settings.sync.show_edit_form {
+                    return self.handle_target_form_key_event(key).await;
                 }
+            }
+        }
+
+        Ok(true)
+    }
+
+    /// Handle keyboard events in sync target form
+    async fn handle_target_form_key_event(&mut self, key: KeyEvent) -> Result<bool> {
+        match key.code {
+            KeyCode::Tab => {
+                self.state.settings.sync.cycle_field_forward();
+            }
+
+            KeyCode::BackTab => {
+                self.state.settings.sync.cycle_field_backward();
+            }
+
+            KeyCode::Char('t') => {
+                if key.modifiers.contains(KeyModifiers::CONTROL) {
+                    // Test connection
+                    self.test_webdav_connection().await?;
+                }
+            }
+
+            KeyCode::Char(c) => {
+                // Add character to active field
+                let active_field = self.state.settings.sync.active_field;
+                match active_field {
+                    Some(crate::settings::FormField::Name) => self.state.settings.sync.add_name_char(c),
+                    Some(crate::settings::FormField::Url) => self.state.settings.sync.add_url_char(c),
+                    Some(crate::settings::FormField::Username) => self.state.settings.sync.add_username_char(c),
+                    Some(crate::settings::FormField::Password) => self.state.settings.sync.add_password_char(c),
+                    Some(crate::settings::FormField::Path) => self.state.settings.sync.add_path_char(c),
+                    None => {}
+                }
+            }
+
+            KeyCode::Backspace => {
+                // Remove character from active field
+                let active_field = self.state.settings.sync.active_field;
+                match active_field {
+                    Some(crate::settings::FormField::Name) => self.state.settings.sync.remove_name_char(),
+                    Some(crate::settings::FormField::Url) => self.state.settings.sync.remove_url_char(),
+                    Some(crate::settings::FormField::Username) => self.state.settings.sync.remove_username_char(),
+                    Some(crate::settings::FormField::Password) => self.state.settings.sync.remove_password_char(),
+                    Some(crate::settings::FormField::Path) => self.state.settings.sync.remove_path_char(),
+                    None => {}
+                }
+            }
+
+            KeyCode::Enter => {
+                // Validate and save
+                if let Err(e) = self.validate_and_save_target().await {
+                    self.state.settings.sync.form_error = Some(e.to_string());
+                } else {
+                    self.state.settings.sync.show_add_form = false;
+                    self.state.settings.sync.show_edit_form = false;
+                    self.state.settings.sync.clear_form();
+                    self.state.set_status("Target saved successfully");
+                }
+            }
+
+            KeyCode::Esc => {
+                // Cancel form
+                self.state.settings.sync.show_add_form = false;
+                self.state.settings.sync.show_edit_form = false;
+                self.state.settings.sync.clear_form();
             }
 
             _ => {}
         }
 
-        Ok(false)
+        Ok(true)
+    }
+
+    /// Validate and save sync target
+    async fn validate_and_save_target(&mut self) -> anyhow::Result<()> {
+        let sync = &mut self.state.settings.sync;
+
+        // Basic validation
+        if sync.name_input.trim().is_empty() {
+            return Err(anyhow::anyhow!("Name cannot be empty"));
+        }
+
+        if sync.url_input.trim().is_empty() {
+            return Err(anyhow::anyhow!("URL cannot be empty"));
+        }
+
+        if !sync.url_input.starts_with("http://") && !sync.url_input.starts_with("https://") {
+            return Err(anyhow::anyhow!("URL must start with http:// or https://"));
+        }
+
+        if sync.path_input.trim().is_empty() {
+            return Err(anyhow::anyhow!("Path cannot be empty"));
+        }
+
+        if !sync.path_input.starts_with('/') {
+            return Err(anyhow::anyhow!("Path must start with /"));
+        }
+
+        // Create or update target
+        let target = crate::settings::SyncTarget {
+            id: if sync.show_edit_form {
+                sync.editing_target_index.and_then(|i| sync.targets.get(i).map(|t| t.id.clone()))
+                    .unwrap_or_else(|| uuid::Uuid::new_v4().to_string())
+            } else {
+                uuid::Uuid::new_v4().to_string()
+            },
+            name: sync.name_input.trim().to_string(),
+            target_type: crate::settings::SyncTargetType::WebDAV,
+            url: sync.url_input.trim().to_string(),
+            username: sync.username_input.trim().to_string(),
+            password: sync.password_input.clone(),
+            remote_path: sync.path_input.trim().to_string(),
+            ignore_tls_errors: false,
+        };
+
+        if sync.show_edit_form {
+            if let Some(idx) = sync.editing_target_index {
+                if idx < sync.targets.len() {
+                    sync.targets[idx] = target;
+                }
+            }
+        } else {
+            sync.targets.push(target);
+            sync.current_target_index = Some(sync.targets.len() - 1);
+        }
+
+        // Save to file
+        let data_dir = neojoplin_core::Config::data_dir()?;
+        self.state.settings.save_sync_settings(&data_dir).await?;
+
+        Ok(())
+    }
+
+    /// Test WebDAV connection
+    async fn test_webdav_connection(&mut self) -> anyhow::Result<()> {
+        let sync = &mut self.state.settings.sync;
+
+        sync.testing_connection = true;
+        sync.connection_result = None;
+        sync.form_error = None;
+
+        let url = sync.url_input.clone();
+
+        // Basic URL validation
+        if url.is_empty() || !url.starts_with("http") {
+            sync.form_error = Some("Invalid URL".to_string());
+            sync.testing_connection = false;
+            return Ok(());
+        }
+
+        // Create WebDAV client and test connection
+        use joplin_sync::{ReqwestWebDavClient, WebDavConfig};
+
+        let config = WebDavConfig::new(
+            url.clone(),
+            sync.username_input.clone(),
+            sync.password_input.clone(),
+        );
+
+        match ReqwestWebDavClient::new(config) {
+            Ok(webdav) => {
+                // Try to list files to test connection
+                match webdav.list_impl(&sync.path_input).await {
+                    Ok(_) => {
+                        sync.connection_result = Some(crate::settings::ConnectionResult::Success);
+                    }
+                    Err(e) => {
+                        sync.connection_result = Some(crate::settings::ConnectionResult::Failed(e.to_string()));
+                    }
+                }
+            }
+            Err(e) => {
+                sync.connection_result = Some(crate::settings::ConnectionResult::Failed(e.to_string()));
+            }
+        }
+
+        sync.testing_connection = false;
+        Ok(())
     }
 }
 
