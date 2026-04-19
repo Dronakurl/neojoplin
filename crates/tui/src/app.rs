@@ -50,7 +50,7 @@ impl App {
         // Load folders
         let mut folders = storage.list_folders().await?;
 
-        // Create default folder if none exist
+        // Create default notebook if none exist
         if folders.is_empty() {
             use uuid::Uuid;
             let default_folder = Folder {
@@ -71,7 +71,7 @@ impl App {
 
             storage.create_folder(&default_folder).await?;
             folders = vec![default_folder];
-            state.set_status("Created default folder: My Notebook");
+            state.set_status("Created default notebook: My Notebook");
         }
 
         state.set_folders(folders);
@@ -144,7 +144,7 @@ impl App {
             // Handle events
             if event::poll(Duration::from_millis(100))? {
                 if let event::Event::Key(key) = event::read()? {
-                    if self.handle_key_event(key).await? {
+                    if self.handle_key_event(key, terminal).await? {
                         break; // Exit requested
                     }
                 }
@@ -154,7 +154,11 @@ impl App {
     }
 
     /// Handle keyboard events
-    async fn handle_key_event(&mut self, key: KeyEvent) -> Result<bool> {
+    async fn handle_key_event<B: ratatui::backend::Backend>(
+        &mut self,
+        key: KeyEvent,
+        terminal: &mut Terminal<B>,
+    ) -> Result<bool> {
         // Handle global shortcuts
         match self.state.show_quit_confirmation {
             true => {
@@ -266,7 +270,7 @@ impl App {
                 if self.state.focus == FocusPanel::Notes {
                     if let Some(note) = self.state.selected_note() {
                         let note_clone = note.clone();
-                        self.edit_note(&note_clone).await?;
+                        self.edit_note(&note_clone, terminal).await?;
                     }
                 }
             }
@@ -277,10 +281,10 @@ impl App {
                 self.create_note().await?;
             }
 
-            // New folder
+            // New notebook
             KeyCode::Char('N') => {
-                // N - New folder
-                self.create_folder().await?;
+                // N - New notebook
+                self.create_notebook().await?;
             }
 
             // Delete
@@ -296,7 +300,10 @@ impl App {
                         self.state.show_rename_prompt();
                     }
                 } else if self.state.focus == FocusPanel::Notebooks {
-                    self.state.set_status("Use 'N' to create new folder instead");
+                    if let Some(folder) = self.state.selected_folder() {
+                        self.state.rename_input = folder.title.clone();
+                        self.state.show_rename_prompt();
+                    }
                 }
             }
 
@@ -349,7 +356,11 @@ impl App {
     }
 
     /// Edit note in external editor
-    async fn edit_note(&mut self, note: &Note) -> Result<()> {
+    async fn edit_note<B: ratatui::backend::Backend>(
+        &mut self,
+        note: &Note,
+        terminal: &mut Terminal<B>,
+    ) -> Result<()> {
         use neojoplin_core::Editor;
 
         self.state.set_status(&format!("Opening editor for: {}", note.title));
@@ -374,6 +385,9 @@ impl App {
         enable_raw_mode().context("Failed to re-enable raw mode")?;
 
         let updated_body = editor_result?;
+
+        // Force a complete terminal redraw to ensure TUI is properly visible
+        terminal.clear()?;
 
         // Update note if content changed
         if updated_body != note.body {
@@ -468,17 +482,17 @@ impl App {
         Ok(())
     }
 
-    /// Create a new folder
-    async fn create_folder(&mut self) -> Result<()> {
+    /// Create a new notebook
+    async fn create_notebook(&mut self) -> Result<()> {
         use uuid::Uuid;
 
-        self.state.set_status("Creating new folder...");
+        self.state.set_status("Creating new notebook...");
 
-        let title = format!("New Folder {}", Uuid::new_v4().to_string()[..8].to_string());
+        let title = "New notebook".to_string();
         let folder = Folder {
             id: Uuid::new_v4().to_string(),
             title: title.clone(),
-            parent_id: String::new(), // Root folder
+            parent_id: String::new(), // Root notebook
             created_time: now_ms(),
             updated_time: now_ms(),
             user_created_time: 0,
@@ -497,20 +511,23 @@ impl App {
         let folders = self.storage.list_folders().await?;
         self.state.set_folders(folders);
 
-        // Select the newly created folder (it should be the last one)
+        // Select the newly created notebook (it should be the last one)
         if !self.state.folders.is_empty() {
             self.state.selected_folder = Some(self.state.folders.len() - 1);
-            // Clear notes since new folder is empty
+            // Clear notes since new notebook is empty
             self.state.notes.clear();
             self.state.selected_note = None;
             self.state.current_note_content.clear();
         }
 
-        self.state.set_status(&format!("Created folder: {}", title));
+        // Automatically start rename mode for the new notebook
+        self.state.rename_input = title;
+        self.state.show_rename_prompt();
+
         Ok(())
     }
 
-    /// Delete selected item (note or folder)
+    /// Delete selected item (note or notebook)
     async fn delete_selected(&mut self) -> Result<()> {
         match self.state.focus {
             FocusPanel::Notes => {
@@ -525,14 +542,14 @@ impl App {
             FocusPanel::Notebooks => {
                 if let Some(folder) = self.state.selected_folder() {
                     let folder_id = folder.id.clone();
-                    self.state.set_status(&format!("Deleting folder: {}", folder.title));
+                    self.state.set_status(&format!("Deleting notebook: {}", folder.title));
                     self.storage.delete_folder(&folder_id).await?;
                     // Reload folders
                     let folders = self.storage.list_folders().await?;
                     self.state.set_folders(folders);
                     // Reload notes
                     self.reload_notes().await?;
-                    self.state.set_status("Folder deleted");
+                    self.state.set_status("Notebook deleted");
                 }
             }
             FocusPanel::Content => {
@@ -542,7 +559,7 @@ impl App {
         Ok(())
     }
 
-    /// Reload notes for currently selected folder
+    /// Reload notes for currently selected notebook
     async fn reload_notes(&mut self) -> Result<()> {
         if let Some(folder) = self.state.selected_folder() {
             let notes = self.storage.list_notes(Some(&folder.id)).await?;
@@ -551,7 +568,7 @@ impl App {
         Ok(())
     }
 
-    /// Rename selected item (note or folder)
+    /// Rename selected item (note or notebook)
     async fn rename_item(&mut self) -> Result<()> {
         let new_name = self.state.rename_input.clone();
 
@@ -582,11 +599,14 @@ impl App {
 
                     self.storage.update_folder(&updated_folder).await?;
 
-                    // Reload folders to update list
-                    let folders = self.storage.list_folders().await?;
-                    self.state.set_folders(folders);
+                    // Update in-memory state to preserve order
+                    if let Some(idx) = self.state.selected_folder {
+                        if idx < self.state.folders.len() {
+                            self.state.folders[idx] = updated_folder;
+                        }
+                    }
 
-                    self.state.set_status(&format!("Renamed folder to: {}", new_name));
+                    self.state.set_status(&format!("Renamed notebook to: {}", new_name));
                 }
             }
             FocusPanel::Content => {

@@ -66,7 +66,7 @@ fn render_notebooks_panel(f: &mut Frame, state: &AppState, area: Rect) {
 
     let items: Vec<ListItem> = if state.folders.is_empty() {
         vec![
-            ListItem::new("No folders yet").style(theme.dim()),
+            ListItem::new("No notebooks yet").style(theme.dim()),
             ListItem::new("Press N to create one").style(theme.dim()),
         ]
     } else {
@@ -118,13 +118,13 @@ fn render_notes_panel(f: &mut Frame, state: &AppState, area: Rect) {
     let items: Vec<ListItem> = if state.notes.is_empty() {
         if state.selected_folder().is_some() {
             vec![
-                ListItem::new("No notes in this folder").style(theme.dim()),
+                ListItem::new("No notes in this notebook").style(theme.dim()),
                 ListItem::new("Press n to create one").style(theme.dim()),
             ]
         } else {
             vec![
-                ListItem::new("No folder selected").style(theme.dim()),
-                ListItem::new("Select a folder first").style(theme.dim()),
+                ListItem::new("No notebook selected").style(theme.dim()),
+                ListItem::new("Select a notebook first").style(theme.dim()),
             ]
         }
     } else {
@@ -191,7 +191,7 @@ fn render_content_panel(f: &mut Frame, state: &AppState, area: Rect) {
             Line::from("  hjkl/Arrows     - Move selection").style(theme.text()),
             Line::from("  Enter           - Edit selected note").style(theme.text()),
             Line::from("  n               - New note").style(theme.text()),
-            Line::from("  N               - New folder").style(theme.text()),
+            Line::from("  N               - New notebook").style(theme.text()),
             Line::from("  d               - Delete selected").style(theme.text()),
         ])
     };
@@ -261,7 +261,7 @@ fn render_keybinding_ribbon(f: &mut Frame, state: &AppState, area: Rect) {
             Span::styled("n", key_style),
             Span::raw(":new ").style(theme.muted()),
             Span::styled("N", key_style),
-            Span::raw(":fldr ").style(theme.muted()),
+            Span::raw(":nbk ").style(theme.muted()),
             Span::styled("d", key_style),
             Span::raw(":del ").style(theme.muted()),
             Span::styled("s", key_style),
@@ -629,7 +629,7 @@ pub fn render_help(f: &mut Frame, scroll: u16) {
         Line::from("  ?      Show this help"),
         Line::from("  Enter  Edit selected note"),
         Line::from("  n      New note"),
-        Line::from("  N      New folder"),
+        Line::from("  N      New notebook"),
         Line::from("  d      Delete selected"),
     ]);
 
@@ -688,45 +688,48 @@ pub fn render_quit_confirmation(f: &mut Frame) {
 
 /// Render rename prompt
 pub fn render_rename_prompt(f: &mut Frame, state: &AppState) {
-    let area = centered_rect(60, 20, f.area());
+    let area = centered_rect(40, 15, f.area());
     let theme = &state.theme;
 
     let item_name = if state.focus == FocusPanel::Notes {
         state.selected_note().map(|n| n.title.as_str()).unwrap_or("note")
     } else {
-        state.selected_folder().map(|f| f.title.as_str()).unwrap_or("folder")
+        state.selected_folder().map(|f| f.title.as_str()).unwrap_or("notebook")
     };
 
+    let title = format!("Rename: {}", item_name);
+    let bottom_title = Line::from(vec![
+        Span::styled("[", theme.muted()),
+        Span::styled("Enter", theme.accent()),
+        Span::styled("]", theme.muted()),
+        Span::raw(" confirm ").style(theme.text()),
+        Span::styled("[", theme.muted()),
+        Span::styled("Esc", theme.accent()),
+        Span::styled("]", theme.muted()),
+        Span::raw(" cancel ").style(theme.text()),
+    ]);
+
+    // Input field with visual highlighting
+    let input_text = format!("New name: {}", state.rename_input);
+    let input_paragraph = Paragraph::new(input_text)
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(theme.border_focused())
+                .style(theme.primary()),
+        )
+        .padding(Padding::horizontal(1));
+
+    // Main dialog content
     let text = Text::from(vec![
-        Line::from("Rename").style(theme.primary()),
-        Line::from(format!("Renaming: {}", item_name)).style(theme.muted()),
         Line::from(""),
-        Line::from(format!("New name: {}", state.rename_input)).style(theme.primary()),
-        Line::from(""),
-        Line::from(vec![
-            Span::styled("[", theme.muted()),
-            Span::styled("Enter", theme.accent()),
-            Span::styled("]", theme.muted()),
-            Span::raw(" to confirm ").style(theme.text()),
-        ]),
-        Line::from(vec![
-            Span::styled("[", theme.muted()),
-            Span::styled("Esc", theme.accent()),
-            Span::styled("]", theme.muted()),
-            Span::raw(" to cancel ").style(theme.text()),
-        ]),
-        Line::from(vec![
-            Span::styled("[", theme.muted()),
-            Span::styled("Backspace", theme.accent()),
-            Span::styled("]", theme.muted()),
-            Span::raw(" to delete character ").style(theme.text()),
-        ]),
     ]);
 
     let paragraph = Paragraph::new(text)
         .block(
             Block::default()
-                .title("Rename Item")
+                .title(title)
+                .title_bottom(bottom_title)
                 .borders(Borders::ALL)
                 .border_style(theme.border_focused()),
         )
@@ -734,6 +737,10 @@ pub fn render_rename_prompt(f: &mut Frame, state: &AppState) {
         .alignment(Alignment::Left);
 
     f.render_widget(paragraph, area);
+
+    // Render input field inside the dialog
+    let input_area = centered_rect(38, 13, f.area());
+    f.render_widget(input_paragraph, input_area);
 }
 
 /// Extract emoji from folder icon JSON field
