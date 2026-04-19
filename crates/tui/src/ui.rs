@@ -237,8 +237,8 @@ fn render_keybinding_ribbon(f: &mut Frame, state: &AppState, area: Rect) {
         let action_width = action.chars().count();
         let arrow_width = arrow.chars().count();
 
-        // Pattern: "KEY arrow ACTION arrow" where arrows create the colored box effect
-        let segment_width = key_width + 1 + arrow_width + 1 + action_width + 1 + arrow_width;
+        // Pattern: "KEY arrow ACTION arrow space" where arrows create the colored box effect
+        let segment_width = key_width + arrow_width + 1 + action_width + 1 + arrow_width + 1;
 
         if total_width + segment_width > available_width {
             break; // Stop if we're out of space
@@ -252,12 +252,12 @@ fn render_keybinding_ribbon(f: &mut Frame, state: &AppState, area: Rect) {
         let key_color = theme.text; // Normal text color for keys (not grey!)
         let action_fg_color = Color::Black; // Dark text on colored background
 
-        // Key in normal text
+        // Key in normal text (no trailing space, space comes after arrow)
         spans.push(Span::styled(
-            format!("{} ", key),
+            *key,
             Style::default().fg(key_color).bg(surface_color),
         ));
-        total_width += key_width + 1;
+        total_width += key_width;
 
         // Left arrow: NOT inverted - surface on action_bg (points TO action)
         spans.push(Span::styled(
@@ -268,7 +268,7 @@ fn render_keybinding_ribbon(f: &mut Frame, state: &AppState, area: Rect) {
 
         // Action text: black on action background (inverted)
         spans.push(Span::styled(
-            format!(" {} ", action),
+            format!(" {} ", *action),
             Style::default().fg(action_fg_color).bg(action_bg).bold(),
         ));
         total_width += 1 + action_width + 1;
@@ -279,6 +279,13 @@ fn render_keybinding_ribbon(f: &mut Frame, state: &AppState, area: Rect) {
             Style::default().fg(action_bg).bg(surface_color),
         ));
         total_width += arrow_width;
+
+        // Space after arrow before next key
+        spans.push(Span::styled(
+            " ",
+            Style::default().fg(key_color).bg(surface_color),
+        ));
+        total_width += 1;
     }
 
     let help_text = vec![Line::from(spans)];
