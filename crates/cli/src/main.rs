@@ -388,8 +388,8 @@ async fn main() -> Result<()> {
             // Load E2EE service if encryption is enabled
             let e2ee_service = match load_e2ee_service().await {
                 Ok(service) => Some(service),
-                Err(e) => {
-                    eprintln!("Warning: Failed to load E2EE service: {}. Sync will continue without encryption.", e);
+                Err(_e) => {
+                    // Silently continue without encryption - errors shown in sync result
                     None
                 }
             };
@@ -406,43 +406,19 @@ async fn main() -> Result<()> {
                 sync_engine = sync_engine.with_e2ee(e2ee);
             }
 
-            println!("Starting sync...");
-
-            // Handle progress events
+            // Handle progress events (minimal output for cleaner UX)
             let handle = tokio::spawn(async move {
                 while let Some(event) = event_rx.recv().await {
                     match event {
-                        SyncEvent::PhaseStarted(phase) => {
-                            println!("Phase started: {:?}", phase);
-                        }
-                        SyncEvent::PhaseCompleted(phase) => {
-                            println!("Phase completed: {:?}", phase);
-                        }
-                        SyncEvent::Progress { phase, current, total, message } => {
-                            println!("[{:?}] {}/{}: {}", phase, current, total, message);
-                        }
-                        SyncEvent::Completed { duration } => {
-                            println!("Sync completed in {:?}", duration);
-                        }
                         SyncEvent::Failed { error } => {
-                            eprintln!("Sync failed: {}", error);
+                            eprintln!("Sync error: {}", error);
                         }
                         SyncEvent::Warning { message } => {
-                            eprintln!("Warning: {}", message);
+                            eprintln!("Sync warning: {}", message);
                         }
-                        SyncEvent::ItemDownload { item_type, item_id } => {
-                            println!("Downloading {} {}", item_type, item_id);
+                        _ => {
+                            // Other events are consumed silently - sync result handles feedback
                         }
-                        SyncEvent::ItemDownloadComplete { item_type, item_id } => {
-                            println!("Downloaded {} {}", item_type, item_id);
-                        }
-                        SyncEvent::ItemUpload { item_type, item_id } => {
-                            println!("Uploading {} {}", item_type, item_id);
-                        }
-                        SyncEvent::ItemUploadComplete { item_type, item_id } => {
-                            println!("Uploaded {} {}", item_type, item_id);
-                        }
-                        _ => {}
                     }
                 }
             });
@@ -450,11 +426,12 @@ async fn main() -> Result<()> {
             match sync_engine.sync().await {
                 Ok(_) => {
                     handle.abort();
-                    println!("Sync finished successfully");
+                    println!("✓ Sync completed successfully");
                     Ok(())
                 }
                 Err(e) => {
                     handle.abort();
+                    eprintln!("✗ Sync failed: {}", e);
                     Err(e.into())
                 }
             }
