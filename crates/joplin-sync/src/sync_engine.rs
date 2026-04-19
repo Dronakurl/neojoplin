@@ -1048,11 +1048,274 @@ impl SyncEngine {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use joplin_domain::{SyncItem, DeletedItem};
 
     #[test]
     fn test_sync_context_default() {
         let context = SyncContext::default();
         assert_eq!(context.last_sync_time, 0);
         assert_eq!(context.remote_path, "/neojoplin");
+    }
+
+    /// Verify serialized note has no trailing newline (critical for Joplin compatibility)
+    #[test]
+    fn test_serialize_note_no_trailing_newline() {
+        let engine = make_test_engine();
+        let note = Note {
+            id: "abc123".to_string(),
+            title: "Test Note".to_string(),
+            body: "Hello world".to_string(),
+            is_todo: 0,
+            ..Note::default()
+        };
+        let serialized = engine.serialize_note(&note).unwrap();
+        assert!(serialized.ends_with("type_: 1"), "Must end with type_: 1 without trailing newline");
+        assert!(!serialized.ends_with('\n'), "Must NOT end with newline");
+    }
+
+    /// Verify serialized todo note includes todo fields
+    #[test]
+    fn test_serialize_todo_fields() {
+        let engine = make_test_engine();
+        let todo = Note {
+            id: "todo123".to_string(),
+            title: "Buy groceries".to_string(),
+            body: String::new(),
+            is_todo: 1,
+            todo_due: 1700000000000,
+            todo_completed: 1700001000000,
+            ..Note::default()
+        };
+        let serialized = engine.serialize_note(&todo).unwrap();
+        assert!(serialized.contains("is_todo: 1"));
+        assert!(serialized.contains("todo_due: 1700000000000"));
+        assert!(serialized.contains("todo_completed: 1700001000000"));
+    }
+
+    /// Verify serialized folder has no trailing newline
+    #[test]
+    fn test_serialize_folder_no_trailing_newline() {
+        let engine = make_test_engine();
+        let folder = Folder {
+            id: "folder123".to_string(),
+            title: "My Folder".to_string(),
+            ..Folder::default()
+        };
+        let serialized = engine.serialize_folder(&folder).unwrap();
+        assert!(serialized.ends_with("type_: 2"));
+        assert!(!serialized.ends_with('\n'));
+    }
+
+    /// Verify serialized tag has no trailing newline
+    #[test]
+    fn test_serialize_tag_no_trailing_newline() {
+        let engine = make_test_engine();
+        let tag = Tag {
+            id: "tag123".to_string(),
+            title: "important".to_string(),
+            ..Tag::default()
+        };
+        let serialized = engine.serialize_tag(&tag).unwrap();
+        assert!(serialized.ends_with("type_: 5"));
+        assert!(!serialized.ends_with('\n'));
+    }
+
+    /// Verify serialized note_tag has no trailing newline
+    #[test]
+    fn test_serialize_note_tag_no_trailing_newline() {
+        let engine = make_test_engine();
+        let note_tag = NoteTag {
+            id: "nt123".to_string(),
+            note_id: "note1".to_string(),
+            tag_id: "tag1".to_string(),
+            ..NoteTag::default()
+        };
+        let serialized = engine.serialize_note_tag(&note_tag).unwrap();
+        assert!(serialized.ends_with("type_: 6"));
+        assert!(!serialized.ends_with('\n'));
+    }
+
+    /// Verify deserialization of a todo note from Joplin format
+    #[test]
+    fn test_deserialize_todo_note() {
+        let engine = make_test_engine();
+        let content = "Buy groceries\n\nMilk, eggs, bread\n\n\
+            id: todo456\n\
+            parent_id: folder1\n\
+            created_time: 2024-01-01T00:00:00.000Z\n\
+            updated_time: 2024-01-01T12:00:00.000Z\n\
+            is_todo: 1\n\
+            todo_due: 1700000000000\n\
+            todo_completed: 0\n\
+            type_: 1";
+        let note = engine.deserialize_note("todo456", content).unwrap();
+        assert_eq!(note.title, "Buy groceries");
+        assert_eq!(note.body, "Milk, eggs, bread");
+        assert_eq!(note.is_todo, 1);
+        assert_eq!(note.todo_due, 1700000000000);
+        assert_eq!(note.todo_completed, 0);
+    }
+
+    /// Verify deserialization of a completed todo
+    #[test]
+    fn test_deserialize_completed_todo() {
+        let engine = make_test_engine();
+        let content = "Done Task\n\n\
+            id: done789\n\
+            is_todo: 1\n\
+            todo_completed: 1700001000000\n\
+            type_: 1";
+        let note = engine.deserialize_note("done789", content).unwrap();
+        assert_eq!(note.is_todo, 1);
+        assert_eq!(note.todo_completed, 1700001000000);
+    }
+
+    /// Verify roundtrip: serialize then deserialize produces same data
+    #[test]
+    fn test_note_serialization_roundtrip() {
+        let engine = make_test_engine();
+        let original = Note {
+            id: "rt123".to_string(),
+            title: "Roundtrip Test".to_string(),
+            body: "This is the body\nWith multiple lines".to_string(),
+            parent_id: "folder1".to_string(),
+            is_todo: 1,
+            todo_due: 1700000000000,
+            todo_completed: 1700001000000,
+            markup_language: 1,
+            ..Note::default()
+        };
+        let serialized = engine.serialize_note(&original).unwrap();
+        let deserialized = engine.deserialize_note("rt123", &serialized).unwrap();
+
+        assert_eq!(deserialized.title, original.title);
+        assert_eq!(deserialized.body, original.body);
+        assert_eq!(deserialized.parent_id, original.parent_id);
+        assert_eq!(deserialized.is_todo, original.is_todo);
+        assert_eq!(deserialized.todo_due, original.todo_due);
+        assert_eq!(deserialized.todo_completed, original.todo_completed);
+    }
+
+    /// Verify deserialization of folder content
+    #[test]
+    fn test_deserialize_folder() {
+        let engine = make_test_engine();
+        let content = "My Notebook\n\n\
+            id: f123\n\
+            parent_id: \n\
+            created_time: 2024-01-01T00:00:00.000Z\n\
+            updated_time: 2024-06-15T10:30:00.000Z\n\
+            type_: 2";
+        let folder = engine.deserialize_folder("f123", content).unwrap();
+        assert_eq!(folder.title, "My Notebook");
+        assert_eq!(folder.id, "f123");
+    }
+
+    /// Verify type detection from content
+    #[test]
+    fn test_detect_item_type() {
+        // The store_downloaded_item uses type_num from metadata
+        // Type numbers: 1=Note, 2=Folder, 5=Tag, 6=NoteTag
+        let engine = make_test_engine();
+        let meta1 = engine.parse_item_metadata("id: x\ntype_: 1");
+        assert_eq!(meta1.get("type_").and_then(|v| v.parse::<i32>().ok()), Some(1));
+        let meta2 = engine.parse_item_metadata("id: x\ntype_: 2");
+        assert_eq!(meta2.get("type_").and_then(|v| v.parse::<i32>().ok()), Some(2));
+        let meta5 = engine.parse_item_metadata("id: x\ntype_: 5");
+        assert_eq!(meta5.get("type_").and_then(|v| v.parse::<i32>().ok()), Some(5));
+        let meta6 = engine.parse_item_metadata("id: x\ntype_: 6");
+        assert_eq!(meta6.get("type_").and_then(|v| v.parse::<i32>().ok()), Some(6));
+        let meta_none = engine.parse_item_metadata("no type here");
+        assert_eq!(meta_none.get("type_"), None);
+    }
+
+    /// Test ms_to_iso and iso_to_ms conversion roundtrip
+    #[test]
+    fn test_timestamp_conversion() {
+        let engine = make_test_engine();
+        let ts = 1700000000000i64;
+        let iso = engine.ms_to_iso(ts);
+        assert!(iso.contains("2023-11-14"), "Expected 2023-11-14 in {}", iso);
+        let back = engine.iso_to_ms(&iso).unwrap();
+        assert_eq!(back, ts);
+    }
+
+    /// Helper: create a test engine with minimal mocks
+    fn make_test_engine() -> SyncEngine {
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        SyncEngine {
+            storage: std::sync::Arc::new(FakeStorage),
+            webdav: std::sync::Arc::new(FakeWebDav),
+            context: SyncContext::default(),
+            sync_info: None,
+            e2ee_service: None,
+            event_tx: tx,
+        }
+    }
+
+    /// Fake storage for tests (not used, just needed for type)
+    struct FakeStorage;
+    #[async_trait::async_trait]
+    impl joplin_domain::Storage for FakeStorage {
+        async fn create_note(&self, _: &Note) -> std::result::Result<(), joplin_domain::DatabaseError> { Ok(()) }
+        async fn get_note(&self, _: &str) -> std::result::Result<Option<Note>, joplin_domain::DatabaseError> { Ok(None) }
+        async fn update_note(&self, _: &Note) -> std::result::Result<(), joplin_domain::DatabaseError> { Ok(()) }
+        async fn delete_note(&self, _: &str) -> std::result::Result<(), joplin_domain::DatabaseError> { Ok(()) }
+        async fn list_notes(&self, _: Option<&str>) -> std::result::Result<Vec<Note>, joplin_domain::DatabaseError> { Ok(vec![]) }
+        async fn create_folder(&self, _: &Folder) -> std::result::Result<(), joplin_domain::DatabaseError> { Ok(()) }
+        async fn get_folder(&self, _: &str) -> std::result::Result<Option<Folder>, joplin_domain::DatabaseError> { Ok(None) }
+        async fn update_folder(&self, _: &Folder) -> std::result::Result<(), joplin_domain::DatabaseError> { Ok(()) }
+        async fn delete_folder(&self, _: &str) -> std::result::Result<(), joplin_domain::DatabaseError> { Ok(()) }
+        async fn list_folders(&self) -> std::result::Result<Vec<Folder>, joplin_domain::DatabaseError> { Ok(vec![]) }
+        async fn create_tag(&self, _: &Tag) -> std::result::Result<(), joplin_domain::DatabaseError> { Ok(()) }
+        async fn get_tag(&self, _: &str) -> std::result::Result<Option<Tag>, joplin_domain::DatabaseError> { Ok(None) }
+        async fn update_tag(&self, _: &Tag) -> std::result::Result<(), joplin_domain::DatabaseError> { Ok(()) }
+        async fn delete_tag(&self, _: &str) -> std::result::Result<(), joplin_domain::DatabaseError> { Ok(()) }
+        async fn list_tags(&self) -> std::result::Result<Vec<Tag>, joplin_domain::DatabaseError> { Ok(vec![]) }
+        async fn add_note_tag(&self, _: &NoteTag) -> std::result::Result<(), joplin_domain::DatabaseError> { Ok(()) }
+        async fn remove_note_tag(&self, _: &str, _: &str) -> std::result::Result<(), joplin_domain::DatabaseError> { Ok(()) }
+        async fn get_note_tags(&self, _: &str) -> std::result::Result<Vec<Tag>, joplin_domain::DatabaseError> { Ok(vec![]) }
+        async fn get_folders_updated_since(&self, _: i64) -> std::result::Result<Vec<Folder>, joplin_domain::DatabaseError> { Ok(vec![]) }
+        async fn get_tags_updated_since(&self, _: i64) -> std::result::Result<Vec<Tag>, joplin_domain::DatabaseError> { Ok(vec![]) }
+        async fn get_notes_updated_since(&self, _: i64) -> std::result::Result<Vec<Note>, joplin_domain::DatabaseError> { Ok(vec![]) }
+        async fn get_note_tags_updated_since(&self, _: i64) -> std::result::Result<Vec<NoteTag>, joplin_domain::DatabaseError> { Ok(vec![]) }
+        async fn get_all_sync_items(&self) -> std::result::Result<Vec<SyncItem>, joplin_domain::DatabaseError> { Ok(vec![]) }
+        async fn update_sync_time(&self, _: &str, _: &str, _: i64) -> std::result::Result<(), joplin_domain::DatabaseError> { Ok(()) }
+        async fn get_setting(&self, _: &str) -> std::result::Result<Option<String>, joplin_domain::DatabaseError> { Ok(None) }
+        async fn set_setting(&self, _: &str, _: &str) -> std::result::Result<(), joplin_domain::DatabaseError> { Ok(()) }
+        async fn get_sync_items(&self, _: i32) -> std::result::Result<Vec<SyncItem>, joplin_domain::DatabaseError> { Ok(vec![]) }
+        async fn upsert_sync_item(&self, _: &SyncItem) -> std::result::Result<(), joplin_domain::DatabaseError> { Ok(()) }
+        async fn delete_sync_item(&self, _: i32) -> std::result::Result<(), joplin_domain::DatabaseError> { Ok(()) }
+        async fn clear_all_sync_items(&self) -> std::result::Result<usize, joplin_domain::DatabaseError> { Ok(0) }
+        async fn get_deleted_items(&self, _: i32) -> std::result::Result<Vec<DeletedItem>, joplin_domain::DatabaseError> { Ok(vec![]) }
+        async fn add_deleted_item(&self, _: &DeletedItem) -> std::result::Result<(), joplin_domain::DatabaseError> { Ok(()) }
+        async fn remove_deleted_item(&self, _: i32) -> std::result::Result<(), joplin_domain::DatabaseError> { Ok(()) }
+        async fn clear_deleted_items(&self, _: i64) -> std::result::Result<usize, joplin_domain::DatabaseError> { Ok(0) }
+        async fn get_version(&self) -> std::result::Result<i32, joplin_domain::DatabaseError> { Ok(41) }
+        async fn begin_transaction(&self) -> std::result::Result<(), joplin_domain::DatabaseError> { Ok(()) }
+        async fn commit_transaction(&self) -> std::result::Result<(), joplin_domain::DatabaseError> { Ok(()) }
+        async fn rollback_transaction(&self) -> std::result::Result<(), joplin_domain::DatabaseError> { Ok(()) }
+    }
+
+    /// Fake WebDAV for tests (not used, just needed for type)
+    struct FakeWebDav;
+    #[async_trait::async_trait]
+    impl joplin_domain::WebDavClient for FakeWebDav {
+        async fn list(&self, _: &str) -> std::result::Result<Vec<joplin_domain::DavEntry>, joplin_domain::WebDavError> { Ok(vec![]) }
+        async fn get(&self, _: &str) -> std::result::Result<Box<dyn futures::io::AsyncRead + Unpin + Send>, joplin_domain::WebDavError> {
+            Err(joplin_domain::WebDavError::NotFound("test".into()))
+        }
+        async fn put(&self, _: &str, _: &[u8], _: u64) -> std::result::Result<(), joplin_domain::WebDavError> { Ok(()) }
+        async fn delete(&self, _: &str) -> std::result::Result<(), joplin_domain::WebDavError> { Ok(()) }
+        async fn mkcol(&self, _: &str) -> std::result::Result<(), joplin_domain::WebDavError> { Ok(()) }
+        async fn exists(&self, _: &str) -> std::result::Result<bool, joplin_domain::WebDavError> { Ok(false) }
+        async fn stat(&self, _: &str) -> std::result::Result<joplin_domain::DavEntry, joplin_domain::WebDavError> {
+            Err(joplin_domain::WebDavError::NotFound("test".into()))
+        }
+        async fn lock(&self, _: &str, _: std::time::Duration) -> std::result::Result<String, joplin_domain::WebDavError> { Ok("lock".into()) }
+        async fn refresh_lock(&self, _: &str) -> std::result::Result<(), joplin_domain::WebDavError> { Ok(()) }
+        async fn unlock(&self, _: &str, _: &str) -> std::result::Result<(), joplin_domain::WebDavError> { Ok(()) }
+        async fn mv(&self, _: &str, _: &str) -> std::result::Result<(), joplin_domain::WebDavError> { Ok(()) }
+        async fn copy(&self, _: &str, _: &str) -> std::result::Result<(), joplin_domain::WebDavError> { Ok(()) }
     }
 }
