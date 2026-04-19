@@ -2,7 +2,7 @@
 
 use clap::{Parser, Subcommand};
 use joplin_domain::{now_ms, Note, Folder, Storage};
-use joplin_sync::{SyncEngine, E2eeService, ReqwestWebDavClient, WebDavConfig};
+use joplin_sync::E2eeService;
 use neojoplin_core::Editor;
 use neojoplin_storage::SqliteStorage;
 use std::sync::Arc;
@@ -516,7 +516,7 @@ async fn main() -> Result<()> {
         }
 
         Commands::E2ee { command } => {
-            use joplin_sync::{E2eeService, EncryptionMethod};
+            use joplin_sync::E2eeService;
             use dialoguer::Confirm;
             use dialoguer::Password;
 

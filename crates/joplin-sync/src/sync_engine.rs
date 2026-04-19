@@ -375,7 +375,6 @@ impl SyncEngine {
     async fn save_sync_info(&mut self) -> Result<()> {
         if let Some(ref _sync_info) = self.sync_info {
             // Update delta context timestamp
-            let new_timestamp = now_ms();
             let updated_info = &mut self.sync_info.as_mut().unwrap();
             updated_info.update_delta_timestamp();
 

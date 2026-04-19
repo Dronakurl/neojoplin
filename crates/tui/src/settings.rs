@@ -1,6 +1,6 @@
 // Settings management for TUI
 
-use joplin_sync::{E2eeService, MasterKey, EncryptionMethod};
+use joplin_sync::E2eeService;
 use anyhow::Result;
 use std::path::PathBuf;
 

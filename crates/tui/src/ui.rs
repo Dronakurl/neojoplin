@@ -230,7 +230,7 @@ fn render_keybinding_ribbon(f: &mut Frame, state: &AppState, area: Rect) {
     let mut total_width = 0;
     let available_width = area.width as usize;
 
-    for (i, (key, action, use_alternate)) in bindings.iter().enumerate() {
+    for (_i, (key, action, use_alternate)) in bindings.iter().enumerate() {
         // Calculate segment width
         let key_width = key.chars().count();
         let action_width = action.chars().count();
