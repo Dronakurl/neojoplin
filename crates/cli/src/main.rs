@@ -145,6 +145,7 @@ enum E2eeCommands {
 /// Load E2EE service if encryption is enabled
 async fn load_e2ee_service() -> Result<E2eeService> {
     use neojoplin_core::Config;
+    use joplin_sync::MasterKey;
 
     let data_dir = Config::data_dir()?;
 
@@ -155,6 +156,44 @@ async fn load_e2ee_service() -> Result<E2eeService> {
     // Create E2EE service
     let mut e2ee = E2eeService::new();
     e2ee.set_master_password(master_password);
+
+    // Check if encryption is enabled
+    let encryption_config_path = data_dir.join("encryption.json");
+    if encryption_config_path.exists() {
+        // Load encryption configuration
+        let config_content = tokio::fs::read_to_string(&encryption_config_path).await?;
+        let config: serde_json::Value = serde_json::from_str(&config_content)?;
+
+        let enabled = config.get("enabled").and_then(|v| v.as_bool()).unwrap_or(false);
+        if !enabled {
+            // Encryption is disabled, return service without master keys
+            return Ok(e2ee);
+        }
+
+        // Get active master key ID
+        let active_key_id = config.get("active_master_key_id")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| anyhow::anyhow!("Invalid encryption config: missing active_master_key_id"))?;
+
+        // Load the active master key from disk
+        let keys_dir = data_dir.join("keys");
+        let key_file_path = keys_dir.join(format!("{}.json", active_key_id));
+
+        if key_file_path.exists() {
+            // Load encrypted master key
+            let key_content = tokio::fs::read_to_string(&key_file_path).await?;
+            let encrypted_master_key: MasterKey = serde_json::from_str(&key_content)
+                .map_err(|e| anyhow::anyhow!("Failed to parse master key: {}", e))?;
+
+            // Load and decrypt the master key
+            e2ee.load_master_key(&encrypted_master_key)
+                .map_err(|e| anyhow::anyhow!("Failed to load master key: {}", e))?;
+
+            tracing::info!("Loaded master key: {}", active_key_id);
+        } else {
+            tracing::warn!("Master key file not found: {}", key_file_path.display());
+        }
+    }
 
     Ok(e2ee)
 }
@@ -347,7 +386,13 @@ async fn main() -> Result<()> {
             let (event_tx, mut event_rx) = mpsc::unbounded_channel();
 
             // Load E2EE service if encryption is enabled
-            let e2ee_service = load_e2ee_service().await.ok();
+            let e2ee_service = match load_e2ee_service().await {
+                Ok(service) => Some(service),
+                Err(e) => {
+                    eprintln!("Warning: Failed to load E2EE service: {}. Sync will continue without encryption.", e);
+                    None
+                }
+            };
 
             let mut sync_engine = SyncEngine::new(
                 storage.clone(),
@@ -471,7 +516,7 @@ async fn main() -> Result<()> {
         }
 
         Commands::E2ee { command } => {
-            use neojoplin_e2ee::{EncryptionContext, MasterKey};
+            use joplin_sync::{E2eeService, EncryptionMethod};
             use dialoguer::Confirm;
             use dialoguer::Password;
 
@@ -501,17 +546,21 @@ async fn main() -> Result<()> {
                         return Err(anyhow::anyhow!("Password must be at least 8 characters"));
                     }
 
-                    // Create master key
-                    let master_key = MasterKey::new();
-                    let key_id = master_key.id.clone();
+                    // Create E2EE service and generate master key
+                    let mut e2ee_service = E2eeService::new();
+                    e2ee_service.set_master_password(password.clone());
 
-                    // Encrypt master key with password
-                    let encrypted_master_key = master_key.encrypt_with_password(&password)?;
+                    let (key_id, master_key) = e2ee_service.generate_master_key(&password)?;
 
-                    // Save to file
+                    // Load the master key into the service
+                    e2ee_service.load_master_key(&master_key)?;
+                    e2ee_service.set_active_master_key(key_id.clone());
+
+                    // Save master key to file
                     tokio::fs::create_dir_all(&keys_dir).await?;
                     let key_path = keys_dir.join(format!("{}.json", key_id));
-                    tokio::fs::write(&key_path, encrypted_master_key).await?;
+                    let key_json = serde_json::to_string_pretty(&master_key)?;
+                    tokio::fs::write(&key_path, key_json).await?;
 
                     // Save active key ID to config
                     let config_path = data_dir.join("encryption.json");
@@ -593,15 +642,25 @@ async fn main() -> Result<()> {
                 }
 
                 E2eeCommands::Decrypt { encrypted } => {
-                    use neojoplin_e2ee::jed_format::JedFormat;
-
-                    // Check if it's JED format
-                    if !JedFormat::is_jed_format(&encrypted) {
+                    // Check if it's JED format (starts with "JED")
+                    if !encrypted.starts_with("JED") {
                         return Err(anyhow::anyhow!("Input is not in JED format"));
                     }
 
-                    // Extract key ID
-                    let key_id = JedFormat::extract_key_id(&encrypted)?;
+                    // Extract key ID from JED format (positions 15-46 in the header)
+                    if encrypted.len() < 47 {
+                        return Err(anyhow::anyhow!("JED data too short to extract key ID"));
+                    }
+
+                    let key_id_hex = &encrypted[15..47];
+                    let key_id = format!(
+                        "{}-{}-{}-{}-{}",
+                        &key_id_hex[0..8],
+                        &key_id_hex[8..12],
+                        &key_id_hex[12..16],
+                        &key_id_hex[16..20],
+                        &key_id_hex[20..32]
+                    );
 
                     // Load master key
                     let key_path = keys_dir.join(format!("{}.json", key_id));
@@ -609,23 +668,22 @@ async fn main() -> Result<()> {
                         return Err(anyhow::anyhow!("Master key not found: {}", key_id));
                     }
 
-                    let encrypted_key = tokio::fs::read_to_string(&key_path).await?;
+                    let encrypted_key_json = tokio::fs::read_to_string(&key_path).await?;
+                    let encrypted_master_key: joplin_sync::MasterKey = serde_json::from_str(&encrypted_key_json)
+                        .map_err(|e| anyhow::anyhow!("Failed to parse master key: {}", e))?;
 
                     // Prompt for password
                     let password = Password::new()
                         .with_prompt("Enter master password")
                         .interact()?;
 
-                    // Decrypt master key
-                    let master_key = neojoplin_e2ee::MasterKey::decrypt_from_password(&encrypted_key, &password)?;
-                    let key_data = master_key.data.clone();
-
-                    // Create encryption context
-                    let mut context = EncryptionContext::new();
-                    context.load_master_key(key_id, key_data.clone());
+                    // Create E2EE service and load master key
+                    let mut e2ee_service = E2eeService::new();
+                    e2ee_service.set_master_password(password);
+                    e2ee_service.load_master_key(&encrypted_master_key)?;
 
                     // Decrypt the data
-                    let decrypted = neojoplin_e2ee::JedDecoder::decode(&encrypted, &key_data)?;
+                    let decrypted = e2ee_service.decrypt_string(&encrypted)?;
 
                     println!("{}", decrypted);
                     Ok(())

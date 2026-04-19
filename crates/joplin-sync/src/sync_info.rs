@@ -10,7 +10,6 @@ use std::path::PathBuf;
 use tokio::fs;
 use uuid::Uuid;
 use chrono::Utc;
-use futures::io::AsyncReadExt;
 
 /// Sync information stored in sync.json for Joplin compatibility
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -194,9 +193,10 @@ impl SyncInfo {
         let mut content = webdav.get(&sync_json_path).await
             .map_err(|e| anyhow::anyhow!("Failed to download sync.json: {:?}", e))?;
 
-        // Read content into bytes using futures::AsyncRead
+        // Read content into bytes
+        use futures::io::AsyncReadExt;
         let mut bytes = Vec::new();
-        futures::io::AsyncReadExt::read_to_end(&mut content, &mut bytes).await
+        AsyncReadExt::read_to_end(&mut content, &mut bytes).await
             .map_err(|e| anyhow::anyhow!("Failed to read sync.json: {:?}", e))?;
 
         let sync_info: SyncInfo = serde_json::from_slice(&bytes)
@@ -291,5 +291,81 @@ mod tests {
         assert!(id1.starts_with("neojoplin-"));
         assert!(id2.starts_with("neojoplin-"));
         assert_ne!(id1, id2);
+    }
+
+    #[test]
+    fn test_sync_info_serialization() {
+        let info = SyncInfo::new();
+        let json = serde_json::to_string(&info).unwrap();
+        assert!(json.contains("\"version\":3"));
+        assert!(json.contains("\"app_min_version\":\"3.0.0\""));
+    }
+
+    #[test]
+    fn test_sync_info_deserialization() {
+        let json = r#"{
+            "version": 3,
+            "app_min_version": "3.0.0",
+            "e2ee": {"value": true, "updated_time": 123456},
+            "active_master_key_id": {"value": "test-key-id", "updated_time": 123456}
+        }"#;
+
+        let info: SyncInfo = serde_json::from_str(json).unwrap();
+        assert_eq!(info.version, 3);
+        assert_eq!(info.e2ee.value, true);
+        assert_eq!(info.e2ee.updated_time, 123456);
+        assert_eq!(info.active_master_key_id.value, "test-key-id");
+    }
+
+    #[test]
+    fn test_master_key_info() {
+        let key_info = MasterKeyInfo {
+            id: "test-key-id".to_string(),
+            created_time: 1000,
+            updated_time: 2000,
+            source_application: "neojoplin".to_string(),
+            encryption_method: 8,
+            checksum: "abc123".to_string(),
+            content: "encrypted-content".to_string(),
+            has_been_used: true,
+            enabled: true,
+        };
+
+        assert_eq!(key_info.id, "test-key-id");
+        assert_eq!(key_info.encryption_method, 8);
+        assert!(key_info.has_been_used);
+        assert!(key_info.enabled);
+    }
+
+    #[test]
+    fn test_delta_context_default() {
+        let ctx = DeltaContext::default();
+        assert_eq!(ctx.timestamp, 0);
+        assert!(ctx.files_at_timestamp.is_none());
+        assert!(ctx.stats_cache.is_none());
+    }
+
+    #[test]
+    fn test_key_timestamp() {
+        let mut info = SyncInfo::new();
+        info.e2ee.updated_time = 12345;
+
+        assert_eq!(info.key_timestamp("e2ee"), 12345);
+        assert_eq!(info.key_timestamp("unknown"), 0);
+    }
+
+    #[test]
+    fn test_sync_info_value_defaults() {
+        let bool_val = SyncInfoValueBool::default();
+        assert!(!bool_val.value);
+        assert_eq!(bool_val.updated_time, 0);
+
+        let string_val = SyncInfoValueString::default();
+        assert!(string_val.value.is_empty());
+        assert_eq!(string_val.updated_time, 0);
+
+        let int_val = SyncInfoValueInt::default();
+        assert_eq!(int_val.value, 0);
+        assert_eq!(int_val.updated_time, 0);
     }
 }

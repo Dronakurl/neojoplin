@@ -478,9 +478,12 @@ impl SyncEngine {
         // Encrypt note body if E2EE is enabled
         if let Some(ref e2ee) = self.e2ee_service {
             if let Ok(encrypted_body) = e2ee.encrypt_string(&note.body) {
-                // Replace the body in the content with encrypted version
-                content = content.replace(&format!("body: {}", note.body), &format!("body: {}", encrypted_body));
-                tracing::debug!("Encrypted note {} for upload", note.id);
+                // Replace the body at the end of the content with encrypted version
+                // The body is at the end after all metadata, so we replace it
+                content = content.replace(&format!("\n{}\n", note.body), &format!("\n{}\n", encrypted_body));
+                tracing::info!("Encrypted note {} for upload with E2EE", note.id);
+            } else {
+                tracing::warn!("Failed to encrypt note {} - E2EE enabled but encryption failed", note.id);
             }
         }
 
