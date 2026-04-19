@@ -332,7 +332,14 @@ impl App {
                 self.delete_selected().await?;
             }
 
-            // Toggle todo completion
+            // Toggle todo completion (space bar, like most task managers)
+            KeyCode::Char(' ') => {
+                if self.state.focus == FocusPanel::Notes {
+                    self.toggle_todo().await?;
+                }
+            }
+
+            // Toggle todo completion (t key)
             KeyCode::Char('t') => {
                 self.toggle_todo().await?;
             }
@@ -965,7 +972,7 @@ impl App {
             }
         }
 
-        Ok(true)
+        Ok(false)
     }
 
     /// Handle keyboard events in sync target form

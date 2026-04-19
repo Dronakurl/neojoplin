@@ -330,7 +330,7 @@ pub fn now_ms() -> i64 {
 /// Helper function to convert timestamp to DateTime
 pub fn timestamp_to_datetime(ts: i64) -> DateTime<Utc> {
     DateTime::from_timestamp(ts / 1000, (ts % 1000) as u32 * 1_000_000)
-        .unwrap_or(DateTime::default())
+        .unwrap_or_default()
 }
 
 // Implement sqlx::FromRow for domain types (needed by storage implementations)

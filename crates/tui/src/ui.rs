@@ -2,7 +2,7 @@
 
 use ratatui::{
     layout::{Alignment, Constraint, Direction, Layout, Rect},
-    style::{Color, Style, Stylize},
+    style::{Color, Modifier, Style, Stylize},
     text::{Line, Span, Text},
     widgets::{Block, Borders, List, ListItem, Paragraph, Wrap},
     Frame,
@@ -201,8 +201,9 @@ fn render_content_panel(f: &mut Frame, state: &AppState, area: Rect) {
         "*Select a note to view its content*".to_string()
     };
 
-    // Basic markdown formatting - convert markdown to styled lines
-    let content_lines: Vec<Line> = markdown_to_lines(&markdown_text, theme);
+    // Render markdown with termimad → ratatui native Text
+    let content_width = area.width.saturating_sub(2) as usize;
+    let content_lines: Vec<Line> = termimad_to_ratatui_lines(&markdown_text, content_width);
 
     // Calculate visible area for scrolling
     let visible_height = area.height.saturating_sub(2) as usize; // Subtract border and padding
@@ -255,150 +256,73 @@ fn render_content_panel(f: &mut Frame, state: &AppState, area: Rect) {
     f.render_widget(paragraph, area);
 }
 
-/// Basic markdown to styled lines converter
-fn markdown_to_lines<'a>(text: &'a str, theme: &Theme) -> Vec<Line<'a>> {
-    let mut lines = Vec::new();
+/// Convert termimad FmtText to ratatui Lines (native conversion, no ANSI round-trip)
+fn termimad_to_ratatui_lines(text: &str, width: usize) -> Vec<Line<'static>> {
+    let skin = termimad::MadSkin::default();
+    let fmt_text = skin.text(text, Some(width));
+    let mut lines: Vec<Line<'static>> = Vec::new();
 
-    for line in text.lines() {
-        let spans = parse_markdown_line(line, theme);
-        lines.push(Line::from(spans));
-    }
-
-    if lines.is_empty() {
-        lines.push(Line::from(vec![Span::styled("", theme.text())]));
-    }
-
-    lines
-}
-
-/// Parse markdown line and convert to styled spans
-fn parse_markdown_line<'a>(line: &'a str, theme: &Theme) -> Vec<Span<'a>> {
-    let mut spans = Vec::new();
-    let mut current = String::new();
-    let mut chars = line.chars().peekable();
-    let mut in_bold = false;
-    let mut in_italic = false;
-    let mut in_code = false;
-
-    while let Some(c) = chars.next() {
-        match c {
-            '*' => {
-                // Check for emphasis
-                let next_char = chars.peek();
-                if let Some(&'*') = next_char {
-                    chars.next(); // consume second *
-                    if in_bold {
-                        // End bold
-                        if !current.is_empty() {
-                            spans.push(Span::styled(
-                                current.clone(),
-                                Style::default().add_modifier(ratatui::style::Modifier::BOLD)
-                            ));
-                            current.clear();
-                        }
-                        in_bold = false;
-                    } else {
-                        // Start bold
-                        if !current.is_empty() {
-                            spans.push(Span::styled(current.clone(), Style::default()));
-                            current.clear();
-                        }
-                        in_bold = true;
+    for fmt_line in &fmt_text.lines {
+        match fmt_line {
+            termimad::FmtLine::Normal(composite) => {
+                let spans: Vec<Span<'static>> = composite.composite.compounds.iter()
+                    .map(|c| {
+                        let mut style = Style::default();
+                        if c.bold { style = style.add_modifier(Modifier::BOLD); }
+                        if c.italic { style = style.add_modifier(Modifier::ITALIC); }
+                        if c.strikeout { style = style.add_modifier(Modifier::CROSSED_OUT); }
+                        if c.code { style = style.fg(Color::Cyan); }
+                        Span::styled(c.src.to_string(), style)
+                    })
+                    .collect();
+                // Apply heading style based on composite type
+                use minimad::CompositeStyle;
+                let line_spans = match composite.composite.style {
+                    CompositeStyle::Header(level) => {
+                        let color = match level {
+                            1 => Color::Yellow,
+                            2 => Color::Green,
+                            _ => Color::Cyan,
+                        };
+                        spans.into_iter()
+                            .map(|s| Span::styled(s.content.into_owned(),
+                                s.style.fg(color).add_modifier(Modifier::BOLD)))
+                            .collect()
                     }
-                } else {
-                    // Single * for italic
-                    if in_italic {
-                        if !current.is_empty() {
-                            spans.push(Span::styled(
-                                current.clone(),
-                                Style::default().add_modifier(ratatui::style::Modifier::ITALIC)
-                            ));
-                            current.clear();
-                        }
-                        in_italic = false;
-                    } else {
-                        if !current.is_empty() {
-                            spans.push(Span::styled(current.clone(), Style::default()));
-                            current.clear();
-                        }
-                        in_italic = true;
+                    CompositeStyle::Quote => {
+                        let mut result = vec![Span::styled("▌ ".to_string(), Style::default().fg(Color::DarkGray))];
+                        result.extend(spans.into_iter()
+                            .map(|s| Span::styled(s.content.into_owned(),
+                                s.style.fg(Color::Gray))));
+                        result
                     }
-                }
+                    CompositeStyle::ListItem(..) => {
+                        let mut result = vec![Span::styled("  • ".to_string(), Style::default().fg(Color::Yellow))];
+                        result.extend(spans.into_iter()
+                            .map(|s| Span::styled(s.content.into_owned(), s.style)));
+                        result
+                    }
+                    _ => spans.into_iter()
+                        .map(|s| Span::styled(s.content.into_owned(), s.style))
+                        .collect(),
+                };
+                lines.push(Line::from(line_spans));
             }
-            '`' => {
-                // Code span
-                if in_code {
-                    if !current.is_empty() {
-                        spans.push(Span::styled(
-                            current.clone(),
-                            Style::default().fg(ratatui::style::Color::Cyan)
-                        ));
-                        current.clear();
-                    }
-                    in_code = false;
-                } else {
-                    if !current.is_empty() {
-                        spans.push(Span::styled(current.clone(), Style::default()));
-                        current.clear();
-                    }
-                    in_code = true;
-                }
-            }
-            '#' => {
-                // Headers
-                let header_level = count_consecutive_hashes(&line, current.len() + line[current.len()..].len());
-                if header_level > 0 && current.is_empty() {
-                    // This is a header line
-                    let header_style = match header_level {
-                        1 => Style::default().add_modifier(ratatui::style::Modifier::BOLD),
-                        _ => Style::default(),
-                    };
-                    spans.push(Span::styled(line[header_level..].trim(), header_style));
-                    break;
-                } else {
-                    current.push(c);
-                }
-            }
-            '-' => {
-                // Check for list item or horizontal rule
-                if current.is_empty() && line.starts_with("---") {
-                    // Horizontal rule
-                    spans.push(Span::styled("─".repeat(20), theme.muted()));
-                    break;
-                } else {
-                    current.push(c);
-                }
+            termimad::FmtLine::HorizontalRule => {
+                let rule = "─".repeat(width.min(80));
+                lines.push(Line::from(Span::styled(rule, Style::default().fg(Color::DarkGray))));
             }
             _ => {
-                current.push(c);
+                // Table rows: render as plain text for now
+                lines.push(Line::from(""));
             }
         }
     }
 
-    // Handle any remaining text
-    if !current.is_empty() {
-        let style = if in_code {
-            Style::default().fg(ratatui::style::Color::Cyan)
-        } else if in_bold {
-            Style::default().add_modifier(ratatui::style::Modifier::BOLD)
-        } else if in_italic {
-            Style::default().add_modifier(ratatui::style::Modifier::ITALIC)
-        } else {
-            Style::default()
-        };
-        spans.push(Span::styled(current, style));
+    if lines.is_empty() {
+        lines.push(Line::from(""));
     }
-
-    if spans.is_empty() {
-        spans.push(Span::from(line.to_string()));
-    }
-
-    spans
-}
-
-/// Count consecutive '#' characters at position
-fn count_consecutive_hashes(line: &str, start: usize) -> usize {
-    line[start..].chars().take_while(|&c| c == '#').count()
+    lines
 }
 
 /// Render keybinding ribbon (show available keybindings) - Zellij-style arrow separators
@@ -1023,22 +947,27 @@ pub fn render_help(f: &mut Frame, scroll: u16, state: &AppState) {
         Line::from(""),
         Line::from("Joplin-compatible terminal note-taking client").style(theme.muted()),
         Line::from(""),
-        Line::from("Keybindings").style(theme.primary()),
+        Line::from("Navigation").style(theme.primary()),
+        Line::from("  Tab / Shift-Tab    Switch panels (Notebooks → Notes → Content)"),
+        Line::from("  h / l              Switch panels left / right"),
+        Line::from("  j / k / ↑↓        Move selection or scroll content"),
+        Line::from("  Enter              Open notebook (in Notebooks panel)"),
         Line::from(""),
-        Line::from("Navigation:"),
-        Line::from("  Tab/Shift-Tab  Switch panels"),
-        Line::from("  hjkl/Arrows    Move selection"),
-        Line::from("  j/k (in help)  Scroll help"),
-        Line::from(""),
-        Line::from("Actions:"),
-        Line::from("  q      Quit"),
-        Line::from("  s      Sync with WebDAV"),
-        Line::from("  S      Open settings"),
-        Line::from("  ?      Show this help"),
-        Line::from("  Enter  Edit selected note"),
-        Line::from("  n      New note"),
+        Line::from("Notes & Notebooks").style(theme.primary()),
+        Line::from("  n      New note in current notebook"),
         Line::from("  N      New notebook"),
-        Line::from("  d      Delete selected"),
+        Line::from("  r      Rename selected note or notebook"),
+        Line::from("  d      Delete selected note or notebook"),
+        Line::from(""),
+        Line::from("Todos").style(theme.primary()),
+        Line::from("  T        Create new todo"),
+        Line::from("  Space    Toggle todo completed / unchecked"),
+        Line::from(""),
+        Line::from("Other").style(theme.primary()),
+        Line::from("  e / Enter  Edit selected note in $EDITOR"),
+        Line::from("  s          Sync with WebDAV"),
+        Line::from("  S          Open settings"),
+        Line::from("  q          Quit"),
     ]);
 
     let paragraph = Paragraph::new(text)

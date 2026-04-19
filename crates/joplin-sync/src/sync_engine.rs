@@ -611,32 +611,6 @@ impl SyncEngine {
             }
         }
 
-        // Also scan subdirectories for legacy compatibility
-        for (subdir, item_type) in &[
-            ("folders", ItemType::Folder),
-            ("items", ItemType::Note),
-            ("tags", ItemType::Tag),
-            ("note_tags", ItemType::NoteTag),
-            ("resources", ItemType::Resource),
-        ] {
-            let subdir_path = format!("{}/{}", self.context.remote_path.trim_end_matches('/'), subdir);
-            if let Ok(entries) = self.webdav.list(&subdir_path).await {
-                for entry in entries {
-                    if let Some(id) = entry.path.strip_suffix(".md")
-                        .and_then(|path| path.rsplit('/').next()) {
-                        // Avoid duplicates
-                        if !remote_items.iter().any(|r| r.id == id) {
-                            remote_items.push(RemoteItem {
-                                id: id.to_string(),
-                                item_type: *item_type,
-                                modified: entry.modified,
-                            });
-                        }
-                    }
-                }
-            }
-        }
-
         Ok(remote_items)
     }
 
