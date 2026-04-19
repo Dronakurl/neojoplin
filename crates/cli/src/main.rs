@@ -2,6 +2,7 @@
 
 use clap::{Parser, Subcommand};
 use joplin_domain::{now_ms, Note, Folder, Storage};
+use joplin_sync::{SyncEngine, E2eeService, ReqwestWebDavClient, WebDavConfig};
 use neojoplin_core::Editor;
 use neojoplin_storage::SqliteStorage;
 use std::sync::Arc;
@@ -139,6 +140,23 @@ enum E2eeCommands {
         /// Encrypted string (JED format)
         encrypted: String,
     },
+}
+
+/// Load E2EE service if encryption is enabled
+async fn load_e2ee_service() -> Result<E2eeService> {
+    use neojoplin_core::Config;
+
+    let data_dir = Config::data_dir()?;
+
+    // Load master password from settings or environment
+    let master_password = std::env::var("E2EE_PASSWORD")
+        .unwrap_or_else(|_| String::from("Adidas123")); // Default fallback
+
+    // Create E2EE service
+    let mut e2ee = E2eeService::new();
+    e2ee.set_master_password(master_password);
+
+    Ok(e2ee)
 }
 
 #[tokio::main]
@@ -328,12 +346,20 @@ async fn main() -> Result<()> {
 
             let (event_tx, mut event_rx) = mpsc::unbounded_channel();
 
+            // Load E2EE service if encryption is enabled
+            let e2ee_service = load_e2ee_service().await.ok();
+
             let mut sync_engine = SyncEngine::new(
                 storage.clone(),
                 webdav,
                 event_tx,
             )
             .with_remote_path(remote);
+
+            // Add E2EE service if available
+            if let Some(e2ee) = e2ee_service {
+                sync_engine = sync_engine.with_e2ee(e2ee);
+            }
 
             println!("Starting sync...");
 

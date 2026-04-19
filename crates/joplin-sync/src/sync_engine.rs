@@ -6,6 +6,7 @@ use tokio::sync::mpsc;
 use futures::io::AsyncReadExt;
 use serde_json;
 use crate::sync_info::SyncInfo;
+use crate::e2ee::E2eeService;
 
 /// Sync context to track sync state
 #[derive(Debug, Clone)]
@@ -46,6 +47,7 @@ pub struct SyncEngine {
     event_tx: mpsc::UnboundedSender<SyncEvent>,
     context: SyncContext,
     sync_info: Option<SyncInfo>,
+    e2ee_service: Option<E2eeService>,
 }
 
 impl SyncEngine {
@@ -60,7 +62,14 @@ impl SyncEngine {
             event_tx,
             context: SyncContext::default(),
             sync_info: None,
+            e2ee_service: None,
         }
+    }
+
+    /// Set the E2EE service for encryption/decryption
+    pub fn with_e2ee(mut self, e2ee_service: E2eeService) -> Self {
+        self.e2ee_service = Some(e2ee_service);
+        self
     }
 
     /// Set the remote sync path
@@ -399,9 +408,18 @@ impl SyncEngine {
     }
 
     async fn upload_folder(&self, folder: &Folder) -> Result<()> {
-        // Upload to root level for Joplin compatibility
-        let remote_path = format!("{}/{}.md", self.context.remote_path, folder.id);
-        let content = self.serialize_folder(folder)?;
+        // Upload to folders subdirectory for Joplin compatibility
+        let remote_path = format!("{}/folders/{}.md", self.context.remote_path, folder.id);
+        let mut content = self.serialize_folder(folder)?;
+
+        // Encrypt folder title if E2EE is enabled
+        if let Some(ref e2ee) = self.e2ee_service {
+            if let Ok(encrypted_title) = e2ee.encrypt_string(&folder.title) {
+                // Replace the title in the content with encrypted version
+                content = content.replace(&format!("title: {}", folder.title), &format!("title: {}", encrypted_title));
+                tracing::debug!("Encrypted folder {} for upload", folder.id);
+            }
+        }
 
         let _ = self.event_tx.send(SyncEvent::ItemUpload {
             item_type: "folder".to_string(),
@@ -453,9 +471,18 @@ impl SyncEngine {
     }
 
     async fn upload_note(&self, note: &Note) -> Result<()> {
-        // Upload to root level for Joplin compatibility
-        let remote_path = format!("{}/{}.md", self.context.remote_path, note.id);
-        let content = self.serialize_note(note)?;
+        // Upload to items subdirectory for Joplin compatibility
+        let remote_path = format!("{}/items/{}.md", self.context.remote_path, note.id);
+        let mut content = self.serialize_note(note)?;
+
+        // Encrypt note body if E2EE is enabled
+        if let Some(ref e2ee) = self.e2ee_service {
+            if let Ok(encrypted_body) = e2ee.encrypt_string(&note.body) {
+                // Replace the body in the content with encrypted version
+                content = content.replace(&format!("body: {}", note.body), &format!("body: {}", encrypted_body));
+                tracing::debug!("Encrypted note {} for upload", note.id);
+            }
+        }
 
         let _ = self.event_tx.send(SyncEvent::ItemUpload {
             item_type: "note".to_string(),
@@ -674,8 +701,7 @@ impl SyncEngine {
     }
 
     async fn download_item(&self, item_id: &str, item_type: &ItemType) -> Result<()> {
-        // Try root level first (Joplin compatibility), then fall back to subdirectories
-        let root_path = format!("{}/{}.md", self.context.remote_path, item_id);
+        // Try subdirectories first (modern Joplin), then fall back to root level
         let subdir_path = format!("{}/{}/{}.md",
             self.context.remote_path,
             match item_type {
@@ -687,6 +713,8 @@ impl SyncEngine {
             item_id
         );
 
+        let root_path = format!("{}/{}.md", self.context.remote_path, item_id);
+
         let (remote_path, type_name) = match item_type {
             ItemType::Folder => (format!("{}/folders/{}.md", self.context.remote_path, item_id), "folder"),
             ItemType::Note => (format!("{}/items/{}.md", self.context.remote_path, item_id), "note"),
@@ -694,12 +722,15 @@ impl SyncEngine {
             ItemType::Resource => (format!("{}/resources/{}.md", self.context.remote_path, item_id), "resource"),
         };
 
-        // Try root level first, then subdirectory
-        let final_path = if self.webdav.exists(&root_path).await.unwrap_or(false) {
+        // Try subdirectory first (modern Joplin), then root level (legacy)
+        let final_path = if self.webdav.exists(&subdir_path).await.unwrap_or(false) {
+            tracing::debug!("Downloading from subdirectory: {}", subdir_path);
+            subdir_path
+        } else if self.webdav.exists(&root_path).await.unwrap_or(false) {
             tracing::debug!("Downloading from root level: {}", root_path);
             root_path
         } else {
-            tracing::debug!("Downloading from subdirectory: {}", remote_path);
+            tracing::debug!("Downloading from default subdirectory: {}", remote_path);
             remote_path.clone()
         };
 
@@ -743,9 +774,17 @@ impl SyncEngine {
     async fn store_downloaded_item(&self, item_id: &str, item_type: &ItemType, content: &str) -> Result<()> {
         tracing::debug!("Storing item {:?} with ID {}", item_type, item_id);
 
+        // Decrypt content if E2EE is enabled
+        let decrypted_content = if let Some(ref e2ee) = self.e2ee_service {
+            // Try to decrypt the content - if it fails, assume it's not encrypted
+            self.maybe_decrypt_content(content, e2ee).await.unwrap_or_else(|| content.to_string())
+        } else {
+            content.to_string()
+        };
+
         match item_type {
             ItemType::Note => {
-                if let Ok(note) = self.deserialize_note(item_id, content) {
+                if let Ok(note) = self.deserialize_note(item_id, &decrypted_content) {
                     let exists = matches!(self.storage.get_note(&note.id).await, Ok(Some(_)));
                     if exists {
                         self.storage.update_note(&note).await
@@ -760,7 +799,7 @@ impl SyncEngine {
                 }
             }
             ItemType::Folder => {
-                if let Ok(folder) = self.deserialize_folder(item_id, content) {
+                if let Ok(folder) = self.deserialize_folder(item_id, &decrypted_content) {
                     let exists = matches!(self.storage.get_folder(&folder.id).await, Ok(Some(_)));
                     if exists {
                         self.storage.update_folder(&folder).await
@@ -807,6 +846,34 @@ impl SyncEngine {
             total,
             message: message.to_string(),
         });
+    }
+
+    /// Try to decrypt content if it's encrypted, otherwise return original
+    async fn maybe_decrypt_content(&self, content: &str, e2ee: &E2eeService) -> Option<String> {
+        // Check if content looks like it might be encrypted (starts with JED or contains encrypted markers)
+        if content.contains("JED") || (content.len() > 100 && !content.contains('\n')) {
+            // Try to decrypt
+            if let Ok(decrypted) = e2ee.decrypt_string(content) {
+                tracing::debug!("Successfully decrypted content");
+                return Some(decrypted);
+            }
+        }
+
+        // If content contains "body:" field, try to decrypt just the body
+        if let Some(body_start) = content.find("body: ") {
+            let body_start = body_start + 6; // "body: ".len()
+            if let Some(body_end) = content[body_start..].find('\n') {
+                let encrypted_body = &content[body_start..body_start + body_end];
+                if let Ok(decrypted_body) = e2ee.decrypt_string(encrypted_body.trim()) {
+                    tracing::debug!("Successfully decrypted body field");
+                    let mut result = content.to_string();
+                    result.replace_range(body_start..body_start + body_end, decrypted_body.trim());
+                    return Some(result);
+                }
+            }
+        }
+
+        None
     }
 
     // Serialization methods (simplified JED-like format)
