@@ -252,8 +252,8 @@ fn render_keybinding_ribbon(f: &mut Frame, state: &AppState, area: Rect) {
 
         // Get the actual colors from the theme
         let surface_color = theme.surface; // Background color
-        let key_color = theme.text_muted; // Muted text color for keys
-        let action_fg_color = Color::White; // White text on colored background
+        let key_color = theme.text; // Normal text color for keys (not grey!)
+        let action_fg_color = Color::Black; // Dark text on colored background
 
         // Key in normal text
         spans.push(Span::styled(
