@@ -6,7 +6,7 @@ use crate::ConfigError;
 use joplin_domain::SyncTarget;
 
 /// Application configuration
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct Config {
     /// Sync configuration
     pub sync: SyncConfig,
@@ -19,17 +19,6 @@ pub struct Config {
 
     /// Advanced settings
     pub advanced: AdvancedConfig,
-}
-
-impl Default for Config {
-    fn default() -> Self {
-        Self {
-            sync: SyncConfig::default(),
-            editor: EditorConfig::default(),
-            ui: UiConfig::default(),
-            advanced: AdvancedConfig::default(),
-        }
-    }
 }
 
 /// Sync configuration

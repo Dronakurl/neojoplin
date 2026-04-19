@@ -47,7 +47,7 @@ pub fn encrypt_chunk(password: &str, salt: &[u8], plaintext: &[u8], iterations: 
 
     Ok(EncryptionChunk {
         salt: BASE64.encode(salt),
-        iv: BASE64.encode(&nonce),
+        iv: BASE64.encode(nonce),
         ct: BASE64.encode(&ciphertext),
     })
 }

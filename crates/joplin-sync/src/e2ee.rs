@@ -376,7 +376,7 @@ fn encode_utf16le(s: &str) -> Vec<u8> {
 
 /// Decode UTF-16LE bytes to a string
 fn decode_utf16le(bytes: &[u8]) -> Result<String> {
-    if bytes.len() % 2 != 0 {
+    if !bytes.len().is_multiple_of(2) {
         return Err(anyhow!("UTF-16LE data has odd length: {}", bytes.len()));
     }
     let u16_values: Vec<u16> = bytes.chunks_exact(2)

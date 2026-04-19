@@ -198,8 +198,8 @@ async fn load_e2ee_service(password_override: Option<String>) -> Result<E2eeServ
             }
         }
         // Fall back to stored password in encryption.json
-        if from_env.is_none() {
-            if encryption_config_path.exists() {
+        if from_env.is_none()
+            && encryption_config_path.exists() {
                 if let Ok(content) = tokio::fs::read_to_string(&encryption_config_path).await {
                     if let Ok(config) = serde_json::from_str::<serde_json::Value>(&content) {
                         from_env = config.get("master_password")
@@ -209,7 +209,6 @@ async fn load_e2ee_service(password_override: Option<String>) -> Result<E2eeServ
                     }
                 }
             }
-        }
         from_env
     }.unwrap_or_default();
 
@@ -495,7 +494,7 @@ async fn main() -> Result<()> {
             if folders || !notes {
                 let folders = storage.list_folders().await?;
                 for folder in folders {
-                    if pattern.as_ref().map_or(true, |p| folder.title.contains(p)) {
+                    if pattern.as_ref().is_none_or(|p| folder.title.contains(p)) {
                         println!("📁 {} ({})", folder.title, folder.id);
                     }
                 }
@@ -504,7 +503,7 @@ async fn main() -> Result<()> {
             if notes || !folders {
                 let notes = storage.list_notes(None).await?;
                 for note in notes {
-                    if pattern.as_ref().map_or(true, |p| note.title.contains(p)) {
+                    if pattern.as_ref().is_none_or(|p| note.title.contains(p)) {
                         let icon = if note.is_todo == 1 {
                             if note.todo_completed > 0 { "󰄲" } else { "󰄱" }
                         } else {
@@ -555,13 +554,7 @@ async fn main() -> Result<()> {
             let (event_tx, mut event_rx) = mpsc::unbounded_channel();
 
             // Load E2EE service if encryption is enabled
-            let e2ee_service = match load_e2ee_service(e2ee_password).await {
-                Ok(service) => Some(service),
-                Err(_e) => {
-                    // Silently continue without encryption - errors shown in sync result
-                    None
-                }
-            };
+            let e2ee_service = load_e2ee_service(e2ee_password).await.ok();
 
             let mut sync_engine = SyncEngine::new(
                 storage.clone(),
@@ -579,7 +572,7 @@ async fn main() -> Result<()> {
             let handle = tokio::spawn(async move {
                 let mut uploaded = 0u32;
                 let mut downloaded = 0u32;
-                let mut deleted = 0u32;
+                let deleted = 0u32;
                 while let Some(event) = event_rx.recv().await {
                     match event {
                         SyncEvent::Failed { error } => {
@@ -706,7 +699,7 @@ async fn main() -> Result<()> {
                     }
 
                     // Verify password strength (basic check)
-                    if password.len() < 1 {
+                    if password.is_empty() {
                         return Err(anyhow::anyhow!("Password cannot be empty"));
                     }
 
@@ -791,7 +784,7 @@ async fn main() -> Result<()> {
                             let mut entries = tokio::fs::read_dir(&keys_dir).await?;
                             let mut key_count = 0;
                             while let Some(entry) = entries.next_entry().await? {
-                                if entry.path().extension().map_or(false, |e| e == "json") {
+                                if entry.path().extension().is_some_and(|e| e == "json") {
                                     key_count += 1;
                                 }
                             }

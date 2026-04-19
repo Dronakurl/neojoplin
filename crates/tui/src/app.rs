@@ -12,7 +12,7 @@ use std::time::Duration;
 
 use joplin_domain::{Storage, Note, Folder, now_ms};
 use neojoplin_storage::SqliteStorage;
-use std::path::PathBuf;
+use std::path::Path;
 
 use crate::state::{AppState, FocusPanel};
 use crate::ui;
@@ -160,17 +160,14 @@ impl App {
         terminal: &mut Terminal<B>,
     ) -> Result<bool> {
         // Handle global shortcuts
-        match self.state.show_quit_confirmation {
-            true => {
-                // Confirm quit
-                if key.code == KeyCode::Char('q') || key.code == KeyCode::Char('y') {
-                    return Ok(true); // Exit
-                } else {
-                    self.state.hide_quit();
-                }
-                return Ok(false);
+        if self.state.show_quit_confirmation {
+            // Confirm quit
+            if key.code == KeyCode::Char('q') || key.code == KeyCode::Char('y') {
+                return Ok(true); // Exit
+            } else {
+                self.state.hide_quit();
             }
-            false => {}
+            return Ok(false);
         }
 
         // Handle error dialog
@@ -333,11 +330,10 @@ impl App {
             }
 
             // Toggle todo completion (space bar, like most task managers)
-            KeyCode::Char(' ') => {
-                if self.state.focus == FocusPanel::Notes {
+            KeyCode::Char(' ')
+                if self.state.focus == FocusPanel::Notes => {
                     self.toggle_todo().await?;
                 }
-            }
 
             // Toggle todo completion (t key)
             KeyCode::Char('t') => {
@@ -550,7 +546,7 @@ impl App {
         self.state.set_status("Creating new note...");
 
         // For simplicity, create a note with a default title
-        let title = format!("New Note {}", joplin_domain::joplin_id()[..8].to_string());
+        let title = format!("New Note {}", &joplin_domain::joplin_id()[..8]);
         let note = Note {
             id: joplin_domain::joplin_id(),
             title: title.clone(),
@@ -613,7 +609,7 @@ impl App {
 
         self.state.set_status("Creating new todo...");
 
-        let title = format!("New Todo {}", joplin_domain::joplin_id()[..8].to_string());
+        let title = format!("New Todo {}", &joplin_domain::joplin_id()[..8]);
         let note = Note {
             id: joplin_domain::joplin_id(),
             title: title.clone(),
@@ -986,12 +982,11 @@ impl App {
                 self.state.settings.sync.cycle_field_backward();
             }
 
-            KeyCode::Char('t') => {
-                if key.modifiers.contains(KeyModifiers::CONTROL) {
+            KeyCode::Char('t')
+                if key.modifiers.contains(KeyModifiers::CONTROL) => {
                     // Test connection
                     self.test_webdav_connection().await?;
                 }
-            }
 
             KeyCode::Char(c) => {
                 // Add character to active field
@@ -1073,7 +1068,7 @@ impl App {
         let target = crate::settings::SyncTarget {
             id: if sync.show_edit_form {
                 sync.editing_target_index.and_then(|i| sync.targets.get(i).map(|t| t.id.clone()))
-                    .unwrap_or_else(|| joplin_domain::joplin_id())
+                    .unwrap_or_else(joplin_domain::joplin_id)
             } else {
                 joplin_domain::joplin_id()
             },
@@ -1182,7 +1177,7 @@ fn split_webdav_url(full_url: &str) -> (String, String) {
 
 /// Load the E2EE service from disk (encryption.json + key files).
 /// Reads the password from the E2EE_PASSWORD env var or the project `.env` file.
-async fn load_e2ee_service(data_dir: &PathBuf) -> Result<joplin_sync::E2eeService> {
+async fn load_e2ee_service(data_dir: &Path) -> Result<joplin_sync::E2eeService> {
     use joplin_sync::{E2eeService, MasterKey};
 
     let encryption_config_path = data_dir.join("encryption.json");

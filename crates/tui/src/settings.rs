@@ -2,21 +2,16 @@
 
 use joplin_sync::E2eeService;
 use anyhow::Result;
-use std::path::PathBuf;
+use std::path::Path;
 use serde::{Serialize, Deserialize};
 
 /// Settings menu tabs
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum SettingsTab {
+    #[default]
     Sync,
     Encryption,
     About,
-}
-
-impl Default for SettingsTab {
-    fn default() -> Self {
-        Self::Sync
-    }
 }
 
 /// Sync target types (matching Joplin's target IDs)
@@ -64,7 +59,7 @@ pub enum ConnectionResult {
 }
 
 /// Sync settings state
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct SyncSettings {
     pub targets: Vec<SyncTarget>,
     pub current_target_index: Option<usize>,
@@ -84,27 +79,6 @@ pub struct SyncSettings {
     pub form_error: Option<String>,
     pub testing_connection: bool,
     pub connection_result: Option<ConnectionResult>,
-}
-
-impl Default for SyncSettings {
-    fn default() -> Self {
-        Self {
-            targets: Vec::new(),
-            current_target_index: None,
-            show_add_form: false,
-            show_edit_form: false,
-            editing_target_index: None,
-            active_field: None,
-            name_input: String::new(),
-            url_input: String::new(),
-            username_input: String::new(),
-            password_input: String::new(),
-            path_input: String::new(),
-            form_error: None,
-            testing_connection: false,
-            connection_result: None,
-        }
-    }
 }
 
 impl SyncSettings {
@@ -287,14 +261,14 @@ impl Settings {
     }
 
     /// Load all settings from disk
-    pub async fn load_all_settings(&mut self, data_dir: &PathBuf) -> Result<()> {
+    pub async fn load_all_settings(&mut self, data_dir: &Path) -> Result<()> {
         self.load_encryption_settings(data_dir).await?;
         self.load_sync_settings(data_dir).await?;
         Ok(())
     }
 
     /// Load sync settings from Joplin-compatible format
-    pub async fn load_sync_settings(&mut self, data_dir: &PathBuf) -> Result<()> {
+    pub async fn load_sync_settings(&mut self, data_dir: &Path) -> Result<()> {
         let config_path = data_dir.join("settings.json");
 
         if !config_path.exists() {
@@ -349,7 +323,7 @@ impl Settings {
     }
 
     /// Save sync settings to Joplin-compatible format
-    pub async fn save_sync_settings(&self, data_dir: &PathBuf) -> Result<()> {
+    pub async fn save_sync_settings(&self, data_dir: &Path) -> Result<()> {
         let config_path = data_dir.join("settings.json");
 
         let mut config = serde_json::json!({
@@ -375,7 +349,7 @@ impl Settings {
     }
 
     /// Migrate old sync-config.json to new format
-    async fn migrate_old_sync_config(&mut self, data_dir: &PathBuf) -> Result<()> {
+    async fn migrate_old_sync_config(&mut self, data_dir: &Path) -> Result<()> {
         let old_path = data_dir.join("sync-config.json");
 
         if old_path.exists() {
@@ -406,7 +380,7 @@ impl Settings {
     }
 
     /// Load encryption settings from disk
-    pub async fn load_encryption_settings(&mut self, data_dir: &PathBuf) -> Result<()> {
+    pub async fn load_encryption_settings(&mut self, data_dir: &Path) -> Result<()> {
         let config_path = data_dir.join("encryption.json");
         let keys_dir = data_dir.join("keys");
 
@@ -425,7 +399,7 @@ impl Settings {
             let mut entries = tokio::fs::read_dir(&keys_dir).await?;
             let mut count = 0;
             while let Some(entry) = entries.next_entry().await? {
-                if entry.path().extension().map_or(false, |e| e == "json") {
+                if entry.path().extension().is_some_and(|e| e == "json") {
                     count += 1;
                 }
             }
@@ -450,7 +424,7 @@ impl Settings {
     }
 
     /// Enable encryption with new master key
-    pub async fn enable_encryption(&mut self, password: &str, data_dir: &PathBuf) -> Result<()> {
+    pub async fn enable_encryption(&mut self, password: &str, data_dir: &Path) -> Result<()> {
         if password.is_empty() {
             self.encryption.password_error = Some("Password cannot be empty".to_string());
             return Ok(());
@@ -499,7 +473,7 @@ impl Settings {
     }
 
     /// Disable encryption
-    pub async fn disable_encryption(&mut self, data_dir: &PathBuf) -> Result<()> {
+    pub async fn disable_encryption(&mut self, data_dir: &Path) -> Result<()> {
         let config_path = data_dir.join("encryption.json");
 
         if config_path.exists() {

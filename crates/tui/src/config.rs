@@ -26,17 +26,9 @@ impl Default for WebDavConfig {
 }
 
 /// Application configuration
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct Config {
     pub webdav: WebDavConfig,
-}
-
-impl Default for Config {
-    fn default() -> Self {
-        Self {
-            webdav: WebDavConfig::default(),
-        }
-    }
 }
 
 impl Config {

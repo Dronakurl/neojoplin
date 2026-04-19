@@ -56,8 +56,8 @@ pub fn parse_propfind_entries(xml_body: &str, _base_url: &str) -> Result<Vec<Pro
                     _ => {}
                 }
             }
-            Ok(Event::Text(e)) => {
-                if in_response {
+            Ok(Event::Text(e))
+                if in_response => {
                     if let Ok(text) = e.unescape() {
                         let text_string = text.into_owned();
                         match current_tag.as_str() {
@@ -73,7 +73,6 @@ pub fn parse_propfind_entries(xml_body: &str, _base_url: &str) -> Result<Vec<Pro
                         }
                     }
                 }
-            }
             Ok(Event::End(ref e)) => {
                 let name = e.name();
                 let tag = String::from_utf8_lossy(name.as_ref()).to_string();
@@ -134,8 +133,8 @@ pub fn parse_file_metadata(xml_body: &str, path: &str) -> Result<FileMetadata> {
                     _ => {}
                 }
             }
-            Ok(Event::Text(e)) => {
-                if in_prop {
+            Ok(Event::Text(e))
+                if in_prop => {
                     if let Ok(text) = e.unescape() {
                         let text_string = text.into_owned();
 
@@ -153,7 +152,6 @@ pub fn parse_file_metadata(xml_body: &str, path: &str) -> Result<FileMetadata> {
                         }
                     }
                 }
-            }
             Ok(Event::End(ref e)) => {
                 let name = e.name().to_owned();
                 let name_bytes = name.as_ref();

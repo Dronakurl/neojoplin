@@ -1,7 +1,7 @@
 // SQLite storage implementation for NeoJoplin
 
 use sqlx::{sqlite::SqliteConnectOptions, SqlitePool, sqlite::SqlitePoolOptions};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::str::FromStr;
 
 use joplin_domain::{
@@ -53,7 +53,7 @@ impl SqliteStorage {
     }
 
     /// Create storage for testing with a specific path
-    pub async fn with_path(path: &PathBuf) -> Result<Self, DatabaseError> {
+    pub async fn with_path(path: &Path) -> Result<Self, DatabaseError> {
         // Ensure parent directory exists
         if let Some(parent) = path.parent() {
             tokio::fs::create_dir_all(parent)
@@ -604,7 +604,7 @@ impl Storage for SqliteStorage {
         .bind(&folder.icon)
         .bind(&folder.share_id)
         .bind(&folder.master_key_id)
-        .bind(&folder.is_shared)
+        .bind(folder.is_shared)
         .bind(&folder.id)
         .execute(&self.pool)
         .await

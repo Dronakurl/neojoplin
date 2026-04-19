@@ -30,7 +30,6 @@ enum ItemType {
     Note = 1,
     Folder = 2,
     Tag = 3,
-    Resource = 4,
     NoteTag = 5,
 }
 
@@ -137,7 +136,7 @@ impl SyncEngine {
 
             // Clear sync_items so all items appear as "changed" and get re-uploaded
             let cleared = self.storage.clear_all_sync_items().await
-                .map_err(|e| SyncError::Local(e))?;
+                .map_err(SyncError::Local)?;
             tracing::info!("Cleared {} sync items for E2EE state change", cleared);
 
             // Reset last_sync_time to 0 so everything is considered new
@@ -277,7 +276,6 @@ impl SyncEngine {
             ItemType::Folder => 2,
             ItemType::Tag => 5,
             ItemType::NoteTag => 6,
-            ItemType::Resource => 4,
         };
 
         let type_name = match item_type {
@@ -285,7 +283,6 @@ impl SyncEngine {
             ItemType::Folder => "folder",
             ItemType::Tag => "tag",
             ItemType::NoteTag => "note_tag",
-            ItemType::Resource => "resource",
         };
 
         let content = if let Some(ref e2ee) = self.e2ee_service {
@@ -297,18 +294,18 @@ impl SyncEngine {
                         // Build the encrypted item metadata wrapper
                         let mut enc_content = String::new();
                         enc_content.push_str(&format!("id: {}\n", item_id));
-                        enc_content.push_str(&format!("created_time: \n"));
+                        enc_content.push_str("created_time: \n");
                         enc_content.push_str(&format!("updated_time: {}\n", now));
-                        enc_content.push_str(&format!("user_created_time: \n"));
-                        enc_content.push_str(&format!("user_updated_time: \n"));
+                        enc_content.push_str("user_created_time: \n");
+                        enc_content.push_str("user_updated_time: \n");
                         enc_content.push_str(&format!("encryption_cipher_text: {}\n", encrypted));
-                        enc_content.push_str(&format!("encryption_applied: 1\n"));
-                        enc_content.push_str(&format!("parent_id: \n"));
-                        enc_content.push_str(&format!("is_shared: \n"));
-                        enc_content.push_str(&format!("share_id: \n"));
-                        enc_content.push_str(&format!("master_key_id: \n"));
-                        enc_content.push_str(&format!("user_data: \n"));
-                        enc_content.push_str(&format!("deleted_time: 0\n"));
+                        enc_content.push_str("encryption_applied: 1\n");
+                        enc_content.push_str("parent_id: \n");
+                        enc_content.push_str("is_shared: \n");
+                        enc_content.push_str("share_id: \n");
+                        enc_content.push_str("master_key_id: \n");
+                        enc_content.push_str("user_data: \n");
+                        enc_content.push_str("deleted_time: 0\n");
                         // No trailing newline — Joplin's parser interprets trailing \n as body separator
                         enc_content.push_str(&format!("type_: {}", type_num));
                         tracing::info!("Encrypted {} {} for upload", type_name, item_id);
@@ -351,7 +348,7 @@ impl SyncEngine {
         let _ = self.event_tx.send(SyncEvent::PhaseStarted(SyncPhase::DeleteRemote));
 
         let deleted_items = self.storage.get_deleted_items(2).await
-            .map_err(|e| SyncError::Local(e))?;
+            .map_err(SyncError::Local)?;
 
         if deleted_items.is_empty() {
             let _ = self.event_tx.send(SyncEvent::Progress {
@@ -373,7 +370,7 @@ impl SyncEngine {
             }
 
             self.storage.clear_deleted_items(deleted_items.len() as i64).await
-                .map_err(|e| SyncError::Local(e))?;
+                .map_err(SyncError::Local)?;
         }
 
         let _ = self.event_tx.send(SyncEvent::PhaseCompleted(SyncPhase::DeleteRemote));
@@ -386,7 +383,7 @@ impl SyncEngine {
 
         let remote_items = self.list_remote_items().await?;
         let local_items = self.storage.get_all_sync_items().await
-            .map_err(|e| SyncError::Local(e))?;
+            .map_err(SyncError::Local)?;
         let items_to_download = self.find_delta_items(&remote_items, &local_items);
 
         if items_to_download.is_empty() {
@@ -420,26 +417,23 @@ impl SyncEngine {
     async fn check_locks(&self) -> Result<()> {
         let lock_path = format!("{}/lock.json", self.context.remote_path.trim_end_matches('/'));
 
-        match self.webdav.get(&lock_path).await {
-            Ok(mut reader) => {
-                let mut content = Vec::new();
-                reader.read_to_end(&mut content).await
-                    .map_err(|e| SyncError::Server(format!("Failed to read lock.json: {}", e)))?;
+        if let Ok(mut reader) = self.webdav.get(&lock_path).await {
+            let mut content = Vec::new();
+            reader.read_to_end(&mut content).await
+                .map_err(|e| SyncError::Server(format!("Failed to read lock.json: {}", e)))?;
 
-                let content_str = String::from_utf8_lossy(&content);
-                if let Ok(lock_data) = serde_json::from_str::<serde_json::Value>(&content_str) {
-                    if let Some(timestamp) = lock_data.get("updatedTime").and_then(|v| v.as_i64()) {
-                        let lock_age_ms = now_ms() - timestamp;
-                        let lock_age_min = lock_age_ms / (60 * 1000);
-                        if lock_age_min < 5 {
-                            return Err(SyncError::Server(format!(
-                                "Sync target is locked. Lock age: {} minutes.", lock_age_min
-                            )).into());
-                        }
+            let content_str = String::from_utf8_lossy(&content);
+            if let Ok(lock_data) = serde_json::from_str::<serde_json::Value>(&content_str) {
+                if let Some(timestamp) = lock_data.get("updatedTime").and_then(|v| v.as_i64()) {
+                    let lock_age_ms = now_ms() - timestamp;
+                    let lock_age_min = lock_age_ms / (60 * 1000);
+                    if lock_age_min < 5 {
+                        return Err(SyncError::Server(format!(
+                            "Sync target is locked. Lock age: {} minutes.", lock_age_min
+                        )).into());
                     }
                 }
             }
-            Err(_) => {} // No lock file — normal
         }
 
         Ok(())
@@ -565,15 +559,15 @@ impl SyncEngine {
     async fn update_sync_times(&self, folders: &[Folder], tags: &[Tag], notes: &[Note], sync_time: i64) -> Result<()> {
         for folder in folders {
             self.storage.update_sync_time("folders", &folder.id, sync_time).await
-                .map_err(|e| SyncError::Local(e))?;
+                .map_err(SyncError::Local)?;
         }
         for tag in tags {
             self.storage.update_sync_time("tags", &tag.id, sync_time).await
-                .map_err(|e| SyncError::Local(e))?;
+                .map_err(SyncError::Local)?;
         }
         for note in notes {
             self.storage.update_sync_time("notes", &note.id, sync_time).await
-                .map_err(|e| SyncError::Local(e))?;
+                .map_err(SyncError::Local)?;
         }
         Ok(())
     }
@@ -735,13 +729,13 @@ impl SyncEngine {
                 let note = self.deserialize_note(item_id, &actual_content)?;
                 let exists = matches!(self.storage.get_note(&note.id).await, Ok(Some(_)));
                 if exists {
-                    self.storage.update_note(&note).await.map_err(|e| SyncError::Local(e))?;
+                    self.storage.update_note(&note).await.map_err(SyncError::Local)?;
                 } else {
-                    self.storage.create_note(&note).await.map_err(|e| SyncError::Local(e))?;
+                    self.storage.create_note(&note).await.map_err(SyncError::Local)?;
                 }
                 // Update sync tracking
                 self.storage.update_sync_time("notes", &note.id, now_ms()).await
-                    .map_err(|e| SyncError::Local(e))?;
+                    .map_err(SyncError::Local)?;
                 tracing::info!("Stored note: {} ({})", note.title, note.id);
             }
             2 => {
@@ -749,12 +743,12 @@ impl SyncEngine {
                 let folder = self.deserialize_folder(item_id, &actual_content)?;
                 let exists = matches!(self.storage.get_folder(&folder.id).await, Ok(Some(_)));
                 if exists {
-                    self.storage.update_folder(&folder).await.map_err(|e| SyncError::Local(e))?;
+                    self.storage.update_folder(&folder).await.map_err(SyncError::Local)?;
                 } else {
-                    self.storage.create_folder(&folder).await.map_err(|e| SyncError::Local(e))?;
+                    self.storage.create_folder(&folder).await.map_err(SyncError::Local)?;
                 }
                 self.storage.update_sync_time("folders", &folder.id, now_ms()).await
-                    .map_err(|e| SyncError::Local(e))?;
+                    .map_err(SyncError::Local)?;
                 tracing::info!("Stored folder: {} ({})", folder.title, folder.id);
             }
             5 => {
@@ -762,12 +756,12 @@ impl SyncEngine {
                 let tag = self.deserialize_tag(item_id, &actual_content)?;
                 let exists = matches!(self.storage.get_tag(&tag.id).await, Ok(Some(_)));
                 if exists {
-                    self.storage.update_tag(&tag).await.map_err(|e| SyncError::Local(e))?;
+                    self.storage.update_tag(&tag).await.map_err(SyncError::Local)?;
                 } else {
-                    self.storage.create_tag(&tag).await.map_err(|e| SyncError::Local(e))?;
+                    self.storage.create_tag(&tag).await.map_err(SyncError::Local)?;
                 }
                 self.storage.update_sync_time("tags", &tag.id, now_ms()).await
-                    .map_err(|e| SyncError::Local(e))?;
+                    .map_err(SyncError::Local)?;
                 tracing::info!("Stored tag: {}", tag.id);
             }
             _ => {
@@ -779,7 +773,7 @@ impl SyncEngine {
     }
 
     /// Parse metadata fields from a Joplin item file
-    fn parse_item_metadata<'a>(&self, content: &'a str) -> std::collections::HashMap<String, String> {
+    fn parse_item_metadata(&self, content: &str) -> std::collections::HashMap<String, String> {
         let mut metadata = std::collections::HashMap::new();
         for line in content.lines() {
             if let Some((key, value)) = line.split_once(": ") {
@@ -811,14 +805,14 @@ impl SyncEngine {
         content.push_str(&format!("updated_time: {}\n", self.ms_to_iso(folder.updated_time)));
         content.push_str(&format!("user_created_time: {}\n", self.ms_to_iso(folder.user_created_time)));
         content.push_str(&format!("user_updated_time: {}\n", self.ms_to_iso(folder.user_updated_time)));
-        content.push_str(&format!("encryption_cipher_text: \n"));
-        content.push_str(&format!("encryption_applied: 0\n"));
+        content.push_str("encryption_cipher_text: \n");
+        content.push_str("encryption_applied: 0\n");
         content.push_str(&format!("is_shared: {}\n", folder.is_shared));
         content.push_str(&format!("share_id: {}\n", folder.share_id.as_deref().unwrap_or("")));
         content.push_str(&format!("master_key_id: {}\n", folder.master_key_id.as_deref().unwrap_or("")));
         content.push_str(&format!("icon: {}\n", folder.icon));
-        content.push_str(&format!("user_data: \n"));
-        content.push_str(&format!("deleted_time: 0\n"));
+        content.push_str("user_data: \n");
+        content.push_str("deleted_time: 0\n");
         content.push_str("type_: 2");
         Ok(content)
     }
@@ -830,12 +824,12 @@ impl SyncEngine {
         content.push_str(&format!("updated_time: {}\n", self.ms_to_iso(tag.updated_time)));
         content.push_str(&format!("user_created_time: {}\n", self.ms_to_iso(tag.user_created_time)));
         content.push_str(&format!("user_updated_time: {}\n", self.ms_to_iso(tag.user_updated_time)));
-        content.push_str(&format!("encryption_cipher_text: \n"));
-        content.push_str(&format!("encryption_applied: 0\n"));
+        content.push_str("encryption_cipher_text: \n");
+        content.push_str("encryption_applied: 0\n");
         content.push_str(&format!("is_shared: {}\n", tag.is_shared));
         content.push_str(&format!("parent_id: {}\n", tag.parent_id));
-        content.push_str(&format!("user_data: \n"));
-        content.push_str(&format!("deleted_time: 0\n"));
+        content.push_str("user_data: \n");
+        content.push_str("deleted_time: 0\n");
         content.push_str("type_: 5");
         Ok(content)
     }
@@ -849,11 +843,11 @@ impl SyncEngine {
         content.push_str(&format!("updated_time: {}\n", self.ms_to_iso(note_tag.updated_time)));
         content.push_str(&format!("user_created_time: {}\n", self.ms_to_iso(note_tag.created_time)));
         content.push_str(&format!("user_updated_time: {}\n", self.ms_to_iso(note_tag.updated_time)));
-        content.push_str(&format!("encryption_cipher_text: \n"));
-        content.push_str(&format!("encryption_applied: 0\n"));
+        content.push_str("encryption_cipher_text: \n");
+        content.push_str("encryption_applied: 0\n");
         content.push_str(&format!("is_shared: {}\n", note_tag.is_shared));
-        content.push_str(&format!("user_data: \n"));
-        content.push_str(&format!("deleted_time: 0\n"));
+        content.push_str("user_data: \n");
+        content.push_str("deleted_time: 0\n");
         content.push_str("type_: 6");
         Ok(content)
     }
@@ -885,15 +879,15 @@ impl SyncEngine {
         content.push_str(&format!("order: {}\n", note.order));
         content.push_str(&format!("user_created_time: {}\n", self.ms_to_iso(note.user_created_time)));
         content.push_str(&format!("user_updated_time: {}\n", self.ms_to_iso(note.user_updated_time)));
-        content.push_str(&format!("encryption_cipher_text: \n"));
-        content.push_str(&format!("encryption_applied: 0\n"));
+        content.push_str("encryption_cipher_text: \n");
+        content.push_str("encryption_applied: 0\n");
         content.push_str(&format!("markup_language: {}\n", note.markup_language));
         content.push_str(&format!("is_shared: {}\n", note.is_shared));
         content.push_str(&format!("share_id: {}\n", note.share_id.as_deref().unwrap_or("")));
         content.push_str(&format!("conflict_original_id: {}\n", note.conflict_original_id));
         content.push_str(&format!("master_key_id: {}\n", note.master_key_id.as_deref().unwrap_or("")));
-        content.push_str(&format!("user_data: \n"));
-        content.push_str(&format!("deleted_time: 0\n"));
+        content.push_str("user_data: \n");
+        content.push_str("deleted_time: 0\n");
         content.push_str("type_: 1");
 
         Ok(content)
@@ -902,8 +896,7 @@ impl SyncEngine {
     // === Deserialization methods ===
 
     fn deserialize_note(&self, id: &str, content: &str) -> Result<Note> {
-        let mut note = Note::default();
-        note.id = id.to_string();
+        let mut note = Note { id: id.to_string(), ..Default::default() };
 
         // Joplin format: title\n\nbody\n\nid: ...\nparent_id: ...\n...
         // Split at the first metadata field (id:)
@@ -960,8 +953,7 @@ impl SyncEngine {
     }
 
     fn deserialize_folder(&self, id: &str, content: &str) -> Result<Folder> {
-        let mut folder = Folder::default();
-        folder.id = id.to_string();
+        let mut folder = Folder { id: id.to_string(), ..Default::default() };
 
         let (text_part, props_part) = self.split_content_and_properties(content);
 
@@ -975,7 +967,7 @@ impl SyncEngine {
                 let value = value.trim();
                 match key.trim() {
                     "id" => folder.id = value.to_string(),
-                    "title" => if folder.title.is_empty() { folder.title = value.to_string(); },
+                    "title" if folder.title.is_empty() => { folder.title = value.to_string(); }
                     "parent_id" => folder.parent_id = value.to_string(),
                     "created_time" => folder.created_time = self.iso_to_ms(value).unwrap_or(0),
                     "updated_time" => folder.updated_time = self.iso_to_ms(value).unwrap_or(0),
@@ -995,8 +987,7 @@ impl SyncEngine {
 
     fn deserialize_tag(&self, id: &str, content: &str) -> Result<Tag> {
         // Try Joplin text format first
-        let mut tag = Tag::default();
-        tag.id = id.to_string();
+        let mut tag = Tag { id: id.to_string(), ..Default::default() };
 
         let (text_part, props_part) = self.split_content_and_properties(content);
 
@@ -1009,7 +1000,7 @@ impl SyncEngine {
                 let value = value.trim();
                 match key.trim() {
                     "id" => tag.id = value.to_string(),
-                    "title" => if tag.title.is_empty() { tag.title = value.to_string(); },
+                    "title" if tag.title.is_empty() => { tag.title = value.to_string(); }
                     "created_time" => tag.created_time = self.iso_to_ms(value).unwrap_or(0),
                     "updated_time" => tag.updated_time = self.iso_to_ms(value).unwrap_or(0),
                     "parent_id" => tag.parent_id = value.to_string(),

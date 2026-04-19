@@ -44,7 +44,7 @@ fn default_app_min_version() -> String {
 }
 
 /// Boolean sync info value with timestamp (Joplin format)
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct SyncInfoValueBool {
     #[serde(default)]
@@ -53,14 +53,8 @@ pub struct SyncInfoValueBool {
     pub updated_time: i64,
 }
 
-impl Default for SyncInfoValueBool {
-    fn default() -> Self {
-        Self { value: false, updated_time: 0 }
-    }
-}
-
 /// String sync info value with timestamp (Joplin format)
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct SyncInfoValueString {
     #[serde(default)]
@@ -69,26 +63,14 @@ pub struct SyncInfoValueString {
     pub updated_time: i64,
 }
 
-impl Default for SyncInfoValueString {
-    fn default() -> Self {
-        Self { value: String::new(), updated_time: 0 }
-    }
-}
-
 /// Integer sync info value with timestamp
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct SyncInfoValueInt {
     #[serde(default)]
     pub value: i64,
     #[serde(default)]
     pub updated_time: i64,
-}
-
-impl Default for SyncInfoValueInt {
-    fn default() -> Self {
-        Self { value: 0, updated_time: 0 }
-    }
 }
 
 /// Master key information as stored in info.json
@@ -107,7 +89,7 @@ pub struct MasterKeyInfo {
 }
 
 /// Delta context for tracking sync state (NeoJoplin-specific extension)
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct DeltaContext {
     #[serde(default)]
     pub timestamp: i64,
@@ -117,17 +99,6 @@ pub struct DeltaContext {
     pub stats_cache: Option<serde_json::Value>,
     #[serde(default)]
     pub stat_ids_cache: Option<serde_json::Value>,
-}
-
-impl Default for DeltaContext {
-    fn default() -> Self {
-        Self {
-            timestamp: 0,
-            files_at_timestamp: None,
-            stats_cache: None,
-            stat_ids_cache: None,
-        }
-    }
 }
 
 impl SyncInfo {

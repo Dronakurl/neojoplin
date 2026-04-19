@@ -16,6 +16,12 @@ pub struct MasterKey {
     pub updated_time: i64,
 }
 
+impl Default for MasterKey {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl MasterKey {
     /// Create a new master key
     pub fn new() -> Self {
@@ -79,10 +85,10 @@ impl MasterKey {
         // Format as JSON
         let json = serde_json::json!({
             "id": self.id,
-            "salt": hex::encode(&salt),
+            "salt": hex::encode(salt),
             "iterations": iterations,
             "data": {
-                "iv": hex::encode(&iv),
+                "iv": hex::encode(iv),
                 "ct": hex::encode(&ciphertext)
             }
         });

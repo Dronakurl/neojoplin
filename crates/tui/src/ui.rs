@@ -210,11 +210,7 @@ fn render_content_panel(f: &mut Frame, state: &AppState, area: Rect) {
     let total_lines = content_lines.len();
 
     // Ensure scroll offset is valid
-    let max_scroll = if total_lines > visible_height {
-        total_lines - visible_height
-    } else {
-        0
-    };
+    let max_scroll = total_lines.saturating_sub(visible_height);
 
     let scroll_offset = state.content_scroll_offset.min(max_scroll);
 
@@ -351,7 +347,7 @@ fn render_keybinding_ribbon(f: &mut Frame, state: &AppState, area: Rect) {
     let mut total_width = 0;
     let available_width = area.width as usize;
 
-    for (_i, (key, action)) in bindings.iter().enumerate() {
+    for (key, action) in bindings.iter() {
         // Calculate segment width
         let key_width = key.chars().count();
         let action_width = action.chars().count();
@@ -444,7 +440,7 @@ pub fn render_settings(f: &mut Frame, state: &AppState) {
     let area = centered_rect(70, 80, f.area());
     let theme = &state.theme;
 
-    let tabs = vec!["Sync", "Encryption", "About"];
+    let tabs = ["Sync", "Encryption", "About"];
     let current_tab_idx = match state.settings.current_tab {
         SettingsTab::Sync => 0,
         SettingsTab::Encryption => 1,
