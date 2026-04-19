@@ -29,7 +29,7 @@ pub struct SyncInfo {
     #[serde(default, rename = "masterKeys")]
     pub master_keys: Vec<MasterKeyInfo>,
 
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ppk: Option<serde_json::Value>,
 
     /// Timestamp of last delta sync for change detection (NeoJoplin extension)

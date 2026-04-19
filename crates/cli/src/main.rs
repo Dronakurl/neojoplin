@@ -172,29 +172,46 @@ async fn load_e2ee_service(password_override: Option<String>) -> Result<E2eeServ
     use joplin_sync::MasterKey;
 
     let data_dir = Config::data_dir()?;
+    let encryption_config_path = data_dir.join("encryption.json");
 
-    // Load .env file if it exists (project root)
-    if let Ok(env_path) = std::env::current_dir() {
-        let env_file = env_path.join(".env");
-        if env_file.exists() {
-            if let Ok(content) = std::fs::read_to_string(&env_file) {
-                for line in content.lines() {
-                    if let Some((key, value)) = line.split_once('=') {
-                        let key = key.trim();
-                        let value = value.trim();
-                        if !key.is_empty() && !key.starts_with('#') && std::env::var(key).is_err() {
-                            std::env::set_var(key, value);
+    // Priority: CLI arg > env var > .env file > stored in encryption.json
+    let master_password = if let Some(p) = password_override {
+        Some(p)
+    } else if let Ok(p) = std::env::var("E2EE_PASSWORD") {
+        Some(p)
+    } else {
+        // Try .env file
+        let mut from_env = None;
+        if let Ok(env_path) = std::env::current_dir() {
+            let env_file = env_path.join(".env");
+            if env_file.exists() {
+                if let Ok(content) = std::fs::read_to_string(&env_file) {
+                    for line in content.lines() {
+                        if let Some((key, value)) = line.split_once('=') {
+                            if key.trim() == "E2EE_PASSWORD" {
+                                from_env = Some(value.trim().to_string());
+                                break;
+                            }
                         }
                     }
                 }
             }
         }
-    }
-
-    // Priority: CLI arg > env var > no default
-    let master_password = password_override
-        .or_else(|| std::env::var("E2EE_PASSWORD").ok())
-        .unwrap_or_default();
+        // Fall back to stored password in encryption.json
+        if from_env.is_none() {
+            if encryption_config_path.exists() {
+                if let Ok(content) = tokio::fs::read_to_string(&encryption_config_path).await {
+                    if let Ok(config) = serde_json::from_str::<serde_json::Value>(&content) {
+                        from_env = config.get("master_password")
+                            .and_then(|v| v.as_str())
+                            .filter(|s| !s.is_empty())
+                            .map(|s| s.to_string());
+                    }
+                }
+            }
+        }
+        from_env
+    }.unwrap_or_default();
 
     // Create E2EE service
     let mut e2ee = E2eeService::new();
@@ -203,16 +220,23 @@ async fn load_e2ee_service(password_override: Option<String>) -> Result<E2eeServ
     }
 
     // Check if encryption is enabled
-    let encryption_config_path = data_dir.join("encryption.json");
     if encryption_config_path.exists() {
         // Load encryption configuration
         let config_content = tokio::fs::read_to_string(&encryption_config_path).await?;
-        let config: serde_json::Value = serde_json::from_str(&config_content)?;
+        let mut config: serde_json::Value = serde_json::from_str(&config_content)?;
 
         let enabled = config.get("enabled").and_then(|v| v.as_bool()).unwrap_or(false);
         if !enabled {
-            // Encryption is disabled, return service without master keys
             return Ok(e2ee);
+        }
+
+        // If a new password was provided, save it
+        if !master_password.is_empty() {
+            let stored = config.get("master_password").and_then(|v| v.as_str()).unwrap_or("");
+            if stored != master_password {
+                config["master_password"] = serde_json::json!(master_password);
+                tokio::fs::write(&encryption_config_path, serde_json::to_string_pretty(&config)?).await?;
+            }
         }
 
         // Get active master key ID
@@ -225,16 +249,12 @@ async fn load_e2ee_service(password_override: Option<String>) -> Result<E2eeServ
         let key_file_path = keys_dir.join(format!("{}.json", active_key_id));
 
         if key_file_path.exists() {
-            // Load encrypted master key
             let key_content = tokio::fs::read_to_string(&key_file_path).await?;
             let encrypted_master_key: MasterKey = serde_json::from_str(&key_content)
                 .map_err(|e| anyhow::anyhow!("Failed to parse master key: {}", e))?;
-
-            // Load and decrypt the master key
             e2ee.load_master_key(&encrypted_master_key)
                 .map_err(|e| anyhow::anyhow!("Failed to load master key: {}", e))?;
-
-            tracing::info!("Loaded master key: {}", active_key_id);
+            e2ee.set_active_master_key(active_key_id.to_string());
         } else {
             tracing::warn!("Master key file not found: {}", key_file_path.display());
         }
@@ -244,7 +264,7 @@ async fn load_e2ee_service(password_override: Option<String>) -> Result<E2eeServ
         e2ee.load_master_key(&master_key)?;
         e2ee.set_active_master_key(key_id.clone());
 
-        // Persist encryption config
+        // Persist encryption config with password
         let keys_dir = data_dir.join("keys");
         tokio::fs::create_dir_all(&keys_dir).await?;
         let key_path = keys_dir.join(format!("{}.json", key_id));
@@ -252,9 +272,10 @@ async fn load_e2ee_service(password_override: Option<String>) -> Result<E2eeServ
 
         let config = serde_json::json!({
             "enabled": true,
-            "active_master_key_id": key_id
+            "active_master_key_id": key_id,
+            "master_password": master_password
         });
-        tokio::fs::write(&encryption_config_path, config.to_string()).await?;
+        tokio::fs::write(&encryption_config_path, serde_json::to_string_pretty(&config)?).await?;
 
         eprintln!("✓ E2EE auto-enabled with provided password (key: {})", key_id);
     }

@@ -130,6 +130,7 @@ impl MasterKey {
 /// E2EE service for encryption and decryption operations
 pub struct E2eeService {
     master_keys: HashMap<String, String>, // key_id -> decrypted hex key
+    master_key_objects: HashMap<String, MasterKey>, // key_id -> full encrypted MasterKey object
     active_master_key_id: Option<String>,
     master_password: Option<String>,
 }
@@ -138,6 +139,7 @@ impl E2eeService {
     pub fn new() -> Self {
         Self {
             master_keys: HashMap::new(),
+            master_key_objects: HashMap::new(),
             active_master_key_id: None,
             master_password: None,
         }
@@ -232,12 +234,19 @@ impl E2eeService {
         // Normalize key ID (remove dashes)
         let key_id = master_key.id.replace('-', "");
         self.master_keys.insert(key_id.clone(), decrypted_key);
+        // Keep the full object so we can include it in info.json
+        self.master_key_objects.insert(key_id.clone(), master_key.clone());
 
         if self.active_master_key_id.is_none() {
             self.active_master_key_id = Some(key_id);
         }
 
         Ok(())
+    }
+
+    /// Return all loaded MasterKey objects (used to populate info.json masterKeys array)
+    pub fn get_all_master_keys(&self) -> Vec<&MasterKey> {
+        self.master_key_objects.values().collect()
     }
 
     /// Decrypt a single encryption chunk (for master key decryption or single-chunk items)

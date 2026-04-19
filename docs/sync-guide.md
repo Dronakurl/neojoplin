@@ -32,12 +32,35 @@ NeoJoplin is designed to work alongside the Joplin CLI. Both apps can sync to th
 
 ### Setup for Cross-App Sync
 
+**Scenario A: NeoJoplin is already set up, adding Joplin CLI**
+
 ```bash
-# 1. Configure Joplin CLI
+# 1. Configure Joplin CLI to use the same WebDAV target
 joplin config sync.target 6
 joplin config sync.6.path "http://localhost:8080/webdav/shared-sync"
 joplin config sync.6.username ""
 joplin config sync.6.password ""
+
+# 2. IMPORTANT: Set the master password BEFORE syncing
+#    Use the same password NeoJoplin is using for E2EE
+joplin e2ee enable --password "YourPassword"
+
+# 3. Sync to download NeoJoplin's data
+joplin sync
+
+# 4. Decrypt downloaded items (Joplin CLI does not auto-decrypt)
+joplin e2ee decrypt --password "YourPassword" -f
+
+# 5. Verify Joplin has the data
+joplin ls
+```
+
+**Scenario B: Starting fresh with both apps**
+
+```bash
+# 1. Configure Joplin CLI
+joplin config sync.target 6
+joplin config sync.6.path "http://localhost:8080/webdav/shared-sync"
 joplin e2ee enable --password "YourPassword"
 
 # 2. Create data and sync Joplin
@@ -52,6 +75,11 @@ neojoplin sync --url http://localhost:8080/webdav --remote /shared-sync --e2ee-p
 # 4. Verify data
 neojoplin ls
 ```
+
+**Why `joplin e2ee enable` must come before `joplin sync`**
+
+Joplin CLI does not auto-decrypt items after sync. It needs the master password set in its database before it can decrypt the master key downloaded from the WebDAV server. Running `joplin e2ee enable --password <password>` sets the master password in Joplin's local settings. After that, `joplin sync` can download encrypted items, and `joplin e2ee decrypt` decrypts them.
+
 
 ## End-to-End Encryption (E2EE)
 

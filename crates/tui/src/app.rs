@@ -368,95 +368,74 @@ impl App {
         self.state.set_status("Starting sync...");
 
         let data_dir = neojoplin_core::Config::data_dir()?;
-        let sync_config_path = data_dir.join("sync-config.json");
 
-        // Load sync configuration
-        if !sync_config_path.exists() {
-            self.state.set_status("Sync not configured - run setup first");
+        // Use the loaded settings (from settings.json) to get the sync target
+        let sync_settings = &self.state.settings.sync;
+        let target = match sync_settings.current_target_index
+            .and_then(|i| sync_settings.targets.get(i))
+        {
+            Some(t) => t.clone(),
+            None => {
+                self.state.set_status("Sync not configured. Go to Settings (s) → Sync tab to add a WebDAV target.");
+                return Ok(());
+            }
+        };
+
+        if target.url.is_empty() {
+            self.state.set_status("Sync URL is empty. Go to Settings (s) → Sync tab to configure.");
             return Ok(());
         }
 
-        let config_content = tokio::fs::read_to_string(&sync_config_path).await?;
-        let sync_config: serde_json::Value = serde_json::from_str(&config_content)?;
+        // Split the full URL (e.g. http://localhost:8080/webdav/shared) into
+        // base_url (http://localhost:8080/webdav) + remote_path (/shared).
+        let (base_url, remote_path) = split_webdav_url(&target.url);
 
-        let sync_type = sync_config["type"].as_str().unwrap_or("local");
+        self.state.set_status(&format!("Syncing to {}{}...", base_url, remote_path));
 
-        match sync_type {
-            "webdav" => {
-                // Get WebDAV configuration
-                let url = sync_config.get("url")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("http://localhost:8080/webdav");
+        use joplin_sync::{ReqwestWebDavClient, WebDavConfig, SyncEngine};
+        use tokio::sync::mpsc;
 
-                let remote_path = sync_config.get("remote_path")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("/neojoplin");
+        let webdav_config = WebDavConfig {
+            base_url: base_url.clone(),
+            username: target.username.clone(),
+            password: target.password.clone(),
+        };
 
-                self.state.set_status(&format!("Syncing to {}{}...", url, remote_path));
+        let webdav_client = Arc::new(ReqwestWebDavClient::new(webdav_config)?);
+        let (event_tx, mut event_rx) = mpsc::unbounded_channel();
 
-                // Create WebDAV client and sync engine
-                use joplin_sync::{ReqwestWebDavClient, WebDavConfig, SyncEngine};
-                use tokio::sync::mpsc;
+        let mut sync_engine = SyncEngine::new(
+            self.storage.clone(),
+            webdav_client,
+            event_tx,
+        ).with_remote_path(remote_path.clone());
 
-                let webdav_config = WebDavConfig {
-                    base_url: url.to_string(),
-                    username: String::new(), // Empty for local WebDAV
-                    password: String::new(), // Empty for local WebDAV
-                };
-
-                let webdav_client = Arc::new(ReqwestWebDavClient::new(webdav_config)?);
-                let (event_tx, mut event_rx) = mpsc::unbounded_channel();
-
-                let mut sync_engine = SyncEngine::new(
-                    self.storage.clone(),
-                    webdav_client,
-                    event_tx,
-                ).with_remote_path(remote_path.to_string());
-
-                // Spawn a task to consume sync events (prevents channel from filling up)
-                // Events are already handled via the sync result status messages below
-                let storage_clone = self.storage.clone(); // Keep for data reload after sync
-                tokio::spawn(async move {
-                    while let Some(_event) = event_rx.recv().await {
-                        // Events are consumed but not printed to avoid TUI rendering issues
-                        // Status messages are handled via the main sync result below
-                    }
-                });
-
-                // Perform sync
-                match sync_engine.sync().await {
-                    Ok(_) => {
-                        self.state.set_status("✓ Sync completed successfully");
-
-                        // Reload data
-                        let folders = storage_clone.list_folders().await?;
-                        self.state.set_folders(folders);
-
-                        let notes = storage_clone.list_notes(None).await?;
-                        self.state.set_notes(notes);
-                    }
-                    Err(e) => {
-                        // Show error dialog for sync failures
-                        self.state.show_error(&format!("Sync failed: {}", e));
-                    }
-                }
+        // Load E2EE service from .env / encryption.json (same logic as CLI)
+        if let Ok(e2ee) = load_e2ee_service(&data_dir).await {
+            if e2ee.is_enabled() {
+                sync_engine = sync_engine.with_e2ee(e2ee);
             }
-            "local" => {
-                // Get sync path from config
-                let sync_path = if let Some(path) = sync_config.get("path") {
-                    PathBuf::from(path.as_str().unwrap())
-                } else {
-                    data_dir.join("sync")
-                };
+        }
 
-                self.state.set_status(&format!("Local sync to {}...", sync_path.display()));
+        // Consume sync events without printing (avoids TUI rendering issues)
+        let storage_clone = self.storage.clone();
+        tokio::spawn(async move {
+            while let Some(_event) = event_rx.recv().await {}
+        });
 
-                // For now, just simulate sync with local filesystem
-                tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
-                self.state.set_status("Local sync completed");
+        match sync_engine.sync().await {
+            Ok(_) => {
+                self.state.set_status("✓ Sync completed successfully");
+
+                // Reload data after sync
+                let folders = storage_clone.list_folders().await?;
+                self.state.set_folders(folders);
+
+                let notes = storage_clone.list_notes(None).await?;
+                self.state.set_notes(notes);
             }
-            _ => {
-                self.state.set_status("Unknown sync type configured");
+            Err(e) => {
+                self.state.show_error(&format!("Sync failed: {}", e));
             }
         }
 
@@ -1170,4 +1149,71 @@ impl App {
 pub async fn run_app() -> Result<()> {
     let mut app = App::new().await?;
     app.run().await
+}
+
+/// Split a full WebDAV URL into (base_url, remote_path).
+///
+/// Joplin stores `sync.6.path` as the full URL including the sync folder,
+/// e.g. `http://localhost:8080/webdav/shared`.
+/// The WebDAV client expects the server root (`http://localhost:8080/webdav`)
+/// and `SyncEngine` takes the folder path (`/shared`) separately.
+fn split_webdav_url(full_url: &str) -> (String, String) {
+    let trimmed = full_url.trim_end_matches('/');
+    // Find the last '/' that is not part of the scheme "://"
+    let scheme_end = trimmed.find("://").map(|i| i + 3).unwrap_or(0);
+    if let Some(slash_pos) = trimmed[scheme_end..].rfind('/') {
+        let abs_pos = scheme_end + slash_pos;
+        let base = &trimmed[..abs_pos];
+        let path = &trimmed[abs_pos..]; // starts with '/'
+        if !path.is_empty() && path != "/" {
+            return (base.to_string(), path.to_string());
+        }
+    }
+    // No sub-path; use a default remote folder
+    (trimmed.to_string(), "/neojoplin".to_string())
+}
+
+/// Load the E2EE service from disk (encryption.json + key files).
+/// Reads the password from the E2EE_PASSWORD env var or the project `.env` file.
+async fn load_e2ee_service(data_dir: &PathBuf) -> Result<joplin_sync::E2eeService> {
+    use joplin_sync::{E2eeService, MasterKey};
+
+    let encryption_config_path = data_dir.join("encryption.json");
+    if !encryption_config_path.exists() {
+        return Ok(E2eeService::new());
+    }
+
+    let config_content = tokio::fs::read_to_string(&encryption_config_path).await?;
+    let config: serde_json::Value = serde_json::from_str(&config_content)?;
+
+    let enabled = config.get("enabled").and_then(|v| v.as_bool()).unwrap_or(false);
+    if !enabled {
+        return Ok(E2eeService::new());
+    }
+
+    // Read master password from encryption.json (stored on enable), then fall back to env
+    let master_password = config.get("master_password")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
+        .map(|s| s.to_string())
+        .or_else(|| std::env::var("E2EE_PASSWORD").ok())
+        .unwrap_or_default();
+
+    let mut e2ee = E2eeService::new();
+    if !master_password.is_empty() {
+        e2ee.set_master_password(master_password);
+    }
+
+    if let Some(active_key_id) = config.get("active_master_key_id").and_then(|v| v.as_str()) {
+        let keys_dir = data_dir.join("keys");
+        let key_file = keys_dir.join(format!("{}.json", active_key_id));
+        if key_file.exists() {
+            let key_content = tokio::fs::read_to_string(&key_file).await?;
+            let master_key: MasterKey = serde_json::from_str(&key_content)?;
+            e2ee.load_master_key(&master_key)?;
+            e2ee.set_active_master_key(active_key_id.to_string());
+        }
+    }
+
+    Ok(e2ee)
 }

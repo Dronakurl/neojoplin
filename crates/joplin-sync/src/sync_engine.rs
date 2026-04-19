@@ -142,6 +142,9 @@ impl SyncEngine {
 
             // Reset last_sync_time to 0 so everything is considered new
             self.context.last_sync_time = 0;
+            // Clear local sync time so next load doesn't restore the old value
+            let key = self.last_sync_setting_key();
+            let _ = self.storage.set_setting(&key, "0").await;
         }
 
         Ok(())
@@ -442,10 +445,22 @@ impl SyncEngine {
         Ok(())
     }
 
+    /// Setting key for storing last sync time locally (per remote path)
+    fn last_sync_setting_key(&self) -> String {
+        let path_key = self.context.remote_path.trim_matches('/').replace('/', "_");
+        format!("sync.last_sync_time.{}", path_key)
+    }
+
     async fn load_sync_info(&mut self) -> Result<()> {
         match SyncInfo::load_from_remote(self.webdav.as_ref(), &self.context.remote_path).await {
             Ok(Some(remote_sync_info)) => {
-                self.context.last_sync_time = remote_sync_info.delta_timestamp();
+                // Use locally-stored last sync time (immune to Joplin overwriting info.json)
+                let local_last_sync = self.load_local_last_sync_time().await;
+                self.context.last_sync_time = if local_last_sync > 0 {
+                    local_last_sync
+                } else {
+                    remote_sync_info.delta_timestamp()
+                };
                 self.sync_info = Some(remote_sync_info);
             }
             Ok(None) => {
@@ -485,6 +500,22 @@ impl SyncEngine {
                             sync_info.active_master_key_id.updated_time = now_ms();
                         }
                     }
+                    // Populate masterKeys array so other clients (Joplin) can find the keys
+                    for mk in e2ee.get_all_master_keys() {
+                        let mk_id = mk.id.replace('-', "");
+                        if !sync_info.master_keys.iter().any(|existing| existing.id.replace('-', "") == mk_id) {
+                            sync_info.master_keys.push(crate::sync_info::MasterKeyInfo {
+                                id: mk_id,
+                                created_time: mk.created_time,
+                                updated_time: mk.updated_time,
+                                source_application: mk.source_application.clone(),
+                                encryption_method: mk.encryption_method,
+                                checksum: mk.checksum.clone(),
+                                content: mk.content.clone(),
+                                has_been_used: true,
+                            });
+                        }
+                    }
                 }
             } else if sync_info.e2ee.value {
                 // E2EE was previously enabled but now disabled
@@ -494,8 +525,21 @@ impl SyncEngine {
 
             sync_info.save_to_remote(self.webdav.as_ref(), &self.context.remote_path).await
                 .map_err(|e| SyncError::Server(format!("Failed to save sync info: {}", e)))?;
+
+            // Save last sync time locally so Joplin overwriting info.json doesn't reset it
+            let now = now_ms();
+            let key = self.last_sync_setting_key();
+            let _ = self.storage.set_setting(&key, &now.to_string()).await;
         }
         Ok(())
+    }
+
+    async fn load_local_last_sync_time(&self) -> i64 {
+        let key = self.last_sync_setting_key();
+        match self.storage.get_setting(&key).await {
+            Ok(Some(val)) => val.parse().unwrap_or(0),
+            _ => 0,
+        }
     }
 
     async fn get_changed_folders(&self) -> Result<Vec<Folder>> {

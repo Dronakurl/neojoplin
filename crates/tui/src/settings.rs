@@ -474,13 +474,14 @@ impl Settings {
         let master_key_json = serde_json::to_string_pretty(&master_key)?;
         tokio::fs::write(&key_path, master_key_json).await?;
 
-        // Save active key ID to config
+        // Save active key ID and master password to config
         let config_path = data_dir.join("encryption.json");
         let config = serde_json::json!({
             "enabled": true,
-            "active_master_key_id": key_id
+            "active_master_key_id": key_id,
+            "master_password": password
         });
-        tokio::fs::write(&config_path, config.to_string()).await?;
+        tokio::fs::write(&config_path, serde_json::to_string_pretty(&config)?).await?;
 
         // Update state
         self.encryption.enabled = true;
