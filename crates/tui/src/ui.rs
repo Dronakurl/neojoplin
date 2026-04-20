@@ -8,11 +8,11 @@ use ratatui::{
     Frame,
 };
 
-use crate::settings::{FormField, ConnectionResult};
+use crate::settings::{ConnectionResult, FormField};
 use crate::theme::Theme;
 
-use crate::state::{AppState, FocusPanel};
 use crate::settings::SettingsTab;
+use crate::state::{AppState, FocusPanel};
 
 /// Render the main UI
 pub fn render_ui(f: &mut Frame, state: &AppState) {
@@ -24,9 +24,9 @@ pub fn render_ui(f: &mut Frame, state: &AppState) {
         .margin(0)
         .constraints(
             [
-                Constraint::Min(0),  // Main content
-                Constraint::Length(ribbon_height),  // Keybinding ribbon
-                Constraint::Length(1),  // Status line
+                Constraint::Min(0),                // Main content
+                Constraint::Length(ribbon_height), // Keybinding ribbon
+                Constraint::Length(1),             // Status line
             ]
             .as_ref(),
         )
@@ -49,9 +49,9 @@ fn render_main_content(f: &mut Frame, state: &AppState, area: Rect) {
         .margin(0)
         .constraints(
             [
-                Constraint::Percentage(25),  // Notebooks
-                Constraint::Percentage(25),  // Notes
-                Constraint::Percentage(50),  // Content
+                Constraint::Percentage(25), // Notebooks
+                Constraint::Percentage(25), // Notes
+                Constraint::Percentage(50), // Content
             ]
             .as_ref(),
         )
@@ -155,7 +155,11 @@ fn render_notes_panel(f: &mut Frame, state: &AppState, area: Rect) {
                 };
 
                 let icon = if note.is_todo == 1 {
-                    if note.todo_completed > 0 { "󰄲" } else { "󰄱" }
+                    if note.todo_completed > 0 {
+                        "󰄲"
+                    } else {
+                        "󰄱"
+                    }
                 } else {
                     "📝"
                 };
@@ -215,7 +219,8 @@ fn render_content_panel(f: &mut Frame, state: &AppState, area: Rect) {
     let scroll_offset = state.content_scroll_offset.min(max_scroll);
 
     // Get visible lines based on scroll offset
-    let visible_lines: Vec<Line> = content_lines.iter()
+    let visible_lines: Vec<Line> = content_lines
+        .iter()
         .skip(scroll_offset)
         .take(visible_height)
         .cloned()
@@ -261,13 +266,24 @@ fn termimad_to_ratatui_lines(text: &str, width: usize) -> Vec<Line<'static>> {
     for fmt_line in &fmt_text.lines {
         match fmt_line {
             termimad::FmtLine::Normal(composite) => {
-                let spans: Vec<Span<'static>> = composite.composite.compounds.iter()
+                let spans: Vec<Span<'static>> = composite
+                    .composite
+                    .compounds
+                    .iter()
                     .map(|c| {
                         let mut style = Style::default();
-                        if c.bold { style = style.add_modifier(Modifier::BOLD); }
-                        if c.italic { style = style.add_modifier(Modifier::ITALIC); }
-                        if c.strikeout { style = style.add_modifier(Modifier::CROSSED_OUT); }
-                        if c.code { style = style.fg(Color::Cyan); }
+                        if c.bold {
+                            style = style.add_modifier(Modifier::BOLD);
+                        }
+                        if c.italic {
+                            style = style.add_modifier(Modifier::ITALIC);
+                        }
+                        if c.strikeout {
+                            style = style.add_modifier(Modifier::CROSSED_OUT);
+                        }
+                        if c.code {
+                            style = style.fg(Color::Cyan);
+                        }
                         Span::styled(c.src.to_string(), style)
                     })
                     .collect();
@@ -280,25 +296,40 @@ fn termimad_to_ratatui_lines(text: &str, width: usize) -> Vec<Line<'static>> {
                             2 => Color::Green,
                             _ => Color::Cyan,
                         };
-                        spans.into_iter()
-                            .map(|s| Span::styled(s.content.into_owned(),
-                                s.style.fg(color).add_modifier(Modifier::BOLD)))
+                        spans
+                            .into_iter()
+                            .map(|s| {
+                                Span::styled(
+                                    s.content.into_owned(),
+                                    s.style.fg(color).add_modifier(Modifier::BOLD),
+                                )
+                            })
                             .collect()
                     }
                     CompositeStyle::Quote => {
-                        let mut result = vec![Span::styled("▌ ".to_string(), Style::default().fg(Color::DarkGray))];
-                        result.extend(spans.into_iter()
-                            .map(|s| Span::styled(s.content.into_owned(),
-                                s.style.fg(Color::Gray))));
+                        let mut result = vec![Span::styled(
+                            "▌ ".to_string(),
+                            Style::default().fg(Color::DarkGray),
+                        )];
+                        result.extend(spans.into_iter().map(|s| {
+                            Span::styled(s.content.into_owned(), s.style.fg(Color::Gray))
+                        }));
                         result
                     }
                     CompositeStyle::ListItem(..) => {
-                        let mut result = vec![Span::styled("  • ".to_string(), Style::default().fg(Color::Yellow))];
-                        result.extend(spans.into_iter()
-                            .map(|s| Span::styled(s.content.into_owned(), s.style)));
+                        let mut result = vec![Span::styled(
+                            "  • ".to_string(),
+                            Style::default().fg(Color::Yellow),
+                        )];
+                        result.extend(
+                            spans
+                                .into_iter()
+                                .map(|s| Span::styled(s.content.into_owned(), s.style)),
+                        );
                         result
                     }
-                    _ => spans.into_iter()
+                    _ => spans
+                        .into_iter()
                         .map(|s| Span::styled(s.content.into_owned(), s.style))
                         .collect(),
                 };
@@ -306,7 +337,10 @@ fn termimad_to_ratatui_lines(text: &str, width: usize) -> Vec<Line<'static>> {
             }
             termimad::FmtLine::HorizontalRule => {
                 let rule = "─".repeat(width.min(80));
-                lines.push(Line::from(Span::styled(rule, Style::default().fg(Color::DarkGray))));
+                lines.push(Line::from(Span::styled(
+                    rule,
+                    Style::default().fg(Color::DarkGray),
+                )));
             }
             _ => {
                 // Table rows: render as plain text for now
@@ -330,13 +364,13 @@ fn render_keybinding_ribbon(f: &mut Frame, state: &AppState, area: Rect) {
     // All actions use the same primary color
     let bindings = &[
         ("q", "QUIT"),
-        ("?", "HELP"),
-        ("Tab", "PANEL"),
+        // ("?", "HELP"),
+        // ("Tab", "PANEL"),
         ("hjkl", "NAV"),
-        ("Ent", "EDIT"),
+        // ("Ent", "EDIT"),
         ("n", "NOTE"),
         ("T", "TODO"),
-        ("t", "TOGGLE"),
+        // ("t", "TOGGLE"),
         ("N", "NOTEBOOK"),
         ("d", "DELETE"),
         ("s", "SYNC"),
@@ -354,7 +388,7 @@ fn render_keybinding_ribbon(f: &mut Frame, state: &AppState, area: Rect) {
         let arrow_width = arrow.chars().count();
 
         // Pattern: "KEY arrow ACTION arrow space" where arrows create the colored box effect
-        let segment_width = key_width + arrow_width + 1 + action_width + 1 + arrow_width + 1;
+        let segment_width = key_width + 1 + arrow_width + 1 + action_width + 1 + arrow_width + 1;
 
         if total_width + segment_width > available_width {
             break; // Stop if we're out of space
@@ -370,7 +404,7 @@ fn render_keybinding_ribbon(f: &mut Frame, state: &AppState, area: Rect) {
 
         // Key in normal text (no trailing space, space comes after arrow)
         spans.push(Span::styled(
-            *key,
+            format!("{} ", *key),
             Style::default().fg(key_color).bg(surface_color),
         ));
         total_width += key_width;
@@ -418,9 +452,7 @@ fn render_status_line(f: &mut Frame, state: &AppState, area: Rect) {
     let theme = &state.theme;
 
     let status_text = if state.status_message.is_empty() {
-        Line::from(vec![
-            Span::from("Ready").style(theme.muted()),
-        ])
+        Line::from(vec![Span::from("Ready").style(theme.muted())])
     } else {
         Line::from(vec![
             Span::from("→ ").style(theme.muted()),
@@ -448,10 +480,7 @@ pub fn render_settings(f: &mut Frame, state: &AppState) {
     };
 
     // Create title with tabs
-    let title = format!(
-        "Settings - {}",
-        tabs[current_tab_idx]
-    );
+    let title = format!("Settings - {}", tabs[current_tab_idx]);
 
     // Create bottom title with key hints
     let bottom_title = Line::from(vec![
@@ -486,7 +515,7 @@ pub fn render_settings(f: &mut Frame, state: &AppState) {
                 .title(title)
                 .title_bottom(bottom_title)
                 .borders(Borders::ALL)
-                .border_style(theme.border_focused())
+                .border_style(theme.border_focused()),
         )
         .wrap(Wrap { trim: false })
         .alignment(Alignment::Left);
@@ -520,7 +549,10 @@ fn render_encryption_settings_inline(state: &AppState) -> Vec<Line<'_>> {
         ]));
     }
 
-    lines.push(Line::from(format!("Available Keys: {}", enc.master_key_count)));
+    lines.push(Line::from(format!(
+        "Available Keys: {}",
+        enc.master_key_count
+    )));
     lines.push(Line::from(""));
 
     // Actions
@@ -660,9 +692,10 @@ fn render_target_list(f: &mut Frame, state: &AppState, area: Rect) {
 
     let items: Vec<ListItem> = if sync.targets.is_empty() {
         vec![
-            ListItem::new(Line::from(vec![
-                Span::styled("No sync targets configured", theme.muted()),
-            ])),
+            ListItem::new(Line::from(vec![Span::styled(
+                "No sync targets configured",
+                theme.muted(),
+            )])),
             ListItem::new(Line::from(vec![
                 Span::raw("Press "),
                 Span::styled("'n'", theme.accent()),
@@ -670,23 +703,33 @@ fn render_target_list(f: &mut Frame, state: &AppState, area: Rect) {
             ])),
         ]
     } else {
-        sync.targets.iter().enumerate().map(|(i, target)| {
-            let is_active = sync.current_target_index == Some(i);
-            let prefix = if is_active { "● " } else { "○ " };
-            let style = if is_active { theme.primary() } else { theme.text() };
+        sync.targets
+            .iter()
+            .enumerate()
+            .map(|(i, target)| {
+                let is_active = sync.current_target_index == Some(i);
+                let prefix = if is_active { "● " } else { "○ " };
+                let style = if is_active {
+                    theme.primary()
+                } else {
+                    theme.text()
+                };
 
-            ListItem::new(Line::from(vec![
-                Span::styled(prefix, style),
-                Span::styled(&target.name, style),
-            ]))
-        }).collect()
+                ListItem::new(Line::from(vec![
+                    Span::styled(prefix, style),
+                    Span::styled(&target.name, style),
+                ]))
+            })
+            .collect()
     };
 
     let list = List::new(items)
-        .block(Block::default()
-            .title(" Sync Targets ")
-            .borders(Borders::ALL)
-            .border_style(theme.border_normal()))
+        .block(
+            Block::default()
+                .title(" Sync Targets ")
+                .borders(Borders::ALL)
+                .border_style(theme.border_normal()),
+        )
         .highlight_style(theme.selection());
 
     f.render_widget(list, area);
@@ -732,10 +775,12 @@ fn render_target_details(f: &mut Frame, state: &AppState, area: Rect) {
         ];
 
         let paragraph = Paragraph::new(help_text)
-            .block(Block::default()
-                .title(" Instructions ")
-                .borders(Borders::ALL)
-                .border_style(theme.border_normal()))
+            .block(
+                Block::default()
+                    .title(" Instructions ")
+                    .borders(Borders::ALL)
+                    .border_style(theme.border_normal()),
+            )
             .wrap(Wrap { trim: false })
             .alignment(Alignment::Left);
 
@@ -762,11 +807,25 @@ fn render_target_details(f: &mut Frame, state: &AppState, area: Rect) {
                 ]),
                 Line::from(vec![
                     Span::styled("Username: ", theme.muted()),
-                    Span::styled(if target.username.is_empty() { "(none)" } else { &target.username }, theme.text()),
+                    Span::styled(
+                        if target.username.is_empty() {
+                            "(none)"
+                        } else {
+                            &target.username
+                        },
+                        theme.text(),
+                    ),
                 ]),
                 Line::from(vec![
                     Span::styled("Password: ", theme.muted()),
-                    Span::styled(if target.password.is_empty() { "(not set)" } else { "•••• (set)" }, theme.text()),
+                    Span::styled(
+                        if target.password.is_empty() {
+                            "(not set)"
+                        } else {
+                            "•••• (set)"
+                        },
+                        theme.text(),
+                    ),
                 ]),
                 Line::from(vec![
                     Span::styled("Path: ", theme.muted()),
@@ -787,10 +846,12 @@ fn render_target_details(f: &mut Frame, state: &AppState, area: Rect) {
             ];
 
             let paragraph = Paragraph::new(details)
-                .block(Block::default()
-                    .title(" Selected Target ")
-                    .borders(Borders::ALL)
-                    .border_style(theme.border_normal()))
+                .block(
+                    Block::default()
+                        .title(" Selected Target ")
+                        .borders(Borders::ALL)
+                        .border_style(theme.border_normal()),
+                )
                 .wrap(Wrap { trim: false })
                 .alignment(Alignment::Left);
 
@@ -804,20 +865,27 @@ fn render_target_form(f: &mut Frame, state: &AppState, area: Rect) {
     let theme = &state.theme;
     let sync = &state.settings.sync;
 
-    let _title = if sync.show_edit_form { "Edit Target" } else { "Add Target" };
+    let _title = if sync.show_edit_form {
+        "Edit Target"
+    } else {
+        "Add Target"
+    };
 
     // Form layout with input fields
     let form_chunks = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(3), // Name
-            Constraint::Length(3), // URL
-            Constraint::Length(3), // Username
-            Constraint::Length(3), // Password
-            Constraint::Length(3), // Path
-            Constraint::Length(2), // Error message
-            Constraint::Length(3), // Buttons
-        ].as_ref())
+        .constraints(
+            [
+                Constraint::Length(3), // Name
+                Constraint::Length(3), // URL
+                Constraint::Length(3), // Username
+                Constraint::Length(3), // Password
+                Constraint::Length(3), // Path
+                Constraint::Length(2), // Error message
+                Constraint::Length(3), // Buttons
+            ]
+            .as_ref(),
+        )
         .split(area);
 
     // Highlight active field
@@ -828,11 +896,46 @@ fn render_target_form(f: &mut Frame, state: &AppState, area: Rect) {
     let is_path_active = sync.active_field == Some(FormField::Path);
 
     // Render each form field
-    render_form_field(f, "Name:", &sync.name_input, form_chunks[0], theme, is_name_active);
-    render_form_field(f, "URL:", &sync.url_input, form_chunks[1], theme, is_url_active);
-    render_form_field(f, "Username:", &sync.username_input, form_chunks[2], theme, is_username_active);
-    render_form_field_with_placeholder(f, "Password:", &sync.password_input, form_chunks[3], theme, is_password_active);
-    render_form_field(f, "Path:", &sync.path_input, form_chunks[4], theme, is_path_active);
+    render_form_field(
+        f,
+        "Name:",
+        &sync.name_input,
+        form_chunks[0],
+        theme,
+        is_name_active,
+    );
+    render_form_field(
+        f,
+        "URL:",
+        &sync.url_input,
+        form_chunks[1],
+        theme,
+        is_url_active,
+    );
+    render_form_field(
+        f,
+        "Username:",
+        &sync.username_input,
+        form_chunks[2],
+        theme,
+        is_username_active,
+    );
+    render_form_field_with_placeholder(
+        f,
+        "Password:",
+        &sync.password_input,
+        form_chunks[3],
+        theme,
+        is_password_active,
+    );
+    render_form_field(
+        f,
+        "Path:",
+        &sync.path_input,
+        form_chunks[4],
+        theme,
+        is_path_active,
+    );
 
     // Error message
     if let Some(ref error) = sync.form_error {
@@ -869,15 +972,25 @@ fn render_target_form(f: &mut Frame, state: &AppState, area: Rect) {
         Span::raw(" Test "),
     ]);
 
-    let button_paragraph = Paragraph::new(buttons)
-        .alignment(Alignment::Center);
+    let button_paragraph = Paragraph::new(buttons).alignment(Alignment::Center);
     f.render_widget(button_paragraph, form_chunks[6]);
 }
 
 /// Helper function to render a form field
-fn render_form_field(f: &mut Frame, label: &str, value: &str, area: Rect, theme: &Theme, is_active: bool) {
+fn render_form_field(
+    f: &mut Frame,
+    label: &str,
+    value: &str,
+    area: Rect,
+    theme: &Theme,
+    is_active: bool,
+) {
     let cursor = if is_active { "█" } else { "" };
-    let style = if is_active { theme.primary() } else { theme.text() };
+    let style = if is_active {
+        theme.primary()
+    } else {
+        theme.text()
+    };
 
     let text = Line::from(vec![
         Span::styled(label, theme.muted()),
@@ -885,17 +998,29 @@ fn render_form_field(f: &mut Frame, label: &str, value: &str, area: Rect, theme:
         Span::styled(cursor, theme.primary()),
     ]);
 
-    let border_style = if is_active { theme.border_focused() } else { theme.border_normal() };
+    let border_style = if is_active {
+        theme.border_focused()
+    } else {
+        theme.border_normal()
+    };
 
-    let paragraph = Paragraph::new(text)
-        .block(Block::default()
+    let paragraph = Paragraph::new(text).block(
+        Block::default()
             .borders(Borders::ALL)
-            .border_style(border_style));
+            .border_style(border_style),
+    );
     f.render_widget(paragraph, area);
 }
 
 /// Helper function to render a password field (masked with placeholder)
-fn render_form_field_with_placeholder(f: &mut Frame, label: &str, value: &str, area: Rect, theme: &Theme, is_active: bool) {
+fn render_form_field_with_placeholder(
+    f: &mut Frame,
+    label: &str,
+    value: &str,
+    area: Rect,
+    theme: &Theme,
+    is_active: bool,
+) {
     let display_value = if value.is_empty() {
         "(not set)".to_string()
     } else if is_active {
@@ -905,7 +1030,11 @@ fn render_form_field_with_placeholder(f: &mut Frame, label: &str, value: &str, a
     };
 
     let cursor = if is_active { "█" } else { "" };
-    let style = if is_active { theme.primary() } else { theme.text() };
+    let style = if is_active {
+        theme.primary()
+    } else {
+        theme.text()
+    };
 
     let text = Line::from(vec![
         Span::styled(label, theme.muted()),
@@ -913,12 +1042,17 @@ fn render_form_field_with_placeholder(f: &mut Frame, label: &str, value: &str, a
         Span::styled(cursor, theme.primary()),
     ]);
 
-    let border_style = if is_active { theme.border_focused() } else { theme.border_normal() };
+    let border_style = if is_active {
+        theme.border_focused()
+    } else {
+        theme.border_normal()
+    };
 
-    let paragraph = Paragraph::new(text)
-        .block(Block::default()
+    let paragraph = Paragraph::new(text).block(
+        Block::default()
             .borders(Borders::ALL)
-            .border_style(border_style));
+            .border_style(border_style),
+    );
     f.render_widget(paragraph, area);
 }
 
@@ -1099,9 +1233,15 @@ pub fn render_rename_prompt(f: &mut Frame, state: &AppState) {
     let theme = &state.theme;
 
     let item_name = if state.focus == FocusPanel::Notes {
-        state.selected_note().map(|n| n.title.as_str()).unwrap_or("note")
+        state
+            .selected_note()
+            .map(|n| n.title.as_str())
+            .unwrap_or("note")
     } else {
-        state.selected_folder().map(|f| f.title.as_str()).unwrap_or("notebook")
+        state
+            .selected_folder()
+            .map(|f| f.title.as_str())
+            .unwrap_or("notebook")
     };
 
     let title = format!("Rename: {}", item_name);
@@ -1124,11 +1264,7 @@ pub fn render_rename_prompt(f: &mut Frame, state: &AppState) {
     ];
 
     // Main dialog content with centered input
-    let text = Text::from(vec![
-        Line::from(""),
-        Line::from(input_text),
-        Line::from(""),
-    ]);
+    let text = Text::from(vec![Line::from(""), Line::from(input_text), Line::from("")]);
 
     let paragraph = Paragraph::new(text)
         .block(
@@ -1158,7 +1294,11 @@ fn extract_folder_emoji(icon: &str) -> Option<String> {
     }
 
     // If JSON parsing fails, try to use the string directly if it looks like an emoji
-    if icon.chars().count() <= 4 && icon.chars().all(|c| c.is_alphanumeric() || c == ':' || c == ' ') {
+    if icon.chars().count() <= 4
+        && icon
+            .chars()
+            .all(|c| c.is_alphanumeric() || c == ':' || c == ' ')
+    {
         return None; // Don't show non-emoji strings
     }
 
