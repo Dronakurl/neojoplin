@@ -4,15 +4,21 @@ use ratatui::{
     layout::{Alignment, Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style, Stylize},
     text::{Line, Span, Text},
-    widgets::{Block, Borders, List, ListItem, Paragraph, Wrap},
+    widgets::{Block, Borders, List, ListItem, Paragraph, Tabs, Wrap},
     Frame,
 };
 
-use crate::settings::{ConnectionResult, FormField};
+use crate::settings::{ConnectionResult, EncryptionField, FormField};
 use crate::theme::Theme;
 
 use crate::settings::SettingsTab;
 use crate::state::{AppState, FocusPanel};
+
+/// Strip a leading Markdown H1 prefix ("# ") from a title for display in lists/borders.
+/// The full title (including "# ") is preserved in the data model and shown in the preview.
+fn display_title(title: &str) -> &str {
+    title.strip_prefix("# ").unwrap_or(title)
+}
 
 /// Render the main UI
 pub fn render_ui(f: &mut Frame, state: &AppState) {
@@ -164,7 +170,7 @@ fn render_notes_panel(f: &mut Frame, state: &AppState, area: Rect) {
                     "📝"
                 };
 
-                ListItem::new(format!("{} {}", icon, note.title)).style(style)
+                ListItem::new(format!("{} {}", icon, display_title(&note.title))).style(style)
             })
             .collect()
     };
@@ -188,18 +194,25 @@ fn render_notes_panel(f: &mut Frame, state: &AppState, area: Rect) {
 /// Render note content panel
 fn render_content_panel(f: &mut Frame, state: &AppState, area: Rect) {
     let title = if let Some(note) = state.selected_note() {
-        note.title.clone()
+        display_title(&note.title).to_string()
     } else {
         "Content".to_string()
     };
     let theme = &state.theme;
 
-    // Get note content as markdown
+    // Get note content as markdown. If the title starts with "# ", prepend it so
+    // the heading is visible in the rendered preview (the title is stored separately
+    // from the body, so we need to inject it here for correct markdown display).
     let markdown_text = if let Some(note) = state.selected_note() {
-        if note.body.is_empty() {
+        let body = if note.body.is_empty() {
             "*This note is empty*".to_string()
         } else {
             note.body.clone()
+        };
+        if note.title.starts_with("# ") && !note.body.starts_with(&note.title) {
+            format!("{}\n\n{}", note.title, body)
+        } else {
+            body
         }
     } else {
         "*Select a note to view its content*".to_string()
@@ -472,207 +485,231 @@ pub fn render_settings(f: &mut Frame, state: &AppState) {
     let area = centered_rect(70, 80, f.area());
     let theme = &state.theme;
 
-    let tabs = ["Sync", "Encryption", "About"];
+    // Build contextual bottom hints
+    let bottom_hints = settings_bottom_hints(state, theme);
+
+    // Outer block shared across all tabs
+    let outer_block = Block::default()
+        .title(" Settings ")
+        .borders(Borders::ALL)
+        .border_style(theme.border_focused())
+        .title_bottom(bottom_hints);
+
+    let inner = outer_block.inner(area);
+    f.render_widget(outer_block, area);
+
+    // Layout: tabs row + content
+    let layout = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(1), Constraint::Min(0)])
+        .split(inner);
+
+    // Tab bar
+    let tab_names = ["Sync", "Encryption"];
     let current_tab_idx = match state.settings.current_tab {
         SettingsTab::Sync => 0,
         SettingsTab::Encryption => 1,
-        SettingsTab::About => 2,
     };
+    let tabs = Tabs::new(tab_names)
+        .select(current_tab_idx)
+        .style(theme.muted())
+        .highlight_style(theme.primary().bold());
+    f.render_widget(tabs, layout[0]);
 
-    // Create title with tabs
-    let title = format!("Settings - {}", tabs[current_tab_idx]);
+    // Content area for the active tab
+    match state.settings.current_tab {
+        SettingsTab::Sync => render_sync_settings_content(f, state, layout[1]),
+        SettingsTab::Encryption => render_encryption_settings(f, state, layout[1]),
+    }
 
-    // Create bottom title with key hints
-    let bottom_title = Line::from(vec![
-        Span::styled("[", theme.muted()),
-        Span::styled("<", theme.accent()),
-        Span::styled("]", theme.muted()),
-        Span::raw(" prev ").style(theme.text()),
-        Span::styled("[", theme.muted()),
-        Span::styled(">", theme.accent()),
-        Span::styled("]", theme.muted()),
-        Span::raw(" next ").style(theme.text()),
-        Span::styled("[", theme.muted()),
-        Span::styled("q", theme.accent()),
-        Span::styled("]", theme.muted()),
-        Span::raw(" close ").style(theme.text()),
-    ]);
-
-    // Render based on current tab
-    let content = match state.settings.current_tab {
-        SettingsTab::Sync => {
-            // Sync tab gets special rendering with forms
-            render_sync_settings_content(f, state, area);
-            return;
-        }
-        SettingsTab::Encryption => Text::from(render_encryption_settings_inline(state)),
-        SettingsTab::About => Text::from(render_about_settings_inline()),
-    };
-
-    let paragraph = Paragraph::new(content)
-        .block(
-            Block::default()
-                .title(title)
-                .title_bottom(bottom_title)
-                .borders(Borders::ALL)
-                .border_style(theme.border_focused()),
-        )
-        .wrap(Wrap { trim: false })
-        .alignment(Alignment::Left);
-
-    f.render_widget(paragraph, area);
+    // Delete confirmation overlay
+    if state.settings.sync.confirm_delete {
+        let target_name = state.settings.sync.current_target_index
+            .and_then(|i| state.settings.sync.targets.get(i))
+            .map(|t| t.name.as_str())
+            .unwrap_or("this target");
+        render_delete_confirm_overlay(f, target_name, area, theme);
+    }
 }
 
-/// Render encryption settings (inline)
-fn render_encryption_settings_inline(state: &AppState) -> Vec<Line<'_>> {
-    let enc = &state.settings.encryption;
+/// Build contextual bottom hints for the settings panel
+fn settings_bottom_hints<'a>(state: &'a AppState, theme: &'a Theme) -> Line<'a> {
+    fn kh<'a>(theme: &'a Theme, key: &'static str, desc: &'static str) -> Vec<Span<'a>> {
+        vec![
+            Span::styled("[", theme.muted()),
+            Span::styled(key, theme.accent()),
+            Span::styled("]", theme.muted()),
+            Span::raw(format!(" {} ", desc)).style(theme.text()),
+        ]
+    }
 
+    let sync = &state.settings.sync;
+    let enc = &state.settings.encryption;
+    let mut spans: Vec<Span<'_>> = Vec::new();
+
+    if sync.show_add_form || sync.show_edit_form {
+        for s in kh(theme, "Tab", "next field") { spans.push(s); }
+        for s in kh(theme, "Enter", "save") { spans.push(s); }
+        for s in kh(theme, "Esc", "cancel") { spans.push(s); }
+        for s in kh(theme, "Ctrl+T", "test") { spans.push(s); }
+    } else if sync.confirm_delete {
+        for s in kh(theme, "y/Enter", "confirm") { spans.push(s); }
+        for s in kh(theme, "n/Esc", "cancel") { spans.push(s); }
+    } else if enc.show_new_key_prompt {
+        for s in kh(theme, "Tab", "switch field") { spans.push(s); }
+        for s in kh(theme, "Enter", "confirm") { spans.push(s); }
+        for s in kh(theme, "Esc", "cancel") { spans.push(s); }
+    } else {
+        for s in kh(theme, "h/l", "switch tab") { spans.push(s); }
+        for s in kh(theme, "q", "close") { spans.push(s); }
+        match state.settings.current_tab {
+            SettingsTab::Sync => {
+                for s in kh(theme, "n", "add") { spans.push(s); }
+                if !sync.targets.is_empty() {
+                    for s in kh(theme, "e", "edit") { spans.push(s); }
+                    for s in kh(theme, "d", "delete") { spans.push(s); }
+                }
+            }
+            SettingsTab::Encryption => {
+                if enc.enabled {
+                    for s in kh(theme, "d", "disable") { spans.push(s); }
+                } else {
+                    for s in kh(theme, "e", "enable") { spans.push(s); }
+                }
+            }
+        }
+    }
+
+    Line::from(spans)
+}
+
+/// Render a small delete confirmation overlay
+fn render_delete_confirm_overlay(f: &mut Frame, target_name: &str, parent: Rect, theme: &Theme) {
+    let area = centered_rect(50, 20, parent);
+    let msg = format!("Delete '{}'?", target_name);
+    let hints = Line::from(vec![
+        Span::styled("[y/Enter]", theme.accent()),
+        Span::raw(" yes  ").style(theme.text()),
+        Span::styled("[n/Esc]", theme.muted()),
+        Span::raw(" no").style(theme.text()),
+    ]);
+    let content = Paragraph::new(vec![
+        Line::from(""),
+        Line::from(msg).alignment(Alignment::Center),
+        Line::from(""),
+    ])
+    .block(
+        Block::default()
+            .title(" Confirm Delete ")
+            .borders(Borders::ALL)
+            .border_style(theme.error())
+            .title_bottom(hints),
+    )
+    .alignment(Alignment::Center);
+    f.render_widget(content, area);
+}
+
+/// Render encryption settings tab content
+fn render_encryption_settings(f: &mut Frame, state: &AppState, area: Rect) {
+    let enc = &state.settings.encryption;
+    let theme = &state.theme;
+
+    if enc.show_new_key_prompt {
+        render_encryption_password_form(f, state, area);
+        return;
+    }
+
+    // Status overview
     let mut lines = vec![
-        Line::from("Encryption Settings").style(Style::default().bold()),
+        Line::from(""),
+        Line::from(vec![
+            Span::raw("Status: "),
+            Span::styled(&enc.status_message, Style::default().bold()),
+        ]),
         Line::from(""),
     ];
 
-    // Status
-    lines.push(Line::from(vec![
-        Span::raw("Status: "),
-        Span::styled(&enc.status_message, Style::default().bold()),
-    ]));
-
-    lines.push(Line::from(""));
-
-    // Master key info
     if let Some(ref key_id) = enc.active_master_key_id {
         lines.push(Line::from(vec![
-            Span::raw("Active Key: "),
-            Span::styled(&key_id[..8], Style::default().bold()),
-            Span::raw("..."),
+            Span::styled("Active Key: ", theme.muted()),
+            Span::styled(&key_id[..8.min(key_id.len())], Style::default().bold()),
+            Span::raw("…"),
         ]));
     }
-
-    lines.push(Line::from(format!(
-        "Available Keys: {}",
-        enc.master_key_count
-    )));
+    lines.push(Line::from(vec![
+        Span::styled("Master Keys: ", theme.muted()),
+        Span::raw(enc.master_key_count.to_string()),
+    ]));
     lines.push(Line::from(""));
 
-    // Actions
-    if !enc.enabled {
+    if enc.password_success {
         lines.push(Line::from(vec![
-            Span::styled("[e]", Style::default().bold()),
-            Span::raw(" Enable encryption with master password"),
-        ]));
-    } else {
-        lines.push(Line::from(vec![
-            Span::styled("[d]", Style::default().bold()),
-            Span::raw(" Disable encryption"),
+            Span::styled("✓ ", theme.success()),
+            Span::styled(
+                if enc.enabled { "Encryption enabled" } else { "Encryption disabled" },
+                theme.success(),
+            ),
         ]));
     }
 
-    // Password prompt
-    if enc.show_new_key_prompt {
-        lines.push(Line::from(""));
-        lines.push(Line::from("─────────────────────────────────").style(Style::default().bold()));
-        lines.push(Line::from("Setup Master Password").style(Style::default().bold()));
-        lines.push(Line::from(""));
-
-        if !enc.password_input.is_empty() || !enc.confirm_password_input.is_empty() {
-            let masked_password = "•".repeat(enc.password_input.len());
-            let masked_confirm = "•".repeat(enc.confirm_password_input.len());
-
-            lines.push(Line::from(vec![
-                Span::raw("Password:      "),
-                Span::styled(masked_password, Style::default().bold()),
-            ]));
-
-            lines.push(Line::from(vec![
-                Span::raw("Confirm:       "),
-                Span::styled(masked_confirm, Style::default().bold()),
-            ]));
-        } else {
-            lines.push(Line::from("Type password (min 8 characters)"));
-        }
-
-        // Error message
-        if let Some(ref error) = enc.password_error {
-            lines.push(Line::from(""));
-            lines.push(Line::from(vec![
-                Span::styled("⚠ ", Style::default().bold()),
-                Span::styled(error, Style::default().bold()),
-            ]));
-        }
-
-        // Success message
-        if enc.password_success {
-            lines.push(Line::from(""));
-            lines.push(Line::from(vec![
-                Span::styled("✓ ", Style::default().bold()),
-                Span::styled("Encryption enabled successfully!", Style::default().bold()),
-            ]));
-        }
-
-        lines.push(Line::from(""));
-        lines.push(Line::from(vec![
-            Span::styled("[", Style::default().dim()),
-            Span::styled("Enter", Style::default().bold()),
-            Span::styled("]", Style::default().dim()),
-            Span::raw(" to confirm "),
-            Span::styled("[", Style::default().dim()),
-            Span::styled("Esc", Style::default().bold()),
-            Span::styled("]", Style::default().dim()),
-            Span::raw(" to cancel"),
-        ]));
-    }
-
-    lines
+    let paragraph = Paragraph::new(lines)
+        .wrap(Wrap { trim: false })
+        .alignment(Alignment::Left);
+    f.render_widget(paragraph, area);
 }
 
-/// Render about settings (inline)
-fn render_about_settings_inline() -> Vec<Line<'static>> {
-    vec![
-        Line::from("About NeoJoplin").bold(),
-        Line::from(""),
-        Line::from("Version: 0.1.0-alpha"),
-        Line::from(""),
-        Line::from("A fast, memory-safe Joplin-compatible").bold(),
-        Line::from("terminal note-taking client in Rust."),
-        Line::from(""),
-        Line::from("Features:"),
-        Line::from("  • 100% Joplin sync compatibility"),
-        Line::from("  • End-to-end encryption (E2EE)"),
-        Line::from("  • WebDAV synchronization"),
-        Line::from("  • External editor integration"),
-        Line::from("  • Terminal UI (TUI)"),
-        Line::from(""),
-        Line::from("Repository:"),
-        Line::from("  https://github.com/Dronakurl/neojoplin"),
-        Line::from(""),
-        Line::from("Based on Joplin by Laurent Cozic"),
-        Line::from(""),
-        Line::from("Press 'q' to close settings"),
-    ]
-}
-
-/// Render sync settings content (special handling for forms)
-fn render_sync_settings_content(f: &mut Frame, state: &AppState, area: Rect) {
+/// Render the password input form for enabling encryption
+fn render_encryption_password_form(f: &mut Frame, state: &AppState, area: Rect) {
+    let enc = &state.settings.encryption;
     let theme = &state.theme;
 
-    // Create a block for sync settings
-    let block = Block::default()
-        .title(" Sync Settings ")
-        .borders(Borders::ALL)
-        .border_style(theme.border_focused());
+    // Layout: header + 2 input fields + error/hint
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .margin(1)
+        .constraints([
+            Constraint::Length(2), // header
+            Constraint::Length(3), // Password field
+            Constraint::Length(3), // Confirm field
+            Constraint::Min(1),    // error / hint
+        ])
+        .split(area);
 
-    // Get inner area for content
-    let content_area = block.inner(area);
+    let header = Paragraph::new(vec![
+        Line::from("Set Master Password").bold(),
+    ])
+    .alignment(Alignment::Center);
+    f.render_widget(header, chunks[0]);
 
-    f.render_widget(block, area);
+    let is_pw_active = enc.active_field == EncryptionField::Password;
+    let is_confirm_active = enc.active_field == EncryptionField::Confirm;
 
+    render_form_field_password(f, "Password:", &enc.password_input, chunks[1], theme, is_pw_active);
+    render_form_field_password(f, "Confirm: ", &enc.confirm_password_input, chunks[2], theme, is_confirm_active);
+
+    // Error or hint
+    if let Some(ref error) = enc.password_error {
+        let err = Paragraph::new(vec![Line::from(vec![
+            Span::styled("⚠ ", theme.error()),
+            Span::styled(error.clone(), theme.error()),
+        ])]);
+        f.render_widget(err, chunks[3]);
+    } else {
+        let hint = Paragraph::new("Type password, Tab to switch fields, Enter to confirm")
+            .style(theme.muted())
+            .alignment(Alignment::Center);
+        f.render_widget(hint, chunks[3]);
+    }
+}
+
+/// Render sync settings content (no outer block — provided by render_settings)
+fn render_sync_settings_content(f: &mut Frame, state: &AppState, area: Rect) {
     // Split into target list (left) and form/details (right)
     let chunks = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([Constraint::Percentage(40), Constraint::Percentage(60)].as_ref())
         .margin(1)
-        .split(content_area);
+        .split(area);
 
     // Render target list
     render_target_list(f, state, chunks[0]);
@@ -865,115 +902,61 @@ fn render_target_form(f: &mut Frame, state: &AppState, area: Rect) {
     let theme = &state.theme;
     let sync = &state.settings.sync;
 
-    let _title = if sync.show_edit_form {
-        "Edit Target"
-    } else {
-        "Add Target"
-    };
-
-    // Form layout with input fields
+    // Form layout with input fields (URL = full WebDAV URL including remote path)
     let form_chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints(
             [
                 Constraint::Length(3), // Name
-                Constraint::Length(3), // URL
+                Constraint::Length(3), // URL (full WebDAV URL)
                 Constraint::Length(3), // Username
                 Constraint::Length(3), // Password
-                Constraint::Length(3), // Path
                 Constraint::Length(2), // Error message
-                Constraint::Length(3), // Buttons
+                Constraint::Length(3), // Hints
             ]
             .as_ref(),
         )
         .split(area);
 
-    // Highlight active field
     let is_name_active = sync.active_field == Some(FormField::Name);
     let is_url_active = sync.active_field == Some(FormField::Url);
     let is_username_active = sync.active_field == Some(FormField::Username);
     let is_password_active = sync.active_field == Some(FormField::Password);
-    let is_path_active = sync.active_field == Some(FormField::Path);
 
-    // Render each form field
-    render_form_field(
-        f,
-        "Name:",
-        &sync.name_input,
-        form_chunks[0],
-        theme,
-        is_name_active,
-    );
-    render_form_field(
-        f,
-        "URL:",
-        &sync.url_input,
-        form_chunks[1],
-        theme,
-        is_url_active,
-    );
-    render_form_field(
-        f,
-        "Username:",
-        &sync.username_input,
-        form_chunks[2],
-        theme,
-        is_username_active,
-    );
-    render_form_field_with_placeholder(
-        f,
-        "Password:",
-        &sync.password_input,
-        form_chunks[3],
-        theme,
-        is_password_active,
-    );
-    render_form_field(
-        f,
-        "Path:",
-        &sync.path_input,
-        form_chunks[4],
-        theme,
-        is_path_active,
-    );
+    render_form_field(f, "Name:", &sync.name_input, form_chunks[0], theme, is_name_active);
+    render_form_field(f, "URL: ", &sync.url_input, form_chunks[1], theme, is_url_active);
+    render_form_field(f, "User:", &sync.username_input, form_chunks[2], theme, is_username_active);
+    render_form_field_password(f, "Pass:", &sync.password_input, form_chunks[3], theme, is_password_active);
 
-    // Error message
+    // Error / connection result
     if let Some(ref error) = sync.form_error {
         let error_text = Paragraph::new(error.clone())
             .style(theme.error())
             .alignment(Alignment::Center);
-        f.render_widget(error_text, form_chunks[5]);
+        f.render_widget(error_text, form_chunks[4]);
     } else if let Some(ref result) = sync.connection_result {
         match result {
             ConnectionResult::Success => {
                 let success_text = Paragraph::new("✓ Connection successful!")
                     .style(theme.success())
                     .alignment(Alignment::Center);
-                f.render_widget(success_text, form_chunks[5]);
+                f.render_widget(success_text, form_chunks[4]);
             }
             ConnectionResult::Failed(err) => {
-                let error_text = Paragraph::new(format!("✗ Connection failed: {}", err))
+                let error_text = Paragraph::new(format!("✗ {}", err))
                     .style(theme.error())
                     .alignment(Alignment::Center);
-                f.render_widget(error_text, form_chunks[5]);
+                f.render_widget(error_text, form_chunks[4]);
             }
         }
     }
 
-    // Buttons
-    let buttons = Line::from(vec![
-        Span::styled("[Enter]", theme.accent()),
-        Span::raw(" Save "),
-        Span::styled("[Esc]", theme.muted()),
-        Span::raw(" Cancel "),
-        Span::styled("[Tab]", theme.accent()),
-        Span::raw(" Next field "),
-        Span::styled("[Ctrl+T]", theme.accent()),
-        Span::raw(" Test "),
-    ]);
-
-    let button_paragraph = Paragraph::new(buttons).alignment(Alignment::Center);
-    f.render_widget(button_paragraph, form_chunks[6]);
+    let hint = Paragraph::new(
+        Line::from("Enter URL including remote path, e.g. http://host/webdav/sync")
+            .style(theme.muted()),
+    )
+    .alignment(Alignment::Center);
+    f.render_widget(hint, form_chunks[5]);
 }
 
 /// Helper function to render a form field
@@ -1012,8 +995,8 @@ fn render_form_field(
     f.render_widget(paragraph, area);
 }
 
-/// Helper function to render a password field (masked with placeholder)
-fn render_form_field_with_placeholder(
+/// Helper function to render a password form field (masked)
+fn render_form_field_password(
     f: &mut Frame,
     label: &str,
     value: &str,
@@ -1022,38 +1005,13 @@ fn render_form_field_with_placeholder(
     is_active: bool,
 ) {
     let display_value = if value.is_empty() {
-        "(not set)".to_string()
+        if is_active { String::new() } else { "(not set)".to_string() }
     } else if is_active {
         "•".repeat(value.len())
     } else {
         "•••• (set)".to_string()
     };
-
-    let cursor = if is_active { "█" } else { "" };
-    let style = if is_active {
-        theme.primary()
-    } else {
-        theme.text()
-    };
-
-    let text = Line::from(vec![
-        Span::styled(label, theme.muted()),
-        Span::styled(&display_value, style),
-        Span::styled(cursor, theme.primary()),
-    ]);
-
-    let border_style = if is_active {
-        theme.border_focused()
-    } else {
-        theme.border_normal()
-    };
-
-    let paragraph = Paragraph::new(text).block(
-        Block::default()
-            .borders(Borders::ALL)
-            .border_style(border_style),
-    );
-    f.render_widget(paragraph, area);
+    render_form_field(f, label, &display_value, area, theme, is_active);
 }
 
 /// Render help popup
@@ -1073,10 +1031,6 @@ pub fn render_help(f: &mut Frame, scroll: u16, state: &AppState) {
     ]);
 
     let text = Text::from(vec![
-        Line::from("NEOJOPLIN").style(theme.primary()),
-        Line::from(""),
-        Line::from("Joplin-compatible terminal note-taking client").style(theme.muted()),
-        Line::from(""),
         Line::from("Navigation").style(theme.primary()),
         Line::from("  Tab / Shift-Tab    Switch panels (Notebooks → Notes → Content)"),
         Line::from("  h / l              Switch panels left / right"),

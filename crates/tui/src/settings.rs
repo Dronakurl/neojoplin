@@ -11,7 +11,14 @@ pub enum SettingsTab {
     #[default]
     Sync,
     Encryption,
-    About,
+}
+
+/// Active field in the encryption password prompt
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum EncryptionField {
+    #[default]
+    Password,
+    Confirm,
 }
 
 /// Sync target types (matching Joplin's target IDs)
@@ -41,14 +48,13 @@ pub struct SyncTarget {
     pub ignore_tls_errors: bool,
 }
 
-/// Form field for sync target input
+/// Form field for sync target input (URL is the full WebDAV URL including path)
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FormField {
     Name,
     Url,
     Username,
     Password,
-    Path,
 }
 
 /// Connection test result
@@ -73,12 +79,14 @@ pub struct SyncSettings {
     pub url_input: String,
     pub username_input: String,
     pub password_input: String,
-    pub path_input: String,
 
     // Form validation and feedback
     pub form_error: Option<String>,
     pub testing_connection: bool,
     pub connection_result: Option<ConnectionResult>,
+
+    // Delete confirmation
+    pub confirm_delete: bool,
 }
 
 impl SyncSettings {
@@ -88,10 +96,10 @@ impl SyncSettings {
         self.url_input.clear();
         self.username_input.clear();
         self.password_input.clear();
-        self.path_input.clear();
         self.form_error = None;
         self.connection_result = None;
         self.active_field = None;
+        self.confirm_delete = false;
     }
 
     /// Add character to name input
@@ -118,12 +126,6 @@ impl SyncSettings {
         self.form_error = None;
     }
 
-    /// Add character to path input
-    pub fn add_path_char(&mut self, c: char) {
-        self.path_input.push(c);
-        self.form_error = None;
-    }
-
     /// Remove last character from name input
     pub fn remove_name_char(&mut self) {
         self.name_input.pop();
@@ -144,19 +146,13 @@ impl SyncSettings {
         self.password_input.pop();
     }
 
-    /// Remove last character from path input
-    pub fn remove_path_char(&mut self) {
-        self.path_input.pop();
-    }
-
     /// Cycle to next form field
     pub fn cycle_field_forward(&mut self) {
         self.active_field = match self.active_field {
             Some(FormField::Name) => Some(FormField::Url),
             Some(FormField::Url) => Some(FormField::Username),
             Some(FormField::Username) => Some(FormField::Password),
-            Some(FormField::Password) => Some(FormField::Path),
-            Some(FormField::Path) => Some(FormField::Name),
+            Some(FormField::Password) => Some(FormField::Name),
             None => Some(FormField::Name),
         };
     }
@@ -164,11 +160,10 @@ impl SyncSettings {
     /// Cycle to previous form field
     pub fn cycle_field_backward(&mut self) {
         self.active_field = match self.active_field {
-            Some(FormField::Name) => Some(FormField::Path),
+            Some(FormField::Name) => Some(FormField::Password),
             Some(FormField::Url) => Some(FormField::Name),
             Some(FormField::Username) => Some(FormField::Url),
             Some(FormField::Password) => Some(FormField::Username),
-            Some(FormField::Path) => Some(FormField::Password),
             None => Some(FormField::Name),
         };
     }
@@ -180,7 +175,6 @@ impl SyncSettings {
             self.url_input = target.url.clone();
             self.username_input = target.username.clone();
             self.password_input = target.password.clone();
-            self.path_input = target.remote_path.clone();
             self.active_field = Some(FormField::Name);
         }
     }
@@ -199,6 +193,8 @@ pub struct EncryptionSettings {
     pub confirm_password_input: String,
     pub password_error: Option<String>,
     pub password_success: bool,
+    /// Which field is active in the password prompt form
+    pub active_field: EncryptionField,
 }
 
 impl Default for EncryptionSettings {
@@ -214,6 +210,7 @@ impl Default for EncryptionSettings {
             confirm_password_input: String::new(),
             password_error: None,
             password_success: false,
+            active_field: EncryptionField::Password,
         }
     }
 }
@@ -246,16 +243,14 @@ impl Settings {
     pub fn cycle_tab_forward(&mut self) {
         self.current_tab = match self.current_tab {
             SettingsTab::Sync => SettingsTab::Encryption,
-            SettingsTab::Encryption => SettingsTab::About,
-            SettingsTab::About => SettingsTab::Sync,
+            SettingsTab::Encryption => SettingsTab::Sync,
         };
     }
 
     /// Cycle to previous settings tab
     pub fn cycle_tab_backward(&mut self) {
         self.current_tab = match self.current_tab {
-            SettingsTab::Sync => SettingsTab::About,
-            SettingsTab::About => SettingsTab::Encryption,
+            SettingsTab::Sync => SettingsTab::Encryption,
             SettingsTab::Encryption => SettingsTab::Sync,
         };
     }
@@ -326,9 +321,11 @@ impl Settings {
     pub async fn save_sync_settings(&self, data_dir: &Path) -> Result<()> {
         let config_path = data_dir.join("settings.json");
 
+        let target_id: u32 = if self.sync.current_target_index.is_some() { 6 } else { 0 };
+
         let mut config = serde_json::json!({
             "$schema": "https://joplinapp.org/schema/settings.json",
-            "sync.target": 6,  // WebDAV
+            "sync.target": target_id,
         });
 
         // Save current WebDAV target
@@ -524,6 +521,7 @@ impl Settings {
     pub fn show_new_key_prompt(&mut self) {
         self.encryption.show_new_key_prompt = true;
         self.encryption.show_password_prompt = false;
+        self.encryption.active_field = EncryptionField::Password;
         self.clear_passwords();
     }
 
@@ -531,6 +529,7 @@ impl Settings {
     pub fn hide_password_prompts(&mut self) {
         self.encryption.show_password_prompt = false;
         self.encryption.show_new_key_prompt = false;
+        self.encryption.active_field = EncryptionField::Password;
         self.clear_passwords();
     }
 }
@@ -543,12 +542,16 @@ mod tests {
     fn test_settings_default() {
         let settings = Settings::new();
         assert_eq!(settings.current_tab, SettingsTab::Sync);
-        assert_eq!(settings.encryption.enabled, false);
+        assert!(!settings.encryption.enabled);
     }
 
     #[test]
     fn test_settings_tabs() {
-        let settings = Settings::new();
+        let mut settings = Settings::new();
+        assert_eq!(settings.current_tab, SettingsTab::Sync);
+        settings.cycle_tab_forward();
+        assert_eq!(settings.current_tab, SettingsTab::Encryption);
+        settings.cycle_tab_forward();
         assert_eq!(settings.current_tab, SettingsTab::Sync);
     }
 
