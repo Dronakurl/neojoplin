@@ -14,7 +14,7 @@ test:
 
 # Build and run (launches TUI by default, or pass CLI commands)
 run ARGV="":
-    cargo run --bin neojoplin -- {{ARGV}}
+    cargo run --release --bin neojoplin -- {{ARGV}}
 
 # Build and install to ~/.local/bin
 install: build
@@ -111,7 +111,7 @@ test-data:
 
 # Launch TUI (same as running with no arguments)
 tui:
-    cargo run --bin neojoplin -- --tui
+    cargo run --release --bin neojoplin -- --tui
 
 # Legacy compatibility (now just runs the main binary)
 run-tui: tui

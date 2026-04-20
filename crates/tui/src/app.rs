@@ -465,7 +465,14 @@ impl App {
             let editor = Editor::new()
                 .map_err(|e| anyhow::anyhow!("Failed to initialize editor: {}", e))?;
 
-            editor.edit(&note.body, &note.title).await
+            // Open editor with title as first line so the user can rename by editing it.
+            // Body follows after a blank line (same convention as Joplin's desktop editor).
+            let full_content = if note.body.is_empty() {
+                format!("{}\n", note.title)
+            } else {
+                format!("{}\n\n{}", note.title, note.body)
+            };
+            editor.edit(&full_content, &note.title).await
                 .map_err(|e| anyhow::anyhow!("Editor failed: {}", e))
         }.await;
 
@@ -474,29 +481,30 @@ impl App {
             .context("Failed to re-enter alternate screen")?;
         enable_raw_mode().context("Failed to re-enable raw mode")?;
 
-        let updated_body = editor_result?;
+        let full_content = editor_result?;
 
         // Force a complete terminal redraw to ensure TUI is properly visible
         terminal.clear()?;
 
-        // Update note if content changed
-        if updated_body != note.body {
+        // Reconstruct title + body: first line → title, rest → body
+        let mut lines = full_content.lines();
+        let new_title = lines.next().unwrap_or("").trim().to_string();
+        // Skip a single blank separator line if present
+        let rest: String = {
+            let remaining: Vec<&str> = lines.collect();
+            // Drop a leading blank line that acts as separator
+            let skip = if remaining.first().map(|l| l.trim().is_empty()).unwrap_or(false) { 1 } else { 0 };
+            remaining[skip..].join("\n")
+        };
+        let new_body = rest.trim_end().to_string();
+
+        let updated_title = if new_title.is_empty() { note.title.clone() } else { new_title };
+
+        // Update note if anything changed
+        if updated_title != note.title || new_body != note.body {
             let mut updated_note = note.clone();
-            updated_note.body = updated_body.clone();
-
-            // Extract title from first line (max 100 chars)
-            let new_title = updated_note.body
-                .lines()
-                .next()
-                .unwrap_or("Untitled")
-                .trim()
-                .chars()
-                .take(100)
-                .collect::<String>();
-
-            if !new_title.is_empty() {
-                updated_note.title = new_title;
-            }
+            updated_note.title = updated_title;
+            updated_note.body = new_body;
 
             updated_note.updated_time = now_ms();
 
