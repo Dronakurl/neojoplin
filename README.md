@@ -2,19 +2,14 @@
 
 A native Rust terminal client for [Joplin](https://joplinapp.org/) note-taking with 100% sync compatibility.
 
-## Status
-
-✅ **Production Ready** - Fully functional with 100% Joplin sync compatibility. See [IMPLEMENTATION_STATUS.md](IMPLEMENTATION_STATUS.md) for details.
-
 ## Features
 
-- ✅ **100% Sync Compatible** - Bidirectional sync with Joplin Desktop/CLI
+- ✅ **Sync Compatible** - Bidirectional sync with Joplin Desktop/CLI
 - ✅ **CLI Interface** - Fast, scriptable command-line interface
 - ✅ **TUI Interface** - Interactive terminal user interface with vim-style navigation
 - ✅ **WebDAV Sync** - Three-phase sync with any WebDAV server (GMX, Nextcloud, etc.)
 - ✅ **External Editor** - Edit notes with your favorite editor (helix, nvim, etc.)
 - ✅ **Emoji Support** - Beautiful folder icons and UI elements
-- ✅ **Full-Featured** - Complete note management, search, and organization
 
 ## Installation
 
@@ -26,21 +21,21 @@ git clone https://github.com/Dronakurl/neojoplin.git
 cd neojoplin
 
 # Install the unified binary
-just install
+cargo build --release
+# Then copy to a folder in your path.
 ```
 
 ### Prerequisites
 
 - Rust toolchain (1.70+)
-- `just` command runner
 - SQLite3
 - WebDAV server (or use Joplin Cloud, Dropbox, OneDrive, etc.)
 
 ## Quick Start
 
-NeoJoplin provides a single binary that works as both a CLI tool and launches the TUI interface by default.
+NeoJoplin provides a single binary that works as both a CLI tool and launches the TUI by default.
 
-### TUI Interface (Default)
+### TUI (Default)
 
 ```bash
 # Launch the TUI interface (default when no commands specified)
@@ -160,6 +155,9 @@ You can use NeoJoplin alongside Joplin Desktop, Joplin CLI, or Joplin Mobile - a
 
 ## Development
 
+You can use the recipes defined in the [justfile](justfile).
+To use them, you need the [just command runner](https://github.com/casey/just).
+
 ### Build
 
 ```bash
@@ -185,22 +183,6 @@ just check    # clippy
 just fmt      # format
 ```
 
-## Implementation Status
-
-See [IMPLEMENTATION_STATUS.md](IMPLEMENTATION_STATUS.md) for detailed progress tracking.
-
-### Completed ✅
-
-- [x] Project structure and dependencies
-- [x] Database schema (Joplin v41 compatibility)
-- [x] Complete CLI framework with all core commands
-- [x] Three-phase sync engine (upload → delete_remote → delta)
-- [x] WebDAV client with full protocol support
-- [x] External editor integration
-- [x] TUI application with interactive interface
-- [x] Comprehensive test suite
-- [x] Sync compatibility verified
-
 ### Available Features ✅
 
 - **CLI**: `init`, `mk-note`, `mk-book`, `ls`, `cat`, `edit`, `sync`, `rm-note`, `rm-book`
@@ -209,33 +191,11 @@ See [IMPLEMENTATION_STATUS.md](IMPLEMENTATION_STATUS.md) for detailed progress t
 - **Editor**: External editor integration with terminal handling
 - **Database**: Full SQLite with FTS5 search, exact Joplin schema
 
-## Architecture
-
-NeoJoplin is built with:
-
-- **Tokio** - Async runtime
-- **SQLx** - Database access with compile-time query verification
-- **Clap** - CLI argument parsing
-- **Ratatui** - Terminal UI framework
-- **Crossterm** - Terminal handling and keyboard events
-- **Reqwest** - HTTP client for WebDAV
-- **UUID** - Unique ID generation (Joplin compatible)
-- **Chrono** - Timestamp handling (milliseconds since epoch)
-
 ## Contributing
 
-Contributions are welcome! Please see [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
+Contributions are welcome! 
 
 ## License
 
 MIT License - see [LICENSE](LICENSE) for details.
 
-## Acknowledgments
-
-- [Laurent Cozic](https://github.com/laurent22/) for creating Joplin
-- The Joplin community for the excellent reference implementation
-
-## Related Projects
-
-- [Joplin](https://github.com/laurent22/joplin) - Original note-taking app
-- [KJoplin](https://github.com/Dronakurl/kjoplin) - KDE/Qt client for Joplin
