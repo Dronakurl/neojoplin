@@ -1,9 +1,9 @@
 // External editor integration for NeoJoplin
 
+use anyhow::{Context, Result};
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::io::Write;
-use anyhow::{Result, Context};
 
 /// Editor configuration
 #[derive(Debug, Clone)]
@@ -95,13 +95,9 @@ impl Editor {
             .unwrap_or_else(|_| "/tmp".to_string());
 
         let temp_dir = PathBuf::from(temp_dir).join("neojoplin");
-        std::fs::create_dir_all(&temp_dir)
-            .context("Failed to create temp directory")?;
+        std::fs::create_dir_all(&temp_dir).context("Failed to create temp directory")?;
 
-        Ok(Self {
-            config,
-            temp_dir,
-        })
+        Ok(Self { config, temp_dir })
     }
 
     /// Edit content and return modified content
@@ -137,14 +133,12 @@ impl Editor {
         let filename = format!("{}.md", hint.replace("/", "_"));
         let temp_file = self.temp_dir.join(filename);
 
-        let mut file = std::fs::File::create(&temp_file)
-            .context("Failed to create temp file")?;
+        let mut file = std::fs::File::create(&temp_file).context("Failed to create temp file")?;
 
         file.write_all(content.as_bytes())
             .context("Failed to write to temp file")?;
 
-        file.flush()
-            .context("Failed to flush temp file")?;
+        file.flush().context("Failed to flush temp file")?;
 
         Ok(temp_file)
     }
@@ -166,12 +160,10 @@ impl Editor {
         cmd.stderr(std::process::Stdio::inherit());
 
         // Spawn editor process
-        let mut child = cmd.spawn()
-            .context("Failed to launch editor")?;
+        let mut child = cmd.spawn().context("Failed to launch editor")?;
 
         // Wait for editor to complete
-        let status = child.wait()
-            .context("Failed to wait for editor")?;
+        let status = child.wait().context("Failed to wait for editor")?;
 
         if !status.success() {
             anyhow::bail!("Editor exited with non-zero status: {:?}", status);
@@ -182,24 +174,22 @@ impl Editor {
 
     /// Read temp file content
     fn read_temp_file(&self, temp_file: &Path) -> Result<String> {
-        std::fs::read_to_string(temp_file)
-            .context("Failed to read temp file")
+        std::fs::read_to_string(temp_file).context("Failed to read temp file")
     }
 
     /// Get file modification time
     fn get_mtime(&self, temp_file: &Path) -> Result<std::time::SystemTime> {
-        let metadata = std::fs::metadata(temp_file)
-            .context("Failed to get file metadata")?;
+        let metadata = std::fs::metadata(temp_file).context("Failed to get file metadata")?;
 
-        metadata.modified()
+        metadata
+            .modified()
             .context("Failed to get modification time")
     }
 
     /// Cleanup temp files
     pub fn cleanup(&self) -> Result<()> {
         if self.temp_dir.exists() {
-            std::fs::remove_dir_all(&self.temp_dir)
-                .context("Failed to cleanup temp directory")?;
+            std::fs::remove_dir_all(&self.temp_dir).context("Failed to cleanup temp directory")?;
         }
         Ok(())
     }
@@ -231,8 +221,7 @@ mod tests {
 
     #[test]
     fn test_editor_config_with_args() {
-        let config = EditorConfig::new("code".to_string())
-            .with_args(vec!["--wait".to_string()]);
+        let config = EditorConfig::new("code".to_string()).with_args(vec!["--wait".to_string()]);
         assert_eq!(config.command, "code");
         assert_eq!(config.args, vec!["--wait".to_string()]);
     }

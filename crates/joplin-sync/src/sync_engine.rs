@@ -1,12 +1,15 @@
 // Sync engine implementation
 
-use joplin_domain::{Storage, WebDavClient, SyncEvent, Result, SyncPhase, SyncError, Note, Folder, Tag, NoteTag, now_ms};
+use crate::e2ee::E2eeService;
+use crate::sync_info::SyncInfo;
+use futures::io::AsyncReadExt;
+use joplin_domain::{
+    now_ms, Folder, Note, NoteTag, Result, Storage, SyncError, SyncEvent, SyncPhase, Tag,
+    WebDavClient,
+};
+use serde_json;
 use std::sync::Arc;
 use tokio::sync::mpsc;
-use futures::io::AsyncReadExt;
-use serde_json;
-use crate::sync_info::SyncInfo;
-use crate::e2ee::E2eeService;
 
 /// Sync context to track sync state
 #[derive(Debug, Clone)]
@@ -115,11 +118,15 @@ impl SyncEngine {
     /// When encryption is enabled on a previously unencrypted sync target (or vice versa),
     /// all items must be re-uploaded in the new format.
     async fn handle_encryption_state_change(&mut self) -> Result<()> {
-        let remote_encrypted = self.sync_info.as_ref()
+        let remote_encrypted = self
+            .sync_info
+            .as_ref()
             .map(|info| info.e2ee.value)
             .unwrap_or(false);
 
-        let local_encrypted = self.e2ee_service.as_ref()
+        let local_encrypted = self
+            .e2ee_service
+            .as_ref()
             .map(|e| e.is_enabled())
             .unwrap_or(false);
 
@@ -135,7 +142,10 @@ impl SyncEngine {
             });
 
             // Clear sync_items so all items appear as "changed" and get re-uploaded
-            let cleared = self.storage.clear_all_sync_items().await
+            let cleared = self
+                .storage
+                .clear_all_sync_items()
+                .await
                 .map_err(SyncError::Local)?;
             tracing::info!("Cleared {} sync items for E2EE state change", cleared);
 
@@ -198,12 +208,22 @@ impl SyncEngine {
     }
 
     async fn ensure_remote_directory(&self) -> Result<()> {
-        let remote_exists = self.webdav.exists(&self.context.remote_path).await
+        let remote_exists = self
+            .webdav
+            .exists(&self.context.remote_path)
+            .await
             .unwrap_or(false);
 
         if !remote_exists {
-            self.webdav.mkcol(&self.context.remote_path).await
-                .map_err(|e| SyncError::Server(format!("Failed to create remote directory {}: {}", self.context.remote_path, e)))?;
+            self.webdav
+                .mkcol(&self.context.remote_path)
+                .await
+                .map_err(|e| {
+                    SyncError::Server(format!(
+                        "Failed to create remote directory {}: {}",
+                        self.context.remote_path, e
+                    ))
+                })?;
         }
 
         // Create locks directory (needed by Joplin protocol)
@@ -217,7 +237,9 @@ impl SyncEngine {
 
     /// Phase 1: Upload local changes
     async fn phase_upload(&mut self) -> Result<()> {
-        let _ = self.event_tx.send(SyncEvent::PhaseStarted(SyncPhase::Upload));
+        let _ = self
+            .event_tx
+            .send(SyncEvent::PhaseStarted(SyncPhase::Upload));
 
         let folders = self.get_changed_folders().await?;
         let tags = self.get_changed_tags().await?;
@@ -236,41 +258,71 @@ impl SyncEngine {
         } else {
             let mut uploaded = 0;
             for folder in &folders {
-                self.upload_item_encrypted(ItemType::Folder, &folder.id, &self.serialize_folder(folder)?).await?;
+                self.upload_item_encrypted(
+                    ItemType::Folder,
+                    &folder.id,
+                    &self.serialize_folder(folder)?,
+                )
+                .await?;
                 uploaded += 1;
-                self.report_progress(SyncPhase::Upload, uploaded, total_items, "Uploading folders");
+                self.report_progress(
+                    SyncPhase::Upload,
+                    uploaded,
+                    total_items,
+                    "Uploading folders",
+                );
             }
 
             for tag in &tags {
-                self.upload_item_encrypted(ItemType::Tag, &tag.id, &self.serialize_tag(tag)?).await?;
+                self.upload_item_encrypted(ItemType::Tag, &tag.id, &self.serialize_tag(tag)?)
+                    .await?;
                 uploaded += 1;
                 self.report_progress(SyncPhase::Upload, uploaded, total_items, "Uploading tags");
             }
 
             for note_tag in &note_tags {
-                self.upload_item_encrypted(ItemType::NoteTag, &note_tag.id, &self.serialize_note_tag(note_tag)?).await?;
+                self.upload_item_encrypted(
+                    ItemType::NoteTag,
+                    &note_tag.id,
+                    &self.serialize_note_tag(note_tag)?,
+                )
+                .await?;
                 uploaded += 1;
-                self.report_progress(SyncPhase::Upload, uploaded, total_items, "Uploading note tags");
+                self.report_progress(
+                    SyncPhase::Upload,
+                    uploaded,
+                    total_items,
+                    "Uploading note tags",
+                );
             }
 
             for note in &notes {
-                self.upload_item_encrypted(ItemType::Note, &note.id, &self.serialize_note(note)?).await?;
+                self.upload_item_encrypted(ItemType::Note, &note.id, &self.serialize_note(note)?)
+                    .await?;
                 uploaded += 1;
                 self.report_progress(SyncPhase::Upload, uploaded, total_items, "Uploading notes");
             }
 
             let sync_time = now_ms();
-            self.update_sync_times(&folders, &tags, &notes, sync_time).await?;
+            self.update_sync_times(&folders, &tags, &notes, sync_time)
+                .await?;
         }
 
-        let _ = self.event_tx.send(SyncEvent::PhaseCompleted(SyncPhase::Upload));
+        let _ = self
+            .event_tx
+            .send(SyncEvent::PhaseCompleted(SyncPhase::Upload));
         Ok(())
     }
 
     /// Upload an item with E2EE encryption (Joplin compatible format)
     /// Joplin stores all items at root level: {remote_path}/{id}.md
     /// When encrypted, the plaintext content is put in encryption_cipher_text field
-    async fn upload_item_encrypted(&self, item_type: ItemType, item_id: &str, plaintext_content: &str) -> Result<()> {
+    async fn upload_item_encrypted(
+        &self,
+        item_type: ItemType,
+        item_id: &str,
+        plaintext_content: &str,
+    ) -> Result<()> {
         let type_num = match item_type {
             ItemType::Note => 1,
             ItemType::Folder => 2,
@@ -312,7 +364,12 @@ impl SyncEngine {
                         enc_content
                     }
                     Err(e) => {
-                        tracing::warn!("Failed to encrypt {} {}: {} — uploading unencrypted", type_name, item_id, e);
+                        tracing::warn!(
+                            "Failed to encrypt {} {}: {} — uploading unencrypted",
+                            type_name,
+                            item_id,
+                            e
+                        );
                         plaintext_content.to_string()
                     }
                 }
@@ -324,7 +381,11 @@ impl SyncEngine {
         };
 
         // Upload to root level (Joplin 3.5+ format)
-        let remote_path = format!("{}/{}.md", self.context.remote_path.trim_end_matches('/'), item_id);
+        let remote_path = format!(
+            "{}/{}.md",
+            self.context.remote_path.trim_end_matches('/'),
+            item_id
+        );
 
         let _ = self.event_tx.send(SyncEvent::ItemUpload {
             item_type: type_name.to_string(),
@@ -332,8 +393,12 @@ impl SyncEngine {
         });
 
         let bytes = content.into_bytes();
-        self.webdav.put(&remote_path, &bytes, bytes.len() as u64).await
-            .map_err(|e| SyncError::Server(format!("Failed to upload {} {}: {}", type_name, item_id, e)))?;
+        self.webdav
+            .put(&remote_path, &bytes, bytes.len() as u64)
+            .await
+            .map_err(|e| {
+                SyncError::Server(format!("Failed to upload {} {}: {}", type_name, item_id, e))
+            })?;
 
         let _ = self.event_tx.send(SyncEvent::ItemUploadComplete {
             item_type: type_name.to_string(),
@@ -345,9 +410,14 @@ impl SyncEngine {
 
     /// Phase 2: Delete remote items
     async fn phase_delete_remote(&mut self) -> Result<()> {
-        let _ = self.event_tx.send(SyncEvent::PhaseStarted(SyncPhase::DeleteRemote));
+        let _ = self
+            .event_tx
+            .send(SyncEvent::PhaseStarted(SyncPhase::DeleteRemote));
 
-        let deleted_items = self.storage.get_deleted_items(2).await
+        let deleted_items = self
+            .storage
+            .get_deleted_items(2)
+            .await
             .map_err(SyncError::Local)?;
 
         if deleted_items.is_empty() {
@@ -360,29 +430,50 @@ impl SyncEngine {
         } else {
             let total = deleted_items.len();
             for (i, deleted_item) in deleted_items.iter().enumerate() {
-                let remote_path = format!("{}/{}.md", self.context.remote_path.trim_end_matches('/'), deleted_item.item_id);
+                let remote_path = format!(
+                    "{}/{}.md",
+                    self.context.remote_path.trim_end_matches('/'),
+                    deleted_item.item_id
+                );
                 if let Err(e) = self.webdav.delete(&remote_path).await {
                     let _ = self.event_tx.send(SyncEvent::Warning {
-                        message: format!("Failed to delete remote item {}: {}", deleted_item.item_id, e)
+                        message: format!(
+                            "Failed to delete remote item {}: {}",
+                            deleted_item.item_id, e
+                        ),
                     });
                 }
-                self.report_progress(SyncPhase::DeleteRemote, i + 1, total, "Deleting remote items");
+                self.report_progress(
+                    SyncPhase::DeleteRemote,
+                    i + 1,
+                    total,
+                    "Deleting remote items",
+                );
             }
 
-            self.storage.clear_deleted_items(deleted_items.len() as i64).await
+            self.storage
+                .clear_deleted_items(deleted_items.len() as i64)
+                .await
                 .map_err(SyncError::Local)?;
         }
 
-        let _ = self.event_tx.send(SyncEvent::PhaseCompleted(SyncPhase::DeleteRemote));
+        let _ = self
+            .event_tx
+            .send(SyncEvent::PhaseCompleted(SyncPhase::DeleteRemote));
         Ok(())
     }
 
     /// Phase 3: Download remote changes (delta)
     async fn phase_delta(&self) -> Result<()> {
-        let _ = self.event_tx.send(SyncEvent::PhaseStarted(SyncPhase::Delta));
+        let _ = self
+            .event_tx
+            .send(SyncEvent::PhaseStarted(SyncPhase::Delta));
 
         let remote_items = self.list_remote_items().await?;
-        let local_items = self.storage.get_all_sync_items().await
+        let local_items = self
+            .storage
+            .get_all_sync_items()
+            .await
             .map_err(SyncError::Local)?;
         let items_to_download = self.find_delta_items(&remote_items, &local_items);
 
@@ -398,8 +489,17 @@ impl SyncEngine {
             tracing::info!("Starting delta download: {} items to download", total);
 
             for (i, remote_item) in items_to_download.iter().enumerate() {
-                tracing::debug!("Downloading item {}/{}: {} ({:?})", i + 1, total, remote_item.id, remote_item.item_type);
-                if let Err(e) = self.download_item(&remote_item.id, &remote_item.item_type).await {
+                tracing::debug!(
+                    "Downloading item {}/{}: {} ({:?})",
+                    i + 1,
+                    total,
+                    remote_item.id,
+                    remote_item.item_type
+                );
+                if let Err(e) = self
+                    .download_item(&remote_item.id, &remote_item.item_type)
+                    .await
+                {
                     let _ = self.event_tx.send(SyncEvent::Warning {
                         message: format!("Failed to download {}: {}", remote_item.id, e),
                     });
@@ -408,18 +508,25 @@ impl SyncEngine {
             }
         }
 
-        let _ = self.event_tx.send(SyncEvent::PhaseCompleted(SyncPhase::Delta));
+        let _ = self
+            .event_tx
+            .send(SyncEvent::PhaseCompleted(SyncPhase::Delta));
         Ok(())
     }
 
     // === Helper methods ===
 
     async fn check_locks(&self) -> Result<()> {
-        let lock_path = format!("{}/lock.json", self.context.remote_path.trim_end_matches('/'));
+        let lock_path = format!(
+            "{}/lock.json",
+            self.context.remote_path.trim_end_matches('/')
+        );
 
         if let Ok(mut reader) = self.webdav.get(&lock_path).await {
             let mut content = Vec::new();
-            reader.read_to_end(&mut content).await
+            reader
+                .read_to_end(&mut content)
+                .await
                 .map_err(|e| SyncError::Server(format!("Failed to read lock.json: {}", e)))?;
 
             let content_str = String::from_utf8_lossy(&content);
@@ -429,8 +536,10 @@ impl SyncEngine {
                     let lock_age_min = lock_age_ms / (60 * 1000);
                     if lock_age_min < 5 {
                         return Err(SyncError::Server(format!(
-                            "Sync target is locked. Lock age: {} minutes.", lock_age_min
-                        )).into());
+                            "Sync target is locked. Lock age: {} minutes.",
+                            lock_age_min
+                        ))
+                        .into());
                     }
                 }
             }
@@ -464,7 +573,9 @@ impl SyncEngine {
             Err(e) => {
                 let error_msg = e.to_string();
                 if !error_msg.contains("NotFound") && !error_msg.contains("not found") {
-                    return Err(SyncError::Server(format!("Failed to load sync info: {}", e)).into());
+                    return Err(
+                        SyncError::Server(format!("Failed to load sync info: {}", e)).into(),
+                    );
                 }
                 self.sync_info = Some(SyncInfo::new());
                 self.context.last_sync_time = 0;
@@ -478,7 +589,9 @@ impl SyncEngine {
             sync_info.update_delta_timestamp();
 
             // Update E2EE state in sync info
-            let e2ee_enabled = self.e2ee_service.as_ref()
+            let e2ee_enabled = self
+                .e2ee_service
+                .as_ref()
                 .map(|e| e.is_enabled())
                 .unwrap_or(false);
 
@@ -497,7 +610,11 @@ impl SyncEngine {
                     // Populate masterKeys array so other clients (Joplin) can find the keys
                     for mk in e2ee.get_all_master_keys() {
                         let mk_id = mk.id.replace('-', "");
-                        if !sync_info.master_keys.iter().any(|existing| existing.id.replace('-', "") == mk_id) {
+                        if !sync_info
+                            .master_keys
+                            .iter()
+                            .any(|existing| existing.id.replace('-', "") == mk_id)
+                        {
                             sync_info.master_keys.push(crate::sync_info::MasterKeyInfo {
                                 id: mk_id,
                                 created_time: mk.created_time,
@@ -517,7 +634,9 @@ impl SyncEngine {
                 sync_info.e2ee.updated_time = now_ms();
             }
 
-            sync_info.save_to_remote(self.webdav.as_ref(), &self.context.remote_path).await
+            sync_info
+                .save_to_remote(self.webdav.as_ref(), &self.context.remote_path)
+                .await
                 .map_err(|e| SyncError::Server(format!("Failed to save sync info: {}", e)))?;
 
             // Save last sync time locally so Joplin overwriting info.json doesn't reset it
@@ -537,36 +656,56 @@ impl SyncEngine {
     }
 
     async fn get_changed_folders(&self) -> Result<Vec<Folder>> {
-        self.storage.get_folders_updated_since(self.context.last_sync_time).await
+        self.storage
+            .get_folders_updated_since(self.context.last_sync_time)
+            .await
             .map_err(|e| e.into())
     }
 
     async fn get_changed_tags(&self) -> Result<Vec<Tag>> {
-        self.storage.get_tags_updated_since(self.context.last_sync_time).await
+        self.storage
+            .get_tags_updated_since(self.context.last_sync_time)
+            .await
             .map_err(|e| e.into())
     }
 
     async fn get_changed_notes(&self) -> Result<Vec<Note>> {
-        self.storage.get_notes_updated_since(self.context.last_sync_time).await
+        self.storage
+            .get_notes_updated_since(self.context.last_sync_time)
+            .await
             .map_err(|e| e.into())
     }
 
     async fn get_changed_note_tags(&self) -> Result<Vec<NoteTag>> {
-        self.storage.get_note_tags_updated_since(self.context.last_sync_time).await
+        self.storage
+            .get_note_tags_updated_since(self.context.last_sync_time)
+            .await
             .map_err(|e| e.into())
     }
 
-    async fn update_sync_times(&self, folders: &[Folder], tags: &[Tag], notes: &[Note], sync_time: i64) -> Result<()> {
+    async fn update_sync_times(
+        &self,
+        folders: &[Folder],
+        tags: &[Tag],
+        notes: &[Note],
+        sync_time: i64,
+    ) -> Result<()> {
         for folder in folders {
-            self.storage.update_sync_time("folders", &folder.id, sync_time).await
+            self.storage
+                .update_sync_time("folders", &folder.id, sync_time)
+                .await
                 .map_err(SyncError::Local)?;
         }
         for tag in tags {
-            self.storage.update_sync_time("tags", &tag.id, sync_time).await
+            self.storage
+                .update_sync_time("tags", &tag.id, sync_time)
+                .await
                 .map_err(SyncError::Local)?;
         }
         for note in notes {
-            self.storage.update_sync_time("notes", &note.id, sync_time).await
+            self.storage
+                .update_sync_time("notes", &note.id, sync_time)
+                .await
                 .map_err(SyncError::Local)?;
         }
         Ok(())
@@ -580,15 +719,18 @@ impl SyncEngine {
             Ok(entries) => {
                 tracing::info!("Scanning remote items in: {}", self.context.remote_path);
                 for entry in entries {
-                    if entry.path.ends_with(".md") &&
-                       !entry.path.contains("/locks/") &&
-                       !entry.path.contains("/.sync/") &&
-                       !entry.path.contains("/.lock/") &&
-                       !entry.path.contains("/temp/") &&
-                       !entry.path.contains("/.resource/") {
-
-                        if let Some(id) = entry.path.strip_suffix(".md")
-                            .and_then(|path| path.rsplit('/').next()) {
+                    if entry.path.ends_with(".md")
+                        && !entry.path.contains("/locks/")
+                        && !entry.path.contains("/.sync/")
+                        && !entry.path.contains("/.lock/")
+                        && !entry.path.contains("/temp/")
+                        && !entry.path.contains("/.resource/")
+                    {
+                        if let Some(id) = entry
+                            .path
+                            .strip_suffix(".md")
+                            .and_then(|path| path.rsplit('/').next())
+                        {
                             // We'll determine type when downloading
                             remote_items.push(RemoteItem {
                                 id: id.to_string(),
@@ -608,7 +750,11 @@ impl SyncEngine {
         Ok(remote_items)
     }
 
-    fn find_delta_items(&self, remote_items: &[RemoteItem], local_items: &[joplin_domain::SyncItem]) -> Vec<RemoteItem> {
+    fn find_delta_items(
+        &self,
+        remote_items: &[RemoteItem],
+        local_items: &[joplin_domain::SyncItem],
+    ) -> Vec<RemoteItem> {
         let mut items_to_download = Vec::new();
 
         for remote_item in remote_items {
@@ -624,34 +770,55 @@ impl SyncEngine {
                     if let Some(remote_modified) = remote_item.modified {
                         if remote_modified > sync_item.sync_time {
                             items_to_download.push(remote_item.clone());
-                            tracing::debug!("Updated item {} marked for download (remote={}, local={})",
-                                remote_item.id, remote_modified, sync_item.sync_time);
+                            tracing::debug!(
+                                "Updated item {} marked for download (remote={}, local={})",
+                                remote_item.id,
+                                remote_modified,
+                                sync_item.sync_time
+                            );
                         }
                     }
                 }
             }
         }
 
-        tracing::info!("Delta: {} items to download out of {} remote", items_to_download.len(), remote_items.len());
+        tracing::info!(
+            "Delta: {} items to download out of {} remote",
+            items_to_download.len(),
+            remote_items.len()
+        );
         items_to_download
     }
 
     async fn download_item(&self, item_id: &str, _item_type: &ItemType) -> Result<()> {
         // Try root level first (Joplin 3.5+ format), then subdirectories
-        let root_path = format!("{}/{}.md", self.context.remote_path.trim_end_matches('/'), item_id);
+        let root_path = format!(
+            "{}/{}.md",
+            self.context.remote_path.trim_end_matches('/'),
+            item_id
+        );
 
         let final_path = if self.webdav.exists(&root_path).await.unwrap_or(false) {
             root_path
         } else {
             // Try subdirectories
             for subdir in &["items", "folders", "tags", "note_tags", "resources"] {
-                let subdir_path = format!("{}/{}/{}.md", self.context.remote_path.trim_end_matches('/'), subdir, item_id);
+                let subdir_path = format!(
+                    "{}/{}/{}.md",
+                    self.context.remote_path.trim_end_matches('/'),
+                    subdir,
+                    item_id
+                );
                 if self.webdav.exists(&subdir_path).await.unwrap_or(false) {
                     break;
                 }
             }
             // Default to root
-            format!("{}/{}.md", self.context.remote_path.trim_end_matches('/'), item_id)
+            format!(
+                "{}/{}.md",
+                self.context.remote_path.trim_end_matches('/'),
+                item_id
+            )
         };
 
         let _ = self.event_tx.send(SyncEvent::ItemDownload {
@@ -659,11 +826,14 @@ impl SyncEngine {
             item_id: item_id.to_string(),
         });
 
-        let mut reader = self.webdav.get(&final_path).await
-            .map_err(|e| SyncError::Server(format!("Failed to download item {}: {}", item_id, e)))?;
+        let mut reader = self.webdav.get(&final_path).await.map_err(|e| {
+            SyncError::Server(format!("Failed to download item {}: {}", item_id, e))
+        })?;
 
         let mut content = Vec::new();
-        reader.read_to_end(&mut content).await
+        reader
+            .read_to_end(&mut content)
+            .await
             .map_err(|e| SyncError::Server(format!("Failed to read item {}: {}", item_id, e)))?;
 
         let content_str = String::from_utf8_lossy(&content);
@@ -684,15 +854,18 @@ impl SyncEngine {
         // Parse the metadata to determine type and encryption status
         let metadata = self.parse_item_metadata(content);
 
-        let type_num = metadata.get("type_")
+        let type_num = metadata
+            .get("type_")
             .and_then(|v| v.parse::<i32>().ok())
             .unwrap_or(1);
 
-        let encryption_applied = metadata.get("encryption_applied")
+        let encryption_applied = metadata
+            .get("encryption_applied")
             .and_then(|v| v.parse::<i32>().ok())
             .unwrap_or(0);
 
-        let encryption_cipher_text = metadata.get("encryption_cipher_text")
+        let encryption_cipher_text = metadata
+            .get("encryption_cipher_text")
             .cloned()
             .unwrap_or_default();
 
@@ -708,15 +881,22 @@ impl SyncEngine {
                     Err(e) => {
                         tracing::error!("Failed to decrypt item {}: {}", item_id, e);
                         return Err(SyncError::Server(format!(
-                            "Failed to decrypt item {}: {}. Is the correct E2EE password set?", item_id, e
-                        )).into());
+                            "Failed to decrypt item {}: {}. Is the correct E2EE password set?",
+                            item_id, e
+                        ))
+                        .into());
                     }
                 }
             } else {
-                tracing::warn!("Item {} is encrypted but no E2EE service available", item_id);
+                tracing::warn!(
+                    "Item {} is encrypted but no E2EE service available",
+                    item_id
+                );
                 return Err(SyncError::Server(format!(
-                    "Item {} is encrypted but E2EE is not configured", item_id
-                )).into());
+                    "Item {} is encrypted but E2EE is not configured",
+                    item_id
+                ))
+                .into());
             }
         } else {
             content.to_string()
@@ -729,12 +909,20 @@ impl SyncEngine {
                 let note = self.deserialize_note(item_id, &actual_content)?;
                 let exists = matches!(self.storage.get_note(&note.id).await, Ok(Some(_)));
                 if exists {
-                    self.storage.update_note(&note).await.map_err(SyncError::Local)?;
+                    self.storage
+                        .update_note(&note)
+                        .await
+                        .map_err(SyncError::Local)?;
                 } else {
-                    self.storage.create_note(&note).await.map_err(SyncError::Local)?;
+                    self.storage
+                        .create_note(&note)
+                        .await
+                        .map_err(SyncError::Local)?;
                 }
                 // Update sync tracking
-                self.storage.update_sync_time("notes", &note.id, now_ms()).await
+                self.storage
+                    .update_sync_time("notes", &note.id, now_ms())
+                    .await
                     .map_err(SyncError::Local)?;
                 tracing::info!("Stored note: {} ({})", note.title, note.id);
             }
@@ -743,11 +931,19 @@ impl SyncEngine {
                 let folder = self.deserialize_folder(item_id, &actual_content)?;
                 let exists = matches!(self.storage.get_folder(&folder.id).await, Ok(Some(_)));
                 if exists {
-                    self.storage.update_folder(&folder).await.map_err(SyncError::Local)?;
+                    self.storage
+                        .update_folder(&folder)
+                        .await
+                        .map_err(SyncError::Local)?;
                 } else {
-                    self.storage.create_folder(&folder).await.map_err(SyncError::Local)?;
+                    self.storage
+                        .create_folder(&folder)
+                        .await
+                        .map_err(SyncError::Local)?;
                 }
-                self.storage.update_sync_time("folders", &folder.id, now_ms()).await
+                self.storage
+                    .update_sync_time("folders", &folder.id, now_ms())
+                    .await
                     .map_err(SyncError::Local)?;
                 tracing::info!("Stored folder: {} ({})", folder.title, folder.id);
             }
@@ -756,11 +952,19 @@ impl SyncEngine {
                 let tag = self.deserialize_tag(item_id, &actual_content)?;
                 let exists = matches!(self.storage.get_tag(&tag.id).await, Ok(Some(_)));
                 if exists {
-                    self.storage.update_tag(&tag).await.map_err(SyncError::Local)?;
+                    self.storage
+                        .update_tag(&tag)
+                        .await
+                        .map_err(SyncError::Local)?;
                 } else {
-                    self.storage.create_tag(&tag).await.map_err(SyncError::Local)?;
+                    self.storage
+                        .create_tag(&tag)
+                        .await
+                        .map_err(SyncError::Local)?;
                 }
-                self.storage.update_sync_time("tags", &tag.id, now_ms()).await
+                self.storage
+                    .update_sync_time("tags", &tag.id, now_ms())
+                    .await
                     .map_err(SyncError::Local)?;
                 tracing::info!("Stored tag: {}", tag.id);
             }
@@ -801,15 +1005,33 @@ impl SyncEngine {
         let mut content = format!("{}\n\n", folder.title);
         content.push_str(&format!("id: {}\n", folder.id));
         content.push_str(&format!("parent_id: {}\n", folder.parent_id));
-        content.push_str(&format!("created_time: {}\n", self.ms_to_iso(folder.created_time)));
-        content.push_str(&format!("updated_time: {}\n", self.ms_to_iso(folder.updated_time)));
-        content.push_str(&format!("user_created_time: {}\n", self.ms_to_iso(folder.user_created_time)));
-        content.push_str(&format!("user_updated_time: {}\n", self.ms_to_iso(folder.user_updated_time)));
+        content.push_str(&format!(
+            "created_time: {}\n",
+            self.ms_to_iso(folder.created_time)
+        ));
+        content.push_str(&format!(
+            "updated_time: {}\n",
+            self.ms_to_iso(folder.updated_time)
+        ));
+        content.push_str(&format!(
+            "user_created_time: {}\n",
+            self.ms_to_iso(folder.user_created_time)
+        ));
+        content.push_str(&format!(
+            "user_updated_time: {}\n",
+            self.ms_to_iso(folder.user_updated_time)
+        ));
         content.push_str("encryption_cipher_text: \n");
         content.push_str("encryption_applied: 0\n");
         content.push_str(&format!("is_shared: {}\n", folder.is_shared));
-        content.push_str(&format!("share_id: {}\n", folder.share_id.as_deref().unwrap_or("")));
-        content.push_str(&format!("master_key_id: {}\n", folder.master_key_id.as_deref().unwrap_or("")));
+        content.push_str(&format!(
+            "share_id: {}\n",
+            folder.share_id.as_deref().unwrap_or("")
+        ));
+        content.push_str(&format!(
+            "master_key_id: {}\n",
+            folder.master_key_id.as_deref().unwrap_or("")
+        ));
         content.push_str(&format!("icon: {}\n", folder.icon));
         content.push_str("user_data: \n");
         content.push_str("deleted_time: 0\n");
@@ -820,10 +1042,22 @@ impl SyncEngine {
     fn serialize_tag(&self, tag: &Tag) -> Result<String> {
         let mut content = format!("{}\n\n", tag.title);
         content.push_str(&format!("id: {}\n", tag.id));
-        content.push_str(&format!("created_time: {}\n", self.ms_to_iso(tag.created_time)));
-        content.push_str(&format!("updated_time: {}\n", self.ms_to_iso(tag.updated_time)));
-        content.push_str(&format!("user_created_time: {}\n", self.ms_to_iso(tag.user_created_time)));
-        content.push_str(&format!("user_updated_time: {}\n", self.ms_to_iso(tag.user_updated_time)));
+        content.push_str(&format!(
+            "created_time: {}\n",
+            self.ms_to_iso(tag.created_time)
+        ));
+        content.push_str(&format!(
+            "updated_time: {}\n",
+            self.ms_to_iso(tag.updated_time)
+        ));
+        content.push_str(&format!(
+            "user_created_time: {}\n",
+            self.ms_to_iso(tag.user_created_time)
+        ));
+        content.push_str(&format!(
+            "user_updated_time: {}\n",
+            self.ms_to_iso(tag.user_updated_time)
+        ));
         content.push_str("encryption_cipher_text: \n");
         content.push_str("encryption_applied: 0\n");
         content.push_str(&format!("is_shared: {}\n", tag.is_shared));
@@ -839,10 +1073,22 @@ impl SyncEngine {
         content.push_str(&format!("id: {}\n", note_tag.id));
         content.push_str(&format!("note_id: {}\n", note_tag.note_id));
         content.push_str(&format!("tag_id: {}\n", note_tag.tag_id));
-        content.push_str(&format!("created_time: {}\n", self.ms_to_iso(note_tag.created_time)));
-        content.push_str(&format!("updated_time: {}\n", self.ms_to_iso(note_tag.updated_time)));
-        content.push_str(&format!("user_created_time: {}\n", self.ms_to_iso(note_tag.created_time)));
-        content.push_str(&format!("user_updated_time: {}\n", self.ms_to_iso(note_tag.updated_time)));
+        content.push_str(&format!(
+            "created_time: {}\n",
+            self.ms_to_iso(note_tag.created_time)
+        ));
+        content.push_str(&format!(
+            "updated_time: {}\n",
+            self.ms_to_iso(note_tag.updated_time)
+        ));
+        content.push_str(&format!(
+            "user_created_time: {}\n",
+            self.ms_to_iso(note_tag.created_time)
+        ));
+        content.push_str(&format!(
+            "user_updated_time: {}\n",
+            self.ms_to_iso(note_tag.updated_time)
+        ));
         content.push_str("encryption_cipher_text: \n");
         content.push_str("encryption_applied: 0\n");
         content.push_str(&format!("is_shared: {}\n", note_tag.is_shared));
@@ -862,8 +1108,14 @@ impl SyncEngine {
 
         content.push_str(&format!("id: {}\n", note.id));
         content.push_str(&format!("parent_id: {}\n", note.parent_id));
-        content.push_str(&format!("created_time: {}\n", self.ms_to_iso(note.created_time)));
-        content.push_str(&format!("updated_time: {}\n", self.ms_to_iso(note.updated_time)));
+        content.push_str(&format!(
+            "created_time: {}\n",
+            self.ms_to_iso(note.created_time)
+        ));
+        content.push_str(&format!(
+            "updated_time: {}\n",
+            self.ms_to_iso(note.updated_time)
+        ));
         content.push_str(&format!("is_conflict: {}\n", note.is_conflict));
         content.push_str(&format!("latitude: {:.8}\n", note.latitude as f64 / 1e7));
         content.push_str(&format!("longitude: {:.8}\n", note.longitude as f64 / 1e7));
@@ -874,18 +1126,36 @@ impl SyncEngine {
         content.push_str(&format!("todo_due: {}\n", note.todo_due));
         content.push_str(&format!("todo_completed: {}\n", note.todo_completed));
         content.push_str(&format!("source: {}\n", note.source));
-        content.push_str(&format!("source_application: {}\n", note.source_application));
+        content.push_str(&format!(
+            "source_application: {}\n",
+            note.source_application
+        ));
         content.push_str(&format!("application_data: {}\n", note.application_data));
         content.push_str(&format!("order: {}\n", note.order));
-        content.push_str(&format!("user_created_time: {}\n", self.ms_to_iso(note.user_created_time)));
-        content.push_str(&format!("user_updated_time: {}\n", self.ms_to_iso(note.user_updated_time)));
+        content.push_str(&format!(
+            "user_created_time: {}\n",
+            self.ms_to_iso(note.user_created_time)
+        ));
+        content.push_str(&format!(
+            "user_updated_time: {}\n",
+            self.ms_to_iso(note.user_updated_time)
+        ));
         content.push_str("encryption_cipher_text: \n");
         content.push_str("encryption_applied: 0\n");
         content.push_str(&format!("markup_language: {}\n", note.markup_language));
         content.push_str(&format!("is_shared: {}\n", note.is_shared));
-        content.push_str(&format!("share_id: {}\n", note.share_id.as_deref().unwrap_or("")));
-        content.push_str(&format!("conflict_original_id: {}\n", note.conflict_original_id));
-        content.push_str(&format!("master_key_id: {}\n", note.master_key_id.as_deref().unwrap_or("")));
+        content.push_str(&format!(
+            "share_id: {}\n",
+            note.share_id.as_deref().unwrap_or("")
+        ));
+        content.push_str(&format!(
+            "conflict_original_id: {}\n",
+            note.conflict_original_id
+        ));
+        content.push_str(&format!(
+            "master_key_id: {}\n",
+            note.master_key_id.as_deref().unwrap_or("")
+        ));
         content.push_str("user_data: \n");
         content.push_str("deleted_time: 0\n");
         content.push_str("type_: 1");
@@ -896,7 +1166,10 @@ impl SyncEngine {
     // === Deserialization methods ===
 
     fn deserialize_note(&self, id: &str, content: &str) -> Result<Note> {
-        let mut note = Note { id: id.to_string(), ..Default::default() };
+        let mut note = Note {
+            id: id.to_string(),
+            ..Default::default()
+        };
 
         // Joplin format: title\n\nbody\n\nid: ...\nparent_id: ...\n...
         // Split at the first metadata field (id:)
@@ -908,7 +1181,10 @@ impl SyncEngine {
         }
 
         // Body is everything after the title line (minus leading/trailing whitespace)
-        let body_start = text_part.find('\n').map(|i| i + 1).unwrap_or(text_part.len());
+        let body_start = text_part
+            .find('\n')
+            .map(|i| i + 1)
+            .unwrap_or(text_part.len());
         let body = text_part[body_start..].trim();
         if !body.is_empty() {
             note.body = body.to_string();
@@ -923,12 +1199,22 @@ impl SyncEngine {
                     "parent_id" => note.parent_id = value.to_string(),
                     "created_time" => note.created_time = self.iso_to_ms(value).unwrap_or(0),
                     "updated_time" => note.updated_time = self.iso_to_ms(value).unwrap_or(0),
-                    "user_created_time" => note.user_created_time = self.iso_to_ms(value).unwrap_or(0),
-                    "user_updated_time" => note.user_updated_time = self.iso_to_ms(value).unwrap_or(0),
+                    "user_created_time" => {
+                        note.user_created_time = self.iso_to_ms(value).unwrap_or(0)
+                    }
+                    "user_updated_time" => {
+                        note.user_updated_time = self.iso_to_ms(value).unwrap_or(0)
+                    }
                     "is_conflict" => note.is_conflict = value.parse().unwrap_or(0),
-                    "latitude" => note.latitude = (value.parse::<f64>().unwrap_or(0.0) * 1e7) as i64,
-                    "longitude" => note.longitude = (value.parse::<f64>().unwrap_or(0.0) * 1e7) as i64,
-                    "altitude" => note.altitude = (value.parse::<f64>().unwrap_or(0.0) * 1e2) as i64,
+                    "latitude" => {
+                        note.latitude = (value.parse::<f64>().unwrap_or(0.0) * 1e7) as i64
+                    }
+                    "longitude" => {
+                        note.longitude = (value.parse::<f64>().unwrap_or(0.0) * 1e7) as i64
+                    }
+                    "altitude" => {
+                        note.altitude = (value.parse::<f64>().unwrap_or(0.0) * 1e2) as i64
+                    }
                     "author" => note.author = value.to_string(),
                     "source_url" => note.source_url = value.to_string(),
                     "is_todo" => note.is_todo = value.parse().unwrap_or(0),
@@ -941,9 +1227,21 @@ impl SyncEngine {
                     "encryption_applied" => note.encryption_applied = value.parse().unwrap_or(0),
                     "markup_language" => note.markup_language = value.parse().unwrap_or(1),
                     "is_shared" => note.is_shared = value.parse().unwrap_or(0),
-                    "share_id" => note.share_id = if !value.is_empty() { Some(value.to_string()) } else { None },
+                    "share_id" => {
+                        note.share_id = if !value.is_empty() {
+                            Some(value.to_string())
+                        } else {
+                            None
+                        }
+                    }
                     "conflict_original_id" => note.conflict_original_id = value.to_string(),
-                    "master_key_id" => note.master_key_id = if !value.is_empty() { Some(value.to_string()) } else { None },
+                    "master_key_id" => {
+                        note.master_key_id = if !value.is_empty() {
+                            Some(value.to_string())
+                        } else {
+                            None
+                        }
+                    }
                     _ => {}
                 }
             }
@@ -953,7 +1251,10 @@ impl SyncEngine {
     }
 
     fn deserialize_folder(&self, id: &str, content: &str) -> Result<Folder> {
-        let mut folder = Folder { id: id.to_string(), ..Default::default() };
+        let mut folder = Folder {
+            id: id.to_string(),
+            ..Default::default()
+        };
 
         let (text_part, props_part) = self.split_content_and_properties(content);
 
@@ -967,16 +1268,34 @@ impl SyncEngine {
                 let value = value.trim();
                 match key.trim() {
                     "id" => folder.id = value.to_string(),
-                    "title" if folder.title.is_empty() => { folder.title = value.to_string(); }
+                    "title" if folder.title.is_empty() => {
+                        folder.title = value.to_string();
+                    }
                     "parent_id" => folder.parent_id = value.to_string(),
                     "created_time" => folder.created_time = self.iso_to_ms(value).unwrap_or(0),
                     "updated_time" => folder.updated_time = self.iso_to_ms(value).unwrap_or(0),
-                    "user_created_time" => folder.user_created_time = self.iso_to_ms(value).unwrap_or(0),
-                    "user_updated_time" => folder.user_updated_time = self.iso_to_ms(value).unwrap_or(0),
+                    "user_created_time" => {
+                        folder.user_created_time = self.iso_to_ms(value).unwrap_or(0)
+                    }
+                    "user_updated_time" => {
+                        folder.user_updated_time = self.iso_to_ms(value).unwrap_or(0)
+                    }
                     "icon" => folder.icon = value.to_string(),
                     "is_shared" => folder.is_shared = value.parse().unwrap_or(0),
-                    "share_id" => folder.share_id = if !value.is_empty() { Some(value.to_string()) } else { None },
-                    "master_key_id" => folder.master_key_id = if !value.is_empty() { Some(value.to_string()) } else { None },
+                    "share_id" => {
+                        folder.share_id = if !value.is_empty() {
+                            Some(value.to_string())
+                        } else {
+                            None
+                        }
+                    }
+                    "master_key_id" => {
+                        folder.master_key_id = if !value.is_empty() {
+                            Some(value.to_string())
+                        } else {
+                            None
+                        }
+                    }
                     _ => {}
                 }
             }
@@ -987,7 +1306,10 @@ impl SyncEngine {
 
     fn deserialize_tag(&self, id: &str, content: &str) -> Result<Tag> {
         // Try Joplin text format first
-        let mut tag = Tag { id: id.to_string(), ..Default::default() };
+        let mut tag = Tag {
+            id: id.to_string(),
+            ..Default::default()
+        };
 
         let (text_part, props_part) = self.split_content_and_properties(content);
 
@@ -1000,7 +1322,9 @@ impl SyncEngine {
                 let value = value.trim();
                 match key.trim() {
                     "id" => tag.id = value.to_string(),
-                    "title" if tag.title.is_empty() => { tag.title = value.to_string(); }
+                    "title" if tag.title.is_empty() => {
+                        tag.title = value.to_string();
+                    }
                     "created_time" => tag.created_time = self.iso_to_ms(value).unwrap_or(0),
                     "updated_time" => tag.updated_time = self.iso_to_ms(value).unwrap_or(0),
                     "parent_id" => tag.parent_id = value.to_string(),
@@ -1048,8 +1372,9 @@ impl SyncEngine {
             return Ok(0);
         }
         use chrono::DateTime;
-        let dt = DateTime::parse_from_rfc3339(iso)
-            .map_err(|e| SyncError::Serialization(format!("Failed to parse timestamp {}: {}", iso, e)))?;
+        let dt = DateTime::parse_from_rfc3339(iso).map_err(|e| {
+            SyncError::Serialization(format!("Failed to parse timestamp {}: {}", iso, e))
+        })?;
         Ok(dt.timestamp_millis())
     }
 }
@@ -1057,7 +1382,7 @@ impl SyncEngine {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use joplin_domain::{SyncItem, DeletedItem};
+    use joplin_domain::{DeletedItem, SyncItem};
 
     #[test]
     fn test_sync_context_default() {
@@ -1078,7 +1403,10 @@ mod tests {
             ..Note::default()
         };
         let serialized = engine.serialize_note(&note).unwrap();
-        assert!(serialized.ends_with("type_: 1"), "Must end with type_: 1 without trailing newline");
+        assert!(
+            serialized.ends_with("type_: 1"),
+            "Must end with type_: 1 without trailing newline"
+        );
         assert!(!serialized.ends_with('\n'), "Must NOT end with newline");
     }
 
@@ -1227,13 +1555,25 @@ mod tests {
         // Type numbers: 1=Note, 2=Folder, 5=Tag, 6=NoteTag
         let engine = make_test_engine();
         let meta1 = engine.parse_item_metadata("id: x\ntype_: 1");
-        assert_eq!(meta1.get("type_").and_then(|v| v.parse::<i32>().ok()), Some(1));
+        assert_eq!(
+            meta1.get("type_").and_then(|v| v.parse::<i32>().ok()),
+            Some(1)
+        );
         let meta2 = engine.parse_item_metadata("id: x\ntype_: 2");
-        assert_eq!(meta2.get("type_").and_then(|v| v.parse::<i32>().ok()), Some(2));
+        assert_eq!(
+            meta2.get("type_").and_then(|v| v.parse::<i32>().ok()),
+            Some(2)
+        );
         let meta5 = engine.parse_item_metadata("id: x\ntype_: 5");
-        assert_eq!(meta5.get("type_").and_then(|v| v.parse::<i32>().ok()), Some(5));
+        assert_eq!(
+            meta5.get("type_").and_then(|v| v.parse::<i32>().ok()),
+            Some(5)
+        );
         let meta6 = engine.parse_item_metadata("id: x\ntype_: 6");
-        assert_eq!(meta6.get("type_").and_then(|v| v.parse::<i32>().ok()), Some(6));
+        assert_eq!(
+            meta6.get("type_").and_then(|v| v.parse::<i32>().ok()),
+            Some(6)
+        );
         let meta_none = engine.parse_item_metadata("no type here");
         assert_eq!(meta_none.get("type_"), None);
     }
@@ -1266,65 +1606,301 @@ mod tests {
     struct FakeStorage;
     #[async_trait::async_trait]
     impl joplin_domain::Storage for FakeStorage {
-        async fn create_note(&self, _: &Note) -> std::result::Result<(), joplin_domain::DatabaseError> { Ok(()) }
-        async fn get_note(&self, _: &str) -> std::result::Result<Option<Note>, joplin_domain::DatabaseError> { Ok(None) }
-        async fn update_note(&self, _: &Note) -> std::result::Result<(), joplin_domain::DatabaseError> { Ok(()) }
-        async fn delete_note(&self, _: &str) -> std::result::Result<(), joplin_domain::DatabaseError> { Ok(()) }
-        async fn list_notes(&self, _: Option<&str>) -> std::result::Result<Vec<Note>, joplin_domain::DatabaseError> { Ok(vec![]) }
-        async fn create_folder(&self, _: &Folder) -> std::result::Result<(), joplin_domain::DatabaseError> { Ok(()) }
-        async fn get_folder(&self, _: &str) -> std::result::Result<Option<Folder>, joplin_domain::DatabaseError> { Ok(None) }
-        async fn update_folder(&self, _: &Folder) -> std::result::Result<(), joplin_domain::DatabaseError> { Ok(()) }
-        async fn delete_folder(&self, _: &str) -> std::result::Result<(), joplin_domain::DatabaseError> { Ok(()) }
-        async fn list_folders(&self) -> std::result::Result<Vec<Folder>, joplin_domain::DatabaseError> { Ok(vec![]) }
-        async fn create_tag(&self, _: &Tag) -> std::result::Result<(), joplin_domain::DatabaseError> { Ok(()) }
-        async fn get_tag(&self, _: &str) -> std::result::Result<Option<Tag>, joplin_domain::DatabaseError> { Ok(None) }
-        async fn update_tag(&self, _: &Tag) -> std::result::Result<(), joplin_domain::DatabaseError> { Ok(()) }
-        async fn delete_tag(&self, _: &str) -> std::result::Result<(), joplin_domain::DatabaseError> { Ok(()) }
-        async fn list_tags(&self) -> std::result::Result<Vec<Tag>, joplin_domain::DatabaseError> { Ok(vec![]) }
-        async fn add_note_tag(&self, _: &NoteTag) -> std::result::Result<(), joplin_domain::DatabaseError> { Ok(()) }
-        async fn remove_note_tag(&self, _: &str, _: &str) -> std::result::Result<(), joplin_domain::DatabaseError> { Ok(()) }
-        async fn get_note_tags(&self, _: &str) -> std::result::Result<Vec<Tag>, joplin_domain::DatabaseError> { Ok(vec![]) }
-        async fn get_folders_updated_since(&self, _: i64) -> std::result::Result<Vec<Folder>, joplin_domain::DatabaseError> { Ok(vec![]) }
-        async fn get_tags_updated_since(&self, _: i64) -> std::result::Result<Vec<Tag>, joplin_domain::DatabaseError> { Ok(vec![]) }
-        async fn get_notes_updated_since(&self, _: i64) -> std::result::Result<Vec<Note>, joplin_domain::DatabaseError> { Ok(vec![]) }
-        async fn get_note_tags_updated_since(&self, _: i64) -> std::result::Result<Vec<NoteTag>, joplin_domain::DatabaseError> { Ok(vec![]) }
-        async fn get_all_sync_items(&self) -> std::result::Result<Vec<SyncItem>, joplin_domain::DatabaseError> { Ok(vec![]) }
-        async fn update_sync_time(&self, _: &str, _: &str, _: i64) -> std::result::Result<(), joplin_domain::DatabaseError> { Ok(()) }
-        async fn get_setting(&self, _: &str) -> std::result::Result<Option<String>, joplin_domain::DatabaseError> { Ok(None) }
-        async fn set_setting(&self, _: &str, _: &str) -> std::result::Result<(), joplin_domain::DatabaseError> { Ok(()) }
-        async fn get_sync_items(&self, _: i32) -> std::result::Result<Vec<SyncItem>, joplin_domain::DatabaseError> { Ok(vec![]) }
-        async fn upsert_sync_item(&self, _: &SyncItem) -> std::result::Result<(), joplin_domain::DatabaseError> { Ok(()) }
-        async fn delete_sync_item(&self, _: i32) -> std::result::Result<(), joplin_domain::DatabaseError> { Ok(()) }
-        async fn clear_all_sync_items(&self) -> std::result::Result<usize, joplin_domain::DatabaseError> { Ok(0) }
-        async fn get_deleted_items(&self, _: i32) -> std::result::Result<Vec<DeletedItem>, joplin_domain::DatabaseError> { Ok(vec![]) }
-        async fn add_deleted_item(&self, _: &DeletedItem) -> std::result::Result<(), joplin_domain::DatabaseError> { Ok(()) }
-        async fn remove_deleted_item(&self, _: i32) -> std::result::Result<(), joplin_domain::DatabaseError> { Ok(()) }
-        async fn clear_deleted_items(&self, _: i64) -> std::result::Result<usize, joplin_domain::DatabaseError> { Ok(0) }
-        async fn get_version(&self) -> std::result::Result<i32, joplin_domain::DatabaseError> { Ok(41) }
-        async fn begin_transaction(&self) -> std::result::Result<(), joplin_domain::DatabaseError> { Ok(()) }
-        async fn commit_transaction(&self) -> std::result::Result<(), joplin_domain::DatabaseError> { Ok(()) }
-        async fn rollback_transaction(&self) -> std::result::Result<(), joplin_domain::DatabaseError> { Ok(()) }
+        async fn create_note(
+            &self,
+            _: &Note,
+        ) -> std::result::Result<(), joplin_domain::DatabaseError> {
+            Ok(())
+        }
+        async fn get_note(
+            &self,
+            _: &str,
+        ) -> std::result::Result<Option<Note>, joplin_domain::DatabaseError> {
+            Ok(None)
+        }
+        async fn update_note(
+            &self,
+            _: &Note,
+        ) -> std::result::Result<(), joplin_domain::DatabaseError> {
+            Ok(())
+        }
+        async fn delete_note(
+            &self,
+            _: &str,
+        ) -> std::result::Result<(), joplin_domain::DatabaseError> {
+            Ok(())
+        }
+        async fn list_notes(
+            &self,
+            _: Option<&str>,
+        ) -> std::result::Result<Vec<Note>, joplin_domain::DatabaseError> {
+            Ok(vec![])
+        }
+        async fn create_folder(
+            &self,
+            _: &Folder,
+        ) -> std::result::Result<(), joplin_domain::DatabaseError> {
+            Ok(())
+        }
+        async fn get_folder(
+            &self,
+            _: &str,
+        ) -> std::result::Result<Option<Folder>, joplin_domain::DatabaseError> {
+            Ok(None)
+        }
+        async fn update_folder(
+            &self,
+            _: &Folder,
+        ) -> std::result::Result<(), joplin_domain::DatabaseError> {
+            Ok(())
+        }
+        async fn delete_folder(
+            &self,
+            _: &str,
+        ) -> std::result::Result<(), joplin_domain::DatabaseError> {
+            Ok(())
+        }
+        async fn list_folders(
+            &self,
+        ) -> std::result::Result<Vec<Folder>, joplin_domain::DatabaseError> {
+            Ok(vec![])
+        }
+        async fn create_tag(
+            &self,
+            _: &Tag,
+        ) -> std::result::Result<(), joplin_domain::DatabaseError> {
+            Ok(())
+        }
+        async fn get_tag(
+            &self,
+            _: &str,
+        ) -> std::result::Result<Option<Tag>, joplin_domain::DatabaseError> {
+            Ok(None)
+        }
+        async fn update_tag(
+            &self,
+            _: &Tag,
+        ) -> std::result::Result<(), joplin_domain::DatabaseError> {
+            Ok(())
+        }
+        async fn delete_tag(
+            &self,
+            _: &str,
+        ) -> std::result::Result<(), joplin_domain::DatabaseError> {
+            Ok(())
+        }
+        async fn list_tags(&self) -> std::result::Result<Vec<Tag>, joplin_domain::DatabaseError> {
+            Ok(vec![])
+        }
+        async fn add_note_tag(
+            &self,
+            _: &NoteTag,
+        ) -> std::result::Result<(), joplin_domain::DatabaseError> {
+            Ok(())
+        }
+        async fn remove_note_tag(
+            &self,
+            _: &str,
+            _: &str,
+        ) -> std::result::Result<(), joplin_domain::DatabaseError> {
+            Ok(())
+        }
+        async fn get_note_tags(
+            &self,
+            _: &str,
+        ) -> std::result::Result<Vec<Tag>, joplin_domain::DatabaseError> {
+            Ok(vec![])
+        }
+        async fn get_folders_updated_since(
+            &self,
+            _: i64,
+        ) -> std::result::Result<Vec<Folder>, joplin_domain::DatabaseError> {
+            Ok(vec![])
+        }
+        async fn get_tags_updated_since(
+            &self,
+            _: i64,
+        ) -> std::result::Result<Vec<Tag>, joplin_domain::DatabaseError> {
+            Ok(vec![])
+        }
+        async fn get_notes_updated_since(
+            &self,
+            _: i64,
+        ) -> std::result::Result<Vec<Note>, joplin_domain::DatabaseError> {
+            Ok(vec![])
+        }
+        async fn get_note_tags_updated_since(
+            &self,
+            _: i64,
+        ) -> std::result::Result<Vec<NoteTag>, joplin_domain::DatabaseError> {
+            Ok(vec![])
+        }
+        async fn get_all_sync_items(
+            &self,
+        ) -> std::result::Result<Vec<SyncItem>, joplin_domain::DatabaseError> {
+            Ok(vec![])
+        }
+        async fn update_sync_time(
+            &self,
+            _: &str,
+            _: &str,
+            _: i64,
+        ) -> std::result::Result<(), joplin_domain::DatabaseError> {
+            Ok(())
+        }
+        async fn get_setting(
+            &self,
+            _: &str,
+        ) -> std::result::Result<Option<String>, joplin_domain::DatabaseError> {
+            Ok(None)
+        }
+        async fn set_setting(
+            &self,
+            _: &str,
+            _: &str,
+        ) -> std::result::Result<(), joplin_domain::DatabaseError> {
+            Ok(())
+        }
+        async fn get_sync_items(
+            &self,
+            _: i32,
+        ) -> std::result::Result<Vec<SyncItem>, joplin_domain::DatabaseError> {
+            Ok(vec![])
+        }
+        async fn upsert_sync_item(
+            &self,
+            _: &SyncItem,
+        ) -> std::result::Result<(), joplin_domain::DatabaseError> {
+            Ok(())
+        }
+        async fn delete_sync_item(
+            &self,
+            _: i32,
+        ) -> std::result::Result<(), joplin_domain::DatabaseError> {
+            Ok(())
+        }
+        async fn clear_all_sync_items(
+            &self,
+        ) -> std::result::Result<usize, joplin_domain::DatabaseError> {
+            Ok(0)
+        }
+        async fn get_deleted_items(
+            &self,
+            _: i32,
+        ) -> std::result::Result<Vec<DeletedItem>, joplin_domain::DatabaseError> {
+            Ok(vec![])
+        }
+        async fn add_deleted_item(
+            &self,
+            _: &DeletedItem,
+        ) -> std::result::Result<(), joplin_domain::DatabaseError> {
+            Ok(())
+        }
+        async fn remove_deleted_item(
+            &self,
+            _: i32,
+        ) -> std::result::Result<(), joplin_domain::DatabaseError> {
+            Ok(())
+        }
+        async fn clear_deleted_items(
+            &self,
+            _: i64,
+        ) -> std::result::Result<usize, joplin_domain::DatabaseError> {
+            Ok(0)
+        }
+        async fn get_version(&self) -> std::result::Result<i32, joplin_domain::DatabaseError> {
+            Ok(41)
+        }
+        async fn begin_transaction(&self) -> std::result::Result<(), joplin_domain::DatabaseError> {
+            Ok(())
+        }
+        async fn commit_transaction(
+            &self,
+        ) -> std::result::Result<(), joplin_domain::DatabaseError> {
+            Ok(())
+        }
+        async fn rollback_transaction(
+            &self,
+        ) -> std::result::Result<(), joplin_domain::DatabaseError> {
+            Ok(())
+        }
     }
 
     /// Fake WebDAV for tests (not used, just needed for type)
     struct FakeWebDav;
     #[async_trait::async_trait]
     impl joplin_domain::WebDavClient for FakeWebDav {
-        async fn list(&self, _: &str) -> std::result::Result<Vec<joplin_domain::DavEntry>, joplin_domain::WebDavError> { Ok(vec![]) }
-        async fn get(&self, _: &str) -> std::result::Result<Box<dyn futures::io::AsyncRead + Unpin + Send>, joplin_domain::WebDavError> {
+        async fn list(
+            &self,
+            _: &str,
+        ) -> std::result::Result<Vec<joplin_domain::DavEntry>, joplin_domain::WebDavError> {
+            Ok(vec![])
+        }
+        async fn get(
+            &self,
+            _: &str,
+        ) -> std::result::Result<
+            Box<dyn futures::io::AsyncRead + Unpin + Send>,
+            joplin_domain::WebDavError,
+        > {
             Err(joplin_domain::WebDavError::NotFound("test".into()))
         }
-        async fn put(&self, _: &str, _: &[u8], _: u64) -> std::result::Result<(), joplin_domain::WebDavError> { Ok(()) }
-        async fn delete(&self, _: &str) -> std::result::Result<(), joplin_domain::WebDavError> { Ok(()) }
-        async fn mkcol(&self, _: &str) -> std::result::Result<(), joplin_domain::WebDavError> { Ok(()) }
-        async fn exists(&self, _: &str) -> std::result::Result<bool, joplin_domain::WebDavError> { Ok(false) }
-        async fn stat(&self, _: &str) -> std::result::Result<joplin_domain::DavEntry, joplin_domain::WebDavError> {
+        async fn put(
+            &self,
+            _: &str,
+            _: &[u8],
+            _: u64,
+        ) -> std::result::Result<(), joplin_domain::WebDavError> {
+            Ok(())
+        }
+        async fn delete(&self, _: &str) -> std::result::Result<(), joplin_domain::WebDavError> {
+            Ok(())
+        }
+        async fn mkcol(&self, _: &str) -> std::result::Result<(), joplin_domain::WebDavError> {
+            Ok(())
+        }
+        async fn exists(&self, _: &str) -> std::result::Result<bool, joplin_domain::WebDavError> {
+            Ok(false)
+        }
+        async fn stat(
+            &self,
+            _: &str,
+        ) -> std::result::Result<joplin_domain::DavEntry, joplin_domain::WebDavError> {
             Err(joplin_domain::WebDavError::NotFound("test".into()))
         }
-        async fn lock(&self, _: &str, _: std::time::Duration) -> std::result::Result<String, joplin_domain::WebDavError> { Ok("lock".into()) }
-        async fn refresh_lock(&self, _: &str) -> std::result::Result<(), joplin_domain::WebDavError> { Ok(()) }
-        async fn unlock(&self, _: &str, _: &str) -> std::result::Result<(), joplin_domain::WebDavError> { Ok(()) }
-        async fn mv(&self, _: &str, _: &str) -> std::result::Result<(), joplin_domain::WebDavError> { Ok(()) }
-        async fn copy(&self, _: &str, _: &str) -> std::result::Result<(), joplin_domain::WebDavError> { Ok(()) }
+        async fn lock(
+            &self,
+            _: &str,
+            _: std::time::Duration,
+        ) -> std::result::Result<String, joplin_domain::WebDavError> {
+            Ok("lock".into())
+        }
+        async fn refresh_lock(
+            &self,
+            _: &str,
+        ) -> std::result::Result<(), joplin_domain::WebDavError> {
+            Ok(())
+        }
+        async fn unlock(
+            &self,
+            _: &str,
+            _: &str,
+        ) -> std::result::Result<(), joplin_domain::WebDavError> {
+            Ok(())
+        }
+        async fn mv(
+            &self,
+            _: &str,
+            _: &str,
+        ) -> std::result::Result<(), joplin_domain::WebDavError> {
+            Ok(())
+        }
+        async fn copy(
+            &self,
+            _: &str,
+            _: &str,
+        ) -> std::result::Result<(), joplin_domain::WebDavError> {
+            Ok(())
+        }
     }
 }

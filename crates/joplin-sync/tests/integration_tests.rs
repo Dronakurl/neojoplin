@@ -1,172 +1,303 @@
-// Integration tests for sync engine with real WebDAV server
+// Integration tests for sync engine with a real WebDAV server.
 //
-// These tests require a running WebDAV server and provide comprehensive
-// testing of the full sync cycle beyond unit tests.
+// These tests are ignored by default, but they still need to compile against
+// the current Storage and WebDAV APIs.
 
-use joplin_sync::{SyncEngine, ReqwestWebDavClient, WebDavConfig};
-use joplin_domain::{Storage, Note, Folder, now_ms, WebDavClient};
+use std::collections::HashMap;
 use std::sync::Arc;
-use tokio::sync::mpsc;
 use std::time::Duration;
-use uuid::Uuid;
-use async_trait::async_trait;
 
-// Simple in-memory storage implementation for testing
+use async_trait::async_trait;
+use futures::io::AsyncReadExt;
+use joplin_domain::{
+    now_ms, DatabaseError, DeletedItem, Folder, Note, NoteTag, Storage, SyncItem, Tag, WebDavClient,
+};
+use joplin_sync::{ReqwestWebDavClient, SyncEngine, WebDavConfig};
+use tokio::sync::{mpsc, RwLock};
+use uuid::Uuid;
+
 struct MockStorage {
-    folders: Arc<tokio::sync::RwLock<Vec<Folder>>>,
-    notes: Arc<tokio::sync::RwLock<Vec<Note>>>,
+    folders: Arc<RwLock<Vec<Folder>>>,
+    notes: Arc<RwLock<Vec<Note>>>,
+    sync_items: Arc<RwLock<Vec<SyncItem>>>,
+    deleted_items: Arc<RwLock<Vec<DeletedItem>>>,
+    settings: Arc<RwLock<HashMap<String, String>>>,
 }
 
 impl MockStorage {
     fn new() -> Self {
         Self {
-            folders: Arc::new(tokio::sync::RwLock::new(Vec::new())),
-            notes: Arc::new(tokio::sync::RwLock::new(Vec::new())),
+            folders: Arc::new(RwLock::new(Vec::new())),
+            notes: Arc::new(RwLock::new(Vec::new())),
+            sync_items: Arc::new(RwLock::new(Vec::new())),
+            deleted_items: Arc::new(RwLock::new(Vec::new())),
+            settings: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 }
 
-#[async_trait::async_trait]
+#[async_trait]
 impl Storage for MockStorage {
-    async fn create_note(&self, note: &Note) -> anyhow::Result<()> {
+    async fn create_note(&self, note: &Note) -> Result<(), DatabaseError> {
         self.notes.write().await.push(note.clone());
         Ok(())
     }
 
-    async fn update_note(&self, note: &Note) -> anyhow::Result<()> {
+    async fn get_note(&self, id: &str) -> Result<Option<Note>, DatabaseError> {
+        Ok(self
+            .notes
+            .read()
+            .await
+            .iter()
+            .find(|note| note.id == id)
+            .cloned())
+    }
+
+    async fn update_note(&self, note: &Note) -> Result<(), DatabaseError> {
         let mut notes = self.notes.write().await;
-        if let Some(n) = notes.iter_mut().find(|n| n.id == note.id) {
-            *n = note.clone();
+        if let Some(existing) = notes.iter_mut().find(|existing| existing.id == note.id) {
+            *existing = note.clone();
+            Ok(())
+        } else {
+            Err(DatabaseError::NotFound(note.id.clone()))
         }
+    }
+
+    async fn delete_note(&self, id: &str) -> Result<(), DatabaseError> {
+        self.notes.write().await.retain(|note| note.id != id);
         Ok(())
     }
 
-    async fn get_note(&self, id: &str) -> anyhow::Result<Option<Note>> {
+    async fn list_notes(&self, folder_id: Option<&str>) -> Result<Vec<Note>, DatabaseError> {
         let notes = self.notes.read().await;
-        Ok(notes.iter().find(|n| n.id == id).cloned())
+        Ok(match folder_id {
+            Some(folder_id) => notes
+                .iter()
+                .filter(|note| note.parent_id == folder_id)
+                .cloned()
+                .collect(),
+            None => notes.clone(),
+        })
     }
 
-    async fn list_notes(&self, _parent_id: Option<&str>) -> anyhow::Result<Vec<Note>> {
-        let notes = self.notes.read().await;
-        Ok(notes.clone())
-    }
-
-    async fn delete_note(&self, id: &str) -> anyhow::Result<()> {
-        let mut notes = self.notes.write().await;
-        notes.retain(|n| n.id != id);
-        Ok(())
-    }
-
-    async fn create_folder(&self, folder: &Folder) -> anyhow::Result<()> {
+    async fn create_folder(&self, folder: &Folder) -> Result<(), DatabaseError> {
         self.folders.write().await.push(folder.clone());
         Ok(())
     }
 
-    async fn update_folder(&self, folder: &Folder) -> anyhow::Result<()> {
+    async fn get_folder(&self, id: &str) -> Result<Option<Folder>, DatabaseError> {
+        Ok(self
+            .folders
+            .read()
+            .await
+            .iter()
+            .find(|folder| folder.id == id)
+            .cloned())
+    }
+
+    async fn update_folder(&self, folder: &Folder) -> Result<(), DatabaseError> {
         let mut folders = self.folders.write().await;
-        if let Some(f) = folders.iter_mut().find(|f| f.id == folder.id) {
-            *f = folder.clone();
+        if let Some(existing) = folders.iter_mut().find(|existing| existing.id == folder.id) {
+            *existing = folder.clone();
+            Ok(())
+        } else {
+            Err(DatabaseError::NotFound(folder.id.clone()))
+        }
+    }
+
+    async fn delete_folder(&self, id: &str) -> Result<(), DatabaseError> {
+        self.folders.write().await.retain(|folder| folder.id != id);
+        Ok(())
+    }
+
+    async fn list_folders(&self) -> Result<Vec<Folder>, DatabaseError> {
+        Ok(self.folders.read().await.clone())
+    }
+
+    async fn create_tag(&self, _tag: &Tag) -> Result<(), DatabaseError> {
+        Ok(())
+    }
+
+    async fn get_tag(&self, _id: &str) -> Result<Option<Tag>, DatabaseError> {
+        Ok(None)
+    }
+
+    async fn update_tag(&self, _tag: &Tag) -> Result<(), DatabaseError> {
+        Ok(())
+    }
+
+    async fn delete_tag(&self, _id: &str) -> Result<(), DatabaseError> {
+        Ok(())
+    }
+
+    async fn list_tags(&self) -> Result<Vec<Tag>, DatabaseError> {
+        Ok(Vec::new())
+    }
+
+    async fn add_note_tag(&self, _note_tag: &NoteTag) -> Result<(), DatabaseError> {
+        Ok(())
+    }
+
+    async fn remove_note_tag(&self, _note_id: &str, _tag_id: &str) -> Result<(), DatabaseError> {
+        Ok(())
+    }
+
+    async fn get_note_tags(&self, _note_id: &str) -> Result<Vec<Tag>, DatabaseError> {
+        Ok(Vec::new())
+    }
+
+    async fn get_folders_updated_since(
+        &self,
+        timestamp: i64,
+    ) -> Result<Vec<Folder>, DatabaseError> {
+        Ok(self
+            .folders
+            .read()
+            .await
+            .iter()
+            .filter(|folder| folder.updated_time >= timestamp)
+            .cloned()
+            .collect())
+    }
+
+    async fn get_tags_updated_since(&self, _timestamp: i64) -> Result<Vec<Tag>, DatabaseError> {
+        Ok(Vec::new())
+    }
+
+    async fn get_notes_updated_since(&self, timestamp: i64) -> Result<Vec<Note>, DatabaseError> {
+        Ok(self
+            .notes
+            .read()
+            .await
+            .iter()
+            .filter(|note| note.updated_time >= timestamp)
+            .cloned()
+            .collect())
+    }
+
+    async fn get_note_tags_updated_since(
+        &self,
+        _timestamp: i64,
+    ) -> Result<Vec<NoteTag>, DatabaseError> {
+        Ok(Vec::new())
+    }
+
+    async fn get_all_sync_items(&self) -> Result<Vec<SyncItem>, DatabaseError> {
+        Ok(self.sync_items.read().await.clone())
+    }
+
+    async fn update_sync_time(
+        &self,
+        _table: &str,
+        _id: &str,
+        _timestamp: i64,
+    ) -> Result<(), DatabaseError> {
+        Ok(())
+    }
+
+    async fn get_setting(&self, key: &str) -> Result<Option<String>, DatabaseError> {
+        Ok(self.settings.read().await.get(key).cloned())
+    }
+
+    async fn set_setting(&self, key: &str, value: &str) -> Result<(), DatabaseError> {
+        self.settings
+            .write()
+            .await
+            .insert(key.to_string(), value.to_string());
+        Ok(())
+    }
+
+    async fn get_sync_items(&self, sync_target: i32) -> Result<Vec<SyncItem>, DatabaseError> {
+        Ok(self
+            .sync_items
+            .read()
+            .await
+            .iter()
+            .filter(|item| item.sync_target == sync_target)
+            .cloned()
+            .collect())
+    }
+
+    async fn upsert_sync_item(&self, item: &SyncItem) -> Result<(), DatabaseError> {
+        let mut sync_items = self.sync_items.write().await;
+        if let Some(existing) = sync_items.iter_mut().find(|existing| {
+            existing.id == item.id
+                || (existing.sync_target == item.sync_target
+                    && existing.item_type == item.item_type
+                    && existing.item_id == item.item_id)
+        }) {
+            *existing = item.clone();
+        } else {
+            sync_items.push(item.clone());
         }
         Ok(())
     }
 
-    async fn get_folder(&self, id: &str) -> anyhow::Result<Option<Folder>> {
-        let folders = self.folders.read().await;
-        Ok(folders.iter().find(|f| f.id == id).cloned())
-    }
-
-    async fn list_folders(&self) -> anyhow::Result<Vec<Folder>> {
-        let folders = self.folders.read().await;
-        Ok(folders.clone())
-    }
-
-    async fn delete_folder(&self, id: &str) -> anyhow::Result<()> {
-        let mut folders = self.folders.write().await;
-        folders.retain(|f| f.id != id);
+    async fn delete_sync_item(&self, id: i32) -> Result<(), DatabaseError> {
+        self.sync_items.write().await.retain(|item| item.id != id);
         Ok(())
     }
 
-    // Stub implementations for other required methods
-    async fn get_note(&self, id: &str) -> joplin_domain::Result<Option<Note>> {
-        let notes = self.notes.read().await;
-        Ok(notes.iter().find(|n| n.id == id).cloned())
+    async fn clear_all_sync_items(&self) -> Result<usize, DatabaseError> {
+        let mut sync_items = self.sync_items.write().await;
+        let count = sync_items.len();
+        sync_items.clear();
+        Ok(count)
     }
 
-    async fn get_folder(&self, id: &str) -> joplin_domain::Result<Option<Folder>> {
-        let folders = self.folders.read().await;
-        Ok(folders.iter().find(|f| f.id == id).cloned())
+    async fn get_deleted_items(&self, sync_target: i32) -> Result<Vec<DeletedItem>, DatabaseError> {
+        Ok(self
+            .deleted_items
+            .read()
+            .await
+            .iter()
+            .filter(|item| item.sync_target == sync_target)
+            .cloned()
+            .collect())
     }
 
-    async fn create_tag(&self, _tag: &joplin_domain::Tag) -> joplin_domain::Result<()> {
+    async fn add_deleted_item(&self, item: &DeletedItem) -> Result<(), DatabaseError> {
+        self.deleted_items.write().await.push(item.clone());
         Ok(())
     }
 
-    async fn get_tag(&self, _id: &str) -> joplin_domain::Result<Option<joplin_domain::Tag>> {
-        Ok(None)
-    }
-
-    async fn update_tag(&self, _tag: &joplin_domain::Tag) -> joplin_domain::Result<()> {
+    async fn remove_deleted_item(&self, id: i32) -> Result<(), DatabaseError> {
+        self.deleted_items
+            .write()
+            .await
+            .retain(|item| item.id != id);
         Ok(())
     }
 
-    async fn delete_tag(&self, _id: &str) -> joplin_domain::Result<()> {
+    async fn clear_deleted_items(&self, limit: i64) -> Result<usize, DatabaseError> {
+        let mut deleted_items = self.deleted_items.write().await;
+        let before = deleted_items.len();
+        deleted_items.retain(|item| item.deleted_time > limit);
+        Ok(before - deleted_items.len())
+    }
+
+    async fn get_version(&self) -> Result<i32, DatabaseError> {
+        Ok(41)
+    }
+
+    async fn begin_transaction(&self) -> Result<(), DatabaseError> {
         Ok(())
     }
 
-    async fn list_tags(&self) -> joplin_domain::Result<Vec<joplin_domain::Tag>> {
-        Ok(Vec::new())
-    }
-
-    async fn add_note_tag(&self, _note_tag: &joplin_domain::NoteTag) -> joplin_domain::Result<()> {
+    async fn commit_transaction(&self) -> Result<(), DatabaseError> {
         Ok(())
     }
 
-    async fn remove_note_tag(&self, _note_id: &str, _tag_id: &str) -> joplin_domain::Result<()> {
-        Ok(())
-    }
-
-    async fn get_note_tags(&self, _note_id: &str) -> joplin_domain::Result<Vec<joplin_domain::Tag>> {
-        Ok(Vec::new())
-    }
-
-    async fn get_notes_updated_since(&self, _timestamp: i64) -> joplin_domain::Result<Vec<Note>> {
-        Ok(Vec::new())
-    }
-
-    async fn get_folders_updated_since(&self, _timestamp: i64) -> joplin_domain::Result<Vec<Folder>> {
-        Ok(Vec::new())
-    }
-
-    async fn get_tags_updated_since(&self, _timestamp: i64) -> joplin_domain::Result<Vec<joplin_domain::Tag>> {
-        Ok(Vec::new())
-    }
-
-    async fn get_note_tags_updated_since(&self, _timestamp: i64) -> joplin_domain::Result<Vec<joplin_domain::NoteTag>> {
-        Ok(Vec::new())
-    }
-
-    async fn get_all_sync_items(&self) -> joplin_domain::Result<Vec<joplin_domain::SyncItem>> {
-        Ok(Vec::new())
-    }
-
-    async fn update_sync_time(&self, _table: &str, _id: &str, _timestamp: i64) -> joplin_domain::Result<()> {
-        Ok(())
-    }
-
-    async fn get_setting(&self, _key: &str) -> joplin_domain::Result<Option<String>> {
-        Ok(None)
-    }
-
-    async fn set_setting(&self, _key: &str, _value: &str) -> joplin_domain::Result<()> {
+    async fn rollback_transaction(&self) -> Result<(), DatabaseError> {
         Ok(())
     }
 }
 
-async fn setup_test_environment(test_name: String) -> (Arc<MockStorage>, ReqwestWebDavClient, String) {
-    // Create in-memory database for testing
+async fn setup_test_environment(
+    test_name: String,
+) -> (Arc<MockStorage>, ReqwestWebDavClient, String) {
     let storage = Arc::new(MockStorage::new());
 
-    // Configure for local WebDAV server
     let config = WebDavConfig::new(
         "http://localhost:8080/webdav/".to_string(),
         String::new(),
@@ -174,33 +305,23 @@ async fn setup_test_environment(test_name: String) -> (Arc<MockStorage>, Reqwest
     );
     let webdav = ReqwestWebDavClient::new(config).unwrap();
 
-    // Generate unique test path
     let test_path = format!("/integration-test-{}", test_name);
-
-    // Clean up any existing test data
     let cleanup_path = format!("{}/", test_path);
-    let _ = tokio::time::timeout(
-        Duration::from_secs(5),
-        webdav.delete(&cleanup_path)
-    ).await;
+    let _ = tokio::time::timeout(Duration::from_secs(5), webdav.delete(&cleanup_path)).await;
 
     (storage, webdav, test_path)
 }
 
 async fn cleanup_test_environment(webdav: &ReqwestWebDavClient, test_path: &str) {
     let cleanup_path = format!("{}/", test_path);
-    let _ = tokio::time::timeout(
-        Duration::from_secs(5),
-        webdav.delete(&cleanup_path)
-    ).await;
+    let _ = tokio::time::timeout(Duration::from_secs(5), webdav.delete(&cleanup_path)).await;
 }
 
 #[tokio::test]
-#[ignore] // Run with: cargo test -- --ignored integration_basic_sync
+#[ignore]
 async fn integration_basic_sync() {
     let (storage, webdav, test_path) = setup_test_environment("basic_sync".to_string()).await;
 
-    // Create test data
     let folder = Folder {
         id: Uuid::new_v4().to_string(),
         title: "Test Folder".to_string(),
@@ -239,13 +360,13 @@ async fn integration_basic_sync() {
         todo_due: 0,
         source: String::new(),
         source_application: String::new(),
-        application_data: String::new(),
         order: 0,
         latitude: 0,
         longitude: 0,
         altitude: 0,
         author: String::new(),
         source_url: String::new(),
+        application_data: String::new(),
         markup_language: 1,
         encryption_blob_encrypted: 0,
         conflict_original_id: String::new(),
@@ -253,19 +374,14 @@ async fn integration_basic_sync() {
 
     storage.create_note(&note).await.unwrap();
 
-    // Perform sync
     let (event_tx, _event_rx) = mpsc::unbounded_channel();
     let mut sync_engine = SyncEngine::new(storage.clone(), Arc::new(webdav.clone()), event_tx)
-        .with_remote_path(test_path);
+        .with_remote_path(test_path.clone());
 
-    let sync_result = tokio::time::timeout(
-        Duration::from_secs(30),
-        sync_engine.sync()
-    ).await;
+    let sync_result = tokio::time::timeout(Duration::from_secs(30), sync_engine.sync()).await;
 
     assert!(sync_result.is_ok(), "Sync should complete successfully");
 
-    // Verify data was synced
     let synced_folders = storage.list_folders().await.unwrap();
     assert!(!synced_folders.is_empty(), "Should have synced folders");
 
@@ -276,42 +392,39 @@ async fn integration_basic_sync() {
 }
 
 #[tokio::test]
-#[ignore] // Run with: cargo test -- --ignored integration_webdav_operations
+#[ignore]
 async fn integration_webdav_operations() {
     let (_, webdav, test_path) = setup_test_environment("webdav_ops".to_string()).await;
 
-    // Test directory creation
     let dir_path = format!("{}/test-dir", test_path);
-    let mkdir_result = tokio::time::timeout(
-        Duration::from_secs(5),
-        webdav.mkdir(&dir_path)
-    ).await;
+    let mkdir_result = tokio::time::timeout(Duration::from_secs(5), webdav.mkcol(&dir_path))
+        .await
+        .expect("Directory creation timed out");
     assert!(mkdir_result.is_ok(), "Directory creation should succeed");
 
-    // Test file upload
     let test_content = b"Test file content";
     let file_path = format!("{}/test-dir/test.txt", test_path);
     let put_result = tokio::time::timeout(
         Duration::from_secs(5),
-        webdav.put(&file_path, test_content, test_content.len() as u64)
-    ).await;
+        webdav.put(&file_path, test_content, test_content.len() as u64),
+    )
+    .await
+    .expect("File upload timed out");
     assert!(put_result.is_ok(), "File upload should succeed");
 
-    // Test file existence
-    let exists_result = tokio::time::timeout(
-        Duration::from_secs(5),
-        webdav.exists(&file_path)
-    ).await;
-    assert!(exists_result.is_ok(), "File existence check should succeed");
-    assert!(exists_result.unwrap(), "File should exist");
+    let exists_result = tokio::time::timeout(Duration::from_secs(5), webdav.exists(&file_path))
+        .await
+        .expect("File existence check timed out")
+        .expect("File existence check failed");
+    assert!(exists_result, "File should exist");
 
-    // Test file download
-    let get_result = tokio::time::timeout(
-        Duration::from_secs(5),
-        webdav.get(&file_path)
-    ).await;
-    assert!(get_result.is_ok(), "File download should succeed");
-    assert_eq!(get_result.unwrap(), test_content, "Downloaded content should match");
+    let mut reader = tokio::time::timeout(Duration::from_secs(5), webdav.get(&file_path))
+        .await
+        .expect("File download timed out")
+        .expect("File download failed");
+    let mut downloaded = Vec::new();
+    reader.read_to_end(&mut downloaded).await.unwrap();
+    assert_eq!(downloaded, test_content, "Downloaded content should match");
 
     cleanup_test_environment(&webdav, &test_path).await;
 }

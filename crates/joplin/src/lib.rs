@@ -8,25 +8,49 @@ pub use joplin_sync;
 
 // Re-exports for convenience
 pub use joplin_domain::{
-    // Domain types
-    Note, Folder, Tag, NoteTag, Resource, MasterKey, SyncItem, DeletedItem, Setting,
-    ModelType, SyncTarget, MarkupLanguage,
-
+    // Helpers
+    now_ms,
+    timestamp_to_datetime,
+    AuthError,
+    ConflictInfo,
+    ConflictResolution,
     // Error types
-    DatabaseError, SyncError, NetworkError, AuthError, WebDavError, DomainError,
+    DatabaseError,
+    DavEntry,
+    DeletedItem,
+    DomainError,
 
+    FileMeta,
+    Folder,
+    ItemError,
+    LockHandle,
+
+    MarkupLanguage,
+
+    MasterKey,
+    ModelType,
+    NetworkError,
+    // Domain types
+    Note,
+    NoteTag,
+    PhaseResult,
+    Resource,
+    Result,
+    Setting,
     // Traits
-    Storage, WebDavClient, DavEntry, SyncEvent, LockHandle,
+    Storage,
+    SyncError,
+    SyncEvent,
+    SyncItem,
+    SyncPhase,
 
     // Sync types
-    SyncState, PhaseResult, ItemError, ConflictInfo, ConflictResolution, SyncPhase,
-
-    // Helpers
-    now_ms, timestamp_to_datetime, Result, FileMeta
+    SyncState,
+    SyncTarget,
+    Tag,
+    WebDavClient,
+    WebDavError,
 };
 
 // Re-exports from joplin-sync
-pub use joplin_sync::{
-    SyncEngine, ReqwestWebDavClient, WebDavConfig,
-    SyncInfo, DeltaContext
-};
+pub use joplin_sync::{DeltaContext, ReqwestWebDavClient, SyncEngine, SyncInfo, WebDavConfig};

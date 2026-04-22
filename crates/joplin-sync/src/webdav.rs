@@ -1,9 +1,9 @@
 // WebDAV client implementation using reqwest
 
-use reqwest::{Client, header};
-use std::time::Duration;
-use joplin_domain::{WebDavError, FileMeta};
+use joplin_domain::{FileMeta, WebDavError};
+use reqwest::{header, Client};
 use std::net::{IpAddr, Ipv4Addr};
+use std::time::Duration;
 
 // Use WebDavError directly in this module
 type WebDavResult<T> = std::result::Result<T, WebDavError>;
@@ -52,7 +52,9 @@ impl ReqwestWebDavClient {
             .timeout(DEFAULT_TIMEOUT)
             .local_address(ipv4)
             .build()
-            .map_err(|e| WebDavError::ConnectionFailed(format!("Failed to create HTTP client: {}", e)))?;
+            .map_err(|e| {
+                WebDavError::ConnectionFailed(format!("Failed to create HTTP client: {}", e))
+            })?;
 
         Ok(Self { client, config })
     }
@@ -69,20 +71,24 @@ impl ReqwestWebDavClient {
             .expect("Failed to create auth header")
     }
 
-    async fn request(&self, method: reqwest::Method, path: &str, body: Option<Vec<u8>>) -> Result<reqwest::Response> {
+    async fn request(
+        &self,
+        method: reqwest::Method,
+        path: &str,
+        body: Option<Vec<u8>>,
+    ) -> Result<reqwest::Response> {
         let url = self.build_url(path);
         let mut request = self.client.request(method, &url);
 
-        request = request.header(
-            header::AUTHORIZATION,
-            self.build_auth()
-        );
+        request = request.header(header::AUTHORIZATION, self.build_auth());
 
         if let Some(body) = body {
             request = request.body(body);
         }
 
-        request.send().await
+        request
+            .send()
+            .await
             .map_err(|e| WebDavError::ConnectionFailed(format!("Request failed: {}", e)))
     }
 
@@ -90,23 +96,33 @@ impl ReqwestWebDavClient {
         let response = self.request(reqwest::Method::GET, path, None).await?;
 
         if response.status().is_success() {
-            Ok(response.bytes().await
+            Ok(response
+                .bytes()
+                .await
                 .map_err(|e| WebDavError::RequestFailed(format!("Failed to read response: {}", e)))?
                 .to_vec())
         } else if response.status().as_u16() == 404 {
             Err(WebDavError::NotFound(path.to_string()))
         } else {
-            Err(WebDavError::RequestFailed(format!("GET failed with status: {}", response.status())))
+            Err(WebDavError::RequestFailed(format!(
+                "GET failed with status: {}",
+                response.status()
+            )))
         }
     }
 
     pub async fn put_impl(&self, path: &str, data: &[u8]) -> Result<()> {
-        let response = self.request(reqwest::Method::PUT, path, Some(data.to_vec())).await?;
+        let response = self
+            .request(reqwest::Method::PUT, path, Some(data.to_vec()))
+            .await?;
 
         if response.status().is_success() {
             Ok(())
         } else {
-            Err(WebDavError::RequestFailed(format!("PUT failed with status: {}", response.status())))
+            Err(WebDavError::RequestFailed(format!(
+                "PUT failed with status: {}",
+                response.status()
+            )))
         }
     }
 
@@ -116,7 +132,10 @@ impl ReqwestWebDavClient {
         if response.status().is_success() || response.status().as_u16() == 404 {
             Ok(())
         } else {
-            Err(WebDavError::RequestFailed(format!("DELETE failed with status: {}", response.status())))
+            Err(WebDavError::RequestFailed(format!(
+                "DELETE failed with status: {}",
+                response.status()
+            )))
         }
     }
 
@@ -125,50 +144,72 @@ impl ReqwestWebDavClient {
             .map_err(|e| WebDavError::RequestFailed(format!("Invalid method: {}", e)))?;
         let response = self.request(method, path, None).await?;
 
-        if response.status().is_success() || response.status().as_u16() == 405 { // 405 Method Not Allowed = directory exists
+        if response.status().is_success() || response.status().as_u16() == 405 {
+            // 405 Method Not Allowed = directory exists
             Ok(())
         } else {
-            Err(WebDavError::RequestFailed(format!("MKCOL failed with status: {}", response.status())))
+            Err(WebDavError::RequestFailed(format!(
+                "MKCOL failed with status: {}",
+                response.status()
+            )))
         }
     }
 
     pub async fn list_impl(&self, path: &str) -> Result<Vec<String>> {
-        Ok(self.list_with_timestamps_impl(path).await?
+        Ok(self
+            .list_with_timestamps_impl(path)
+            .await?
             .into_iter()
             .map(|(name, _)| name)
             .collect())
     }
 
     /// List files in a WebDAV directory, returning (filename, modified_timestamp_ms) pairs
-    pub async fn list_with_timestamps_impl(&self, path: &str) -> Result<Vec<(String, Option<i64>)>> {
+    pub async fn list_with_timestamps_impl(
+        &self,
+        path: &str,
+    ) -> Result<Vec<(String, Option<i64>)>> {
         let url = self.build_url(path);
         let method = reqwest::Method::from_bytes(b"PROPFIND")
             .map_err(|e| WebDavError::RequestFailed(format!("Invalid method: {}", e)))?;
-        let response = self.client
+        let response = self
+            .client
             .request(method, &url)
             .header(header::AUTHORIZATION, self.build_auth())
             .header(&DEPTH, "1")
-            .body(r#"<?xml version="1.0" encoding="utf-8" ?>
+            .body(
+                r#"<?xml version="1.0" encoding="utf-8" ?>
                 <D:propfind xmlns:D="DAV:">
                     <D:prop>
                         <D:displayname/>
                         <D:getlastmodified/>
                     </D:prop>
-                </D:propfind>"#)
+                </D:propfind>"#,
+            )
             .send()
             .await
             .map_err(|e| WebDavError::RequestFailed(format!("PROPFIND failed: {}", e)))?;
 
         if !response.status().is_success() {
-            return Err(WebDavError::RequestFailed(format!("PROPFIND failed with status: {}", response.status())));
+            return Err(WebDavError::RequestFailed(format!(
+                "PROPFIND failed with status: {}",
+                response.status()
+            )));
         }
 
-        let body = response.text().await
+        let body = response
+            .text()
+            .await
             .map_err(|e| WebDavError::RequestFailed(format!("Failed to read response: {}", e)))?;
 
         let entries = crate::webdav_xml::parse_propfind_entries(&body, &self.config.base_url)
-            .map_err(|e| WebDavError::RequestFailed(format!("Failed to parse PROPFIND response: {}", e)))?;
-        Ok(entries.into_iter().map(|e| (e.filename, e.modified)).collect())
+            .map_err(|e| {
+                WebDavError::RequestFailed(format!("Failed to parse PROPFIND response: {}", e))
+            })?;
+        Ok(entries
+            .into_iter()
+            .map(|e| (e.filename, e.modified))
+            .collect())
     }
 
     pub async fn exists_impl(&self, path: &str) -> Result<bool> {
@@ -183,18 +224,21 @@ impl ReqwestWebDavClient {
         let url = self.build_url(path);
         let method = reqwest::Method::from_bytes(b"PROPFIND")
             .map_err(|e| WebDavError::RequestFailed(format!("Invalid method: {}", e)))?;
-        let response = self.client
+        let response = self
+            .client
             .request(method, &url)
             .header(header::AUTHORIZATION, self.build_auth())
             .header(&DEPTH, "0")
-            .body(r#"<?xml version="1.0" encoding="utf-8" ?>
+            .body(
+                r#"<?xml version="1.0" encoding="utf-8" ?>
                 <D:propfind xmlns:D="DAV:">
                     <D:prop>
                         <D:getcontentlength/>
                         <D:getlastmodified/>
                         <D:resourcetype/>
                     </D:prop>
-                </D:propfind>"#)
+                </D:propfind>"#,
+            )
             .send()
             .await
             .map_err(|e| WebDavError::RequestFailed(format!("PROPFIND failed: {}", e)))?;
@@ -204,14 +248,20 @@ impl ReqwestWebDavClient {
         }
 
         if !response.status().is_success() {
-            return Err(WebDavError::RequestFailed(format!("PROPFIND failed with status: {}", response.status())));
+            return Err(WebDavError::RequestFailed(format!(
+                "PROPFIND failed with status: {}",
+                response.status()
+            )));
         }
 
-        let body = response.text().await
+        let body = response
+            .text()
+            .await
             .map_err(|e| WebDavError::RequestFailed(format!("Failed to read response: {}", e)))?;
 
-        let metadata = crate::webdav_xml::parse_file_metadata(&body, path)
-            .map_err(|e| WebDavError::RequestFailed(format!("Failed to parse file metadata: {}", e)))?;
+        let metadata = crate::webdav_xml::parse_file_metadata(&body, path).map_err(|e| {
+            WebDavError::RequestFailed(format!("Failed to parse file metadata: {}", e))
+        })?;
 
         Ok(FileMeta {
             path: metadata.path,
@@ -247,8 +297,17 @@ mod tests {
         );
         let client = ReqwestWebDavClient::new(config).unwrap();
 
-        assert_eq!(client.build_url("test.txt"), "https://example.com/webdav/test.txt");
-        assert_eq!(client.build_url("/test.txt"), "https://example.com/webdav/test.txt");
-        assert_eq!(client.build_url("folder/test.txt"), "https://example.com/webdav/folder/test.txt");
+        assert_eq!(
+            client.build_url("test.txt"),
+            "https://example.com/webdav/test.txt"
+        );
+        assert_eq!(
+            client.build_url("/test.txt"),
+            "https://example.com/webdav/test.txt"
+        );
+        assert_eq!(
+            client.build_url("folder/test.txt"),
+            "https://example.com/webdav/folder/test.txt"
+        );
     }
 }

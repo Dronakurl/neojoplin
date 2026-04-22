@@ -19,8 +19,16 @@ fn test_encryption_method_string_v1_parameters() {
     // StringV1 is used for encrypting notes
     let method = EncryptionMethod::StringV1;
 
-    assert_eq!(method.chunk_size(), 65536, "StringV1 should use 64KB chunks");
-    assert_eq!(method.iteration_count(), 3, "StringV1 should use 3 PBKDF2 iterations");
+    assert_eq!(
+        method.chunk_size(),
+        65536,
+        "StringV1 should use 64KB chunks"
+    );
+    assert_eq!(
+        method.iteration_count(),
+        3,
+        "StringV1 should use 3 PBKDF2 iterations"
+    );
     assert_eq!(method.to_i32(), 10, "StringV1 method ID should be 10");
 }
 
@@ -29,8 +37,16 @@ fn test_encryption_method_file_v1_parameters() {
     // FileV1 is used for encrypting resources
     let method = EncryptionMethod::FileV1;
 
-    assert_eq!(method.chunk_size(), 131072, "FileV1 should use 128KB chunks");
-    assert_eq!(method.iteration_count(), 3, "FileV1 should use 3 PBKDF2 iterations");
+    assert_eq!(
+        method.chunk_size(),
+        131072,
+        "FileV1 should use 128KB chunks"
+    );
+    assert_eq!(
+        method.iteration_count(),
+        3,
+        "FileV1 should use 3 PBKDF2 iterations"
+    );
     assert_eq!(method.to_i32(), 9, "FileV1 method ID should be 9");
 }
 
@@ -39,8 +55,16 @@ fn test_encryption_method_key_v1_parameters() {
     // KeyV1 is used for encrypting master keys
     let method = EncryptionMethod::KeyV1;
 
-    assert_eq!(method.chunk_size(), 5000, "KeyV1 should use 5000 byte chunks");
-    assert_eq!(method.iteration_count(), 220000, "KeyV1 should use 220,000 PBKDF2 iterations");
+    assert_eq!(
+        method.chunk_size(),
+        5000,
+        "KeyV1 should use 5000 byte chunks"
+    );
+    assert_eq!(
+        method.iteration_count(),
+        220000,
+        "KeyV1 should use 220,000 PBKDF2 iterations"
+    );
     assert_eq!(method.to_i32(), 8, "KeyV1 method ID should be 8");
 }
 
@@ -68,7 +92,10 @@ fn test_aes_gcm_encryption_decryption_round_trip() {
         .decrypt_string(&encrypted, &key, EncryptionMethod::StringV1)
         .expect("Decryption should succeed");
 
-    assert_eq!(decrypted, plain_text, "Decrypted text should match original");
+    assert_eq!(
+        decrypted, plain_text,
+        "Decrypted text should match original"
+    );
 }
 
 #[test]
@@ -244,7 +271,10 @@ fn test_e2ee_manager_encrypt_decrypt_note() {
         .decrypt_note(&encrypted, &key_id)
         .expect("Note decryption should succeed");
 
-    assert_eq!(decrypted, plain_text, "Decrypted note should match original");
+    assert_eq!(
+        decrypted, plain_text,
+        "Decrypted note should match original"
+    );
 }
 
 #[test]
@@ -265,10 +295,7 @@ fn test_master_key_manager_save_load() {
             .expect("Should save master key");
 
         // List keys
-        let key_ids = manager
-            .list_keys()
-            .await
-            .expect("Should list keys");
+        let key_ids = manager.list_keys().await.expect("Should list keys");
         assert_eq!(key_ids, vec![key_id.clone()], "Should list saved key");
 
         // Load key

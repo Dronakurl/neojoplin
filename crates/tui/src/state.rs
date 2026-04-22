@@ -1,8 +1,11 @@
 // Application state management
 
-use joplin_domain::{Note, Folder};
+use std::cmp::Ordering;
+use std::collections::HashMap;
+
 use crate::settings::Settings;
 use crate::theme::Theme;
+use joplin_domain::{Folder, Note};
 
 /// Which panel has focus
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -10,6 +13,42 @@ pub enum FocusPanel {
     Notebooks,
     Notes,
     Content,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NoteSortMode {
+    TimeAsc,
+    TimeDesc,
+    NameAsc,
+}
+
+impl NoteSortMode {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::TimeAsc => "time",
+            Self::TimeDesc => "time desc",
+            Self::NameAsc => "name",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NotebookSortMode {
+    TimeAsc,
+    TimeDesc,
+    NameAsc,
+    RecentNote,
+}
+
+impl NotebookSortMode {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::TimeAsc => "time",
+            Self::TimeDesc => "time desc",
+            Self::NameAsc => "name",
+            Self::RecentNote => "recent note",
+        }
+    }
 }
 
 /// Application state
@@ -45,6 +84,16 @@ pub struct AppState {
     pub show_rename_prompt: bool,
     /// Current rename input
     pub rename_input: String,
+    /// Newly created note kept at end of the list until renamed
+    pub new_note_id: Option<String>,
+    /// Newly created notebook kept at end of the list until renamed
+    pub new_folder_id: Option<String>,
+    /// Whether sort help is active
+    pub show_sort_popup: bool,
+    /// Current note sort mode
+    pub note_sort: NoteSortMode,
+    /// Current notebook sort mode
+    pub notebook_sort: NotebookSortMode,
     /// Color theme
     pub theme: Theme,
     /// Whether to show error dialog
@@ -71,6 +120,11 @@ impl Default for AppState {
             settings: Settings::new(),
             show_rename_prompt: false,
             rename_input: String::new(),
+            new_note_id: None,
+            new_folder_id: None,
+            show_sort_popup: false,
+            note_sort: NoteSortMode::TimeAsc,
+            notebook_sort: NotebookSortMode::TimeAsc,
             theme: crate::theme::default_theme(),
             show_error_dialog: false,
             error_message: String::new(),
@@ -87,8 +141,18 @@ impl AppState {
     /// Set folders list
     pub fn set_folders(&mut self, folders: Vec<Folder>) {
         self.folders = folders;
-        // Select first folder if available (not in "All Notebooks" mode)
-        if !self.folders.is_empty() && self.selected_folder.is_none() && !self.all_notebooks_mode {
+
+        if self.folders.is_empty() {
+            self.selected_folder = None;
+            self.all_notebooks_mode = false;
+            return;
+        }
+
+        if let Some(idx) = self.selected_folder {
+            if idx >= self.folders.len() {
+                self.selected_folder = Some(self.folders.len() - 1);
+            }
+        } else if !self.all_notebooks_mode {
             self.selected_folder = Some(0);
         }
     }
@@ -109,8 +173,20 @@ impl AppState {
     /// Set notes list for current folder
     pub fn set_notes(&mut self, notes: Vec<Note>) {
         self.notes = notes;
-        // Select first note if available
-        if !self.notes.is_empty() && self.selected_note.is_none() {
+
+        if self.notes.is_empty() {
+            self.selected_note = None;
+            self.current_note_content.clear();
+            self.content_scroll_offset = 0;
+            return;
+        }
+
+        if let Some(idx) = self.selected_note {
+            if idx >= self.notes.len() {
+                self.selected_note = Some(self.notes.len() - 1);
+                self.load_note_content();
+            }
+        } else {
             self.selected_note = Some(0);
             self.load_note_content();
         }
@@ -124,22 +200,17 @@ impl AppState {
             FocusPanel::Notebooks => {
                 let len = self.folders.len();
                 if len > 0 {
-                    // Handle "All Notebooks" option
                     if self.all_notebooks_mode {
                         if delta > 0 {
-                            // Moving down from "All Notebooks" to first notebook
                             self.all_notebooks_mode = false;
                             self.selected_folder = Some(0);
                             folder_changed = true;
                         }
-                        // Moving up from "All Notebooks" stays there
                     } else if let Some(ref mut idx) = self.selected_folder {
                         let old_idx = *idx;
-                        // Calculate new index with special handling for "All Notebooks"
                         let new_idx_raw = (*idx as isize + delta).rem_euclid(len as isize) as usize;
 
                         if delta < 0 && *idx == 0 {
-                            // Moving up from first notebook goes to "All Notebooks"
                             self.all_notebooks_mode = true;
                             self.selected_folder = None;
                             folder_changed = true;
@@ -148,7 +219,6 @@ impl AppState {
                             folder_changed = old_idx != new_idx_raw;
                         }
                     } else {
-                        // No folder selected, select first one
                         self.selected_folder = Some(0);
                         self.all_notebooks_mode = false;
                         folder_changed = true;
@@ -165,9 +235,7 @@ impl AppState {
                     }
                 }
             }
-            FocusPanel::Content => {
-                // Scroll content (not implemented yet)
-            }
+            FocusPanel::Content => {}
         }
 
         folder_changed
@@ -196,7 +264,6 @@ impl AppState {
         if let Some(idx) = self.selected_note {
             if idx < self.notes.len() {
                 self.current_note_content = self.notes[idx].body.clone();
-                // Reset scroll offset when loading new note
                 self.content_scroll_offset = 0;
             }
         }
@@ -204,14 +271,77 @@ impl AppState {
 
     /// Get currently selected folder
     pub fn selected_folder(&self) -> Option<&Folder> {
-        self.selected_folder
-            .and_then(|idx| self.folders.get(idx))
+        self.selected_folder.and_then(|idx| self.folders.get(idx))
+    }
+
+    /// Get currently selected folder id
+    pub fn selected_folder_id(&self) -> Option<&str> {
+        self.selected_folder().map(|folder| folder.id.as_str())
     }
 
     /// Get currently selected note
     pub fn selected_note(&self) -> Option<&Note> {
-        self.selected_note
-            .and_then(|idx| self.notes.get(idx))
+        self.selected_note.and_then(|idx| self.notes.get(idx))
+    }
+
+    /// Get currently selected note id
+    pub fn selected_note_id(&self) -> Option<&str> {
+        self.selected_note().map(|note| note.id.as_str())
+    }
+
+    /// Select folder by id
+    pub fn select_folder_by_id(&mut self, folder_id: &str) -> bool {
+        if let Some(idx) = self
+            .folders
+            .iter()
+            .position(|folder| folder.id == folder_id)
+        {
+            self.selected_folder = Some(idx);
+            self.all_notebooks_mode = false;
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Select note by id
+    pub fn select_note_by_id(&mut self, note_id: &str) -> bool {
+        if let Some(idx) = self.notes.iter().position(|note| note.id == note_id) {
+            self.selected_note = Some(idx);
+            self.load_note_content();
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Sort notes for the current sort mode
+    pub fn sort_notes(&self, notes: &mut [Note]) {
+        notes.sort_by(|left, right| match self.note_sort {
+            NoteSortMode::TimeAsc => compare_note_time(left, right),
+            NoteSortMode::TimeDesc => compare_note_time(right, left),
+            NoteSortMode::NameAsc => {
+                compare_note_name(left, right).then_with(|| compare_note_time(left, right))
+            }
+        });
+        move_note_to_end(notes, self.new_note_id.as_deref());
+    }
+
+    /// Sort notebooks for the current sort mode
+    pub fn sort_folders(&self, folders: &mut [Folder], notes: &[Note]) {
+        let recent_note_times = folder_recent_note_times(notes);
+
+        folders.sort_by(|left, right| match self.notebook_sort {
+            NotebookSortMode::TimeAsc => compare_folder_time(left, right),
+            NotebookSortMode::TimeDesc => compare_folder_time(right, left),
+            NotebookSortMode::NameAsc => {
+                compare_folder_name(left, right).then_with(|| compare_folder_time(left, right))
+            }
+            NotebookSortMode::RecentNote => {
+                compare_folder_recent_note(left, right, &recent_note_times)
+            }
+        });
+        move_folder_to_end(folders, self.new_folder_id.as_deref());
     }
 
     /// Set status message
@@ -268,6 +398,40 @@ impl AppState {
         self.rename_input.clear();
     }
 
+    /// Show sort popup
+    pub fn open_sort_popup(&mut self) {
+        self.show_sort_popup = true;
+    }
+
+    /// Hide sort popup
+    pub fn close_sort_popup(&mut self) {
+        self.show_sort_popup = false;
+    }
+
+    /// Keep a newly created note at the end of the list until it is renamed.
+    pub fn mark_new_note(&mut self, note_id: String) {
+        self.new_note_id = Some(note_id);
+    }
+
+    /// Keep a newly created notebook at the end of the list until it is renamed.
+    pub fn mark_new_folder(&mut self, folder_id: String) {
+        self.new_folder_id = Some(folder_id);
+    }
+
+    /// Clear the note marker once the note is no longer "new".
+    pub fn clear_new_note_marker_if(&mut self, note_id: &str) {
+        if self.new_note_id.as_deref() == Some(note_id) {
+            self.new_note_id = None;
+        }
+    }
+
+    /// Clear the notebook marker once the notebook is no longer "new".
+    pub fn clear_new_folder_marker_if(&mut self, folder_id: &str) {
+        if self.new_folder_id.as_deref() == Some(folder_id) {
+            self.new_folder_id = None;
+        }
+    }
+
     /// Add character to rename input
     pub fn add_rename_char(&mut self, c: char) {
         self.rename_input.push(c);
@@ -279,10 +443,87 @@ impl AppState {
     }
 }
 
+fn compare_note_time(left: &Note, right: &Note) -> Ordering {
+    left.updated_time
+        .cmp(&right.updated_time)
+        .then_with(|| left.created_time.cmp(&right.created_time))
+        .then_with(|| compare_note_name(left, right))
+        .then_with(|| left.id.cmp(&right.id))
+}
+
+fn compare_note_name(left: &Note, right: &Note) -> Ordering {
+    normalized_name(&left.title)
+        .cmp(&normalized_name(&right.title))
+        .then_with(|| left.title.cmp(&right.title))
+        .then_with(|| left.id.cmp(&right.id))
+}
+
+fn compare_folder_time(left: &Folder, right: &Folder) -> Ordering {
+    left.updated_time
+        .cmp(&right.updated_time)
+        .then_with(|| left.created_time.cmp(&right.created_time))
+        .then_with(|| compare_folder_name(left, right))
+        .then_with(|| left.id.cmp(&right.id))
+}
+
+fn compare_folder_name(left: &Folder, right: &Folder) -> Ordering {
+    normalized_name(&left.title)
+        .cmp(&normalized_name(&right.title))
+        .then_with(|| left.title.cmp(&right.title))
+        .then_with(|| left.id.cmp(&right.id))
+}
+
+fn compare_folder_recent_note(
+    left: &Folder,
+    right: &Folder,
+    recent_note_times: &HashMap<&str, i64>,
+) -> Ordering {
+    let left_recent = recent_note_times.get(left.id.as_str()).copied();
+    let right_recent = recent_note_times.get(right.id.as_str()).copied();
+
+    right_recent
+        .cmp(&left_recent)
+        .then_with(|| compare_folder_name(left, right))
+        .then_with(|| compare_folder_time(right, left))
+}
+
+fn folder_recent_note_times(notes: &[Note]) -> HashMap<&str, i64> {
+    let mut recent_times = HashMap::new();
+
+    for note in notes {
+        recent_times
+            .entry(note.parent_id.as_str())
+            .and_modify(|current: &mut i64| *current = (*current).max(note.updated_time))
+            .or_insert(note.updated_time);
+    }
+
+    recent_times
+}
+
+fn normalized_name(name: &str) -> String {
+    name.to_lowercase()
+}
+
+fn move_note_to_end(notes: &mut [Note], note_id: Option<&str>) {
+    if let Some(note_id) = note_id {
+        if let Some(idx) = notes.iter().position(|note| note.id == note_id) {
+            notes[idx..].rotate_left(1);
+        }
+    }
+}
+
+fn move_folder_to_end(folders: &mut [Folder], folder_id: Option<&str>) {
+    if let Some(folder_id) = folder_id {
+        if let Some(idx) = folders.iter().position(|folder| folder.id == folder_id) {
+            folders[idx..].rotate_left(1);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use joplin_domain::{now_ms};
+    use joplin_domain::now_ms;
 
     #[test]
     fn test_state_default() {
@@ -291,6 +532,8 @@ mod tests {
         assert_eq!(state.selected_folder, None);
         assert_eq!(state.selected_note, None);
         assert_eq!(state.all_notebooks_mode, false);
+        assert_eq!(state.note_sort, NoteSortMode::TimeAsc);
+        assert_eq!(state.notebook_sort, NotebookSortMode::TimeAsc);
     }
 
     #[test]
@@ -324,23 +567,21 @@ mod tests {
     fn test_set_folders() {
         let mut state = AppState::new();
 
-        let folders = vec![
-            Folder {
-                id: "1".to_string(),
-                title: "Test Folder".to_string(),
-                parent_id: String::new(),
-                created_time: now_ms(),
-                updated_time: now_ms(),
-                user_created_time: 0,
-                user_updated_time: 0,
-                is_shared: 0,
-                share_id: None,
-                master_key_id: None,
-                encryption_applied: 0,
-                encryption_cipher_text: None,
-                icon: String::new(),
-            }
-        ];
+        let folders = vec![Folder {
+            id: "1".to_string(),
+            title: "Test Folder".to_string(),
+            parent_id: String::new(),
+            created_time: now_ms(),
+            updated_time: now_ms(),
+            user_created_time: 0,
+            user_updated_time: 0,
+            is_shared: 0,
+            share_id: None,
+            master_key_id: None,
+            encryption_applied: 0,
+            encryption_cipher_text: None,
+            icon: String::new(),
+        }];
 
         state.set_folders(folders);
         assert_eq!(state.selected_folder, Some(0));
@@ -351,17 +592,14 @@ mod tests {
     fn test_all_notebooks_mode() {
         let mut state = AppState::new();
 
-        // Enable "All Notebooks" mode
         state.all_notebooks_mode = true;
         state.selected_folder = None;
 
-        // Should be in "All Notebooks" mode
-        assert_eq!(state.all_notebooks_mode, true);
+        assert!(state.all_notebooks_mode);
         assert_eq!(state.selected_folder, None);
 
-        // Select first folder should exit "All Notebooks" mode
         state.set_folder(Some(0));
-        assert_eq!(state.all_notebooks_mode, false);
+        assert!(!state.all_notebooks_mode);
         assert_eq!(state.selected_folder, Some(0));
     }
 
@@ -369,7 +607,6 @@ mod tests {
     fn test_move_selection_with_all_notebooks() {
         let mut state = AppState::new();
 
-        // Set up some folders
         let folders = vec![
             Folder {
                 id: "1".to_string(),
@@ -405,21 +642,110 @@ mod tests {
 
         state.set_folders(folders);
         state.focus = FocusPanel::Notebooks;
-
-        // Start in "All Notebooks" mode
         state.all_notebooks_mode = true;
         state.selected_folder = None;
 
-        // Move down should select first folder
         let folder_changed = state.move_selection(1);
-        assert_eq!(folder_changed, true);
-        assert_eq!(state.all_notebooks_mode, false);
+        assert!(folder_changed);
+        assert!(!state.all_notebooks_mode);
         assert_eq!(state.selected_folder, Some(0));
 
-        // Move up from first folder should return to "All Notebooks"
         let folder_changed = state.move_selection(-1);
-        assert_eq!(folder_changed, true);
-        assert_eq!(state.all_notebooks_mode, true);
+        assert!(folder_changed);
+        assert!(state.all_notebooks_mode);
         assert_eq!(state.selected_folder, None);
+    }
+
+    #[test]
+    fn test_sort_notes_by_name() {
+        let mut state = AppState::new();
+        state.note_sort = NoteSortMode::NameAsc;
+
+        let mut notes = vec![
+            Note {
+                id: "2".to_string(),
+                title: "zeta".to_string(),
+                updated_time: 2,
+                ..Note::default()
+            },
+            Note {
+                id: "1".to_string(),
+                title: "Alpha".to_string(),
+                updated_time: 3,
+                ..Note::default()
+            },
+        ];
+
+        state.sort_notes(&mut notes);
+
+        assert_eq!(notes[0].title, "Alpha");
+        assert_eq!(notes[1].title, "zeta");
+    }
+
+    #[test]
+    fn test_sort_folders_by_recent_note() {
+        let mut state = AppState::new();
+        state.notebook_sort = NotebookSortMode::RecentNote;
+
+        let mut folders = vec![
+            Folder {
+                id: "folder-a".to_string(),
+                title: "Archive".to_string(),
+                ..Folder::default()
+            },
+            Folder {
+                id: "folder-b".to_string(),
+                title: "Inbox".to_string(),
+                ..Folder::default()
+            },
+            Folder {
+                id: "folder-c".to_string(),
+                title: "Empty".to_string(),
+                ..Folder::default()
+            },
+        ];
+        let notes = vec![
+            Note {
+                id: "n1".to_string(),
+                parent_id: "folder-a".to_string(),
+                updated_time: 10,
+                ..Note::default()
+            },
+            Note {
+                id: "n2".to_string(),
+                parent_id: "folder-b".to_string(),
+                updated_time: 20,
+                ..Note::default()
+            },
+        ];
+
+        state.sort_folders(&mut folders, &notes);
+
+        assert_eq!(folders[0].id, "folder-b");
+        assert_eq!(folders[1].id, "folder-a");
+        assert_eq!(folders[2].id, "folder-c");
+    }
+
+    #[test]
+    fn test_select_note_by_id() {
+        let mut state = AppState::new();
+        state.set_notes(vec![
+            Note {
+                id: "a".to_string(),
+                title: "First".to_string(),
+                body: "first".to_string(),
+                ..Note::default()
+            },
+            Note {
+                id: "b".to_string(),
+                title: "Second".to_string(),
+                body: "second".to_string(),
+                ..Note::default()
+            },
+        ]);
+
+        assert!(state.select_note_by_id("b"));
+        assert_eq!(state.selected_note, Some(1));
+        assert_eq!(state.current_note_content, "second");
     }
 }

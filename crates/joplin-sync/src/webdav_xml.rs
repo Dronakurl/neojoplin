@@ -3,9 +3,9 @@
 // This module provides production-grade XML parsing for WebDAV PROPFIND responses,
 // replacing the previous manual string-based parsing which was fragile.
 
+use anyhow::Result;
 use quick_xml::events::Event;
 use quick_xml::Reader;
-use anyhow::Result;
 
 /// Parsed entry from PROPFIND with optional metadata
 #[derive(Debug, Clone)]
@@ -56,23 +56,22 @@ pub fn parse_propfind_entries(xml_body: &str, _base_url: &str) -> Result<Vec<Pro
                     _ => {}
                 }
             }
-            Ok(Event::Text(e))
-                if in_response => {
-                    if let Ok(text) = e.unescape() {
-                        let text_string = text.into_owned();
-                        match current_tag.as_str() {
-                            "D:href" | "href" => {
-                                current_href = text_string;
-                            }
-                            "D:getlastmodified" | "getlastmodified" => {
-                                if let Ok(date) = chrono::DateTime::parse_from_rfc2822(&text_string) {
-                                    current_modified = Some(date.timestamp_millis());
-                                }
-                            }
-                            _ => {}
+            Ok(Event::Text(e)) if in_response => {
+                if let Ok(text) = e.unescape() {
+                    let text_string = text.into_owned();
+                    match current_tag.as_str() {
+                        "D:href" | "href" => {
+                            current_href = text_string;
                         }
+                        "D:getlastmodified" | "getlastmodified" => {
+                            if let Ok(date) = chrono::DateTime::parse_from_rfc2822(&text_string) {
+                                current_modified = Some(date.timestamp_millis());
+                            }
+                        }
+                        _ => {}
                     }
                 }
+            }
             Ok(Event::End(ref e)) => {
                 let name = e.name();
                 let tag = String::from_utf8_lossy(name.as_ref()).to_string();
@@ -133,25 +132,24 @@ pub fn parse_file_metadata(xml_body: &str, path: &str) -> Result<FileMetadata> {
                     _ => {}
                 }
             }
-            Ok(Event::Text(e))
-                if in_prop => {
-                    if let Ok(text) = e.unescape() {
-                        let text_string = text.into_owned();
+            Ok(Event::Text(e)) if in_prop => {
+                if let Ok(text) = e.unescape() {
+                    let text_string = text.into_owned();
 
-                        match current_tag_name.as_str() {
-                            "D:getcontentlength" | "getcontentlength" => {
-                                metadata.size = text_string.parse::<i64>().unwrap_or(0);
-                            }
-                            "D:getlastmodified" | "getlastmodified" => {
-                                // Parse HTTP date format
-                                if let Ok(date) = chrono::DateTime::parse_from_rfc2822(&text_string) {
-                                    metadata.modified = date.timestamp_millis();
-                                }
-                            }
-                            _ => {}
+                    match current_tag_name.as_str() {
+                        "D:getcontentlength" | "getcontentlength" => {
+                            metadata.size = text_string.parse::<i64>().unwrap_or(0);
                         }
+                        "D:getlastmodified" | "getlastmodified" => {
+                            // Parse HTTP date format
+                            if let Ok(date) = chrono::DateTime::parse_from_rfc2822(&text_string) {
+                                metadata.modified = date.timestamp_millis();
+                            }
+                        }
+                        _ => {}
                     }
                 }
+            }
             Ok(Event::End(ref e)) => {
                 let name = e.name().to_owned();
                 let name_bytes = name.as_ref();
@@ -208,7 +206,8 @@ mod tests {
 
     #[test]
     fn test_parse_propfind_files() {
-        let files = parse_propfind_files(PROPFIND_RESPONSE, "http://localhost:8080/webdav").unwrap();
+        let files =
+            parse_propfind_files(PROPFIND_RESPONSE, "http://localhost:8080/webdav").unwrap();
         assert_eq!(files.len(), 1);
         assert_eq!(files[0], "note.md");
     }

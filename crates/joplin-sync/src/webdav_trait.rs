@@ -1,44 +1,57 @@
 // WebDavClient trait implementation for ReqwestWebDavClient
 
 use crate::ReqwestWebDavClient;
-use joplin_domain::{WebDavClient, DavEntry, WebDavError};
-use futures::io::{Cursor, AsyncRead};
 use async_trait::async_trait;
+use futures::io::{AsyncRead, Cursor};
+use joplin_domain::{DavEntry, WebDavClient, WebDavError};
 
 #[async_trait]
 impl WebDavClient for ReqwestWebDavClient {
     async fn list(&self, path: &str) -> std::result::Result<Vec<DavEntry>, WebDavError> {
         // Use list_with_timestamps to get modification times for delta detection
-        let files = self.list_with_timestamps_impl(path).await
+        let files = self
+            .list_with_timestamps_impl(path)
+            .await
             .map_err(|e| WebDavError::RequestFailed(format!("List failed: {:?}", e)))?;
 
-        let entries = files.into_iter().map(|(filename, modified)| {
-            let full_path = if path.ends_with('/') {
-                format!("{}{}", path, filename)
-            } else {
-                format!("{}/{}", path, filename)
-            };
+        let entries = files
+            .into_iter()
+            .map(|(filename, modified)| {
+                let full_path = if path.ends_with('/') {
+                    format!("{}{}", path, filename)
+                } else {
+                    format!("{}/{}", path, filename)
+                };
 
-            DavEntry {
-                path: full_path,
-                is_directory: false,
-                size: None,
-                modified,
-                etag: None,
-            }
-        }).collect();
+                DavEntry {
+                    path: full_path,
+                    is_directory: false,
+                    size: None,
+                    modified,
+                    etag: None,
+                }
+            })
+            .collect();
 
         Ok(entries)
     }
 
-    async fn get(&self, path: &str) -> std::result::Result<Box<dyn AsyncRead + Unpin + Send>, WebDavError> {
+    async fn get(
+        &self,
+        path: &str,
+    ) -> std::result::Result<Box<dyn AsyncRead + Unpin + Send>, WebDavError> {
         match self.get_impl(path).await {
             Ok(data) => Ok(Box::new(Cursor::new(data))),
             Err(e) => Err(WebDavError::RequestFailed(format!("{:?}", e))),
         }
     }
 
-    async fn put(&self, path: &str, body: &[u8], _size: u64) -> std::result::Result<(), WebDavError> {
+    async fn put(
+        &self,
+        path: &str,
+        body: &[u8],
+        _size: u64,
+    ) -> std::result::Result<(), WebDavError> {
         match self.put_impl(path, body).await {
             Ok(_) => Ok(()),
             Err(e) => Err(WebDavError::RequestFailed(format!("{:?}", e))),
@@ -75,15 +88,33 @@ impl WebDavClient for ReqwestWebDavClient {
         Ok(DavEntry {
             path: meta.path.clone(),
             is_directory: meta.is_dir,
-            size: if meta.size >= 0 { Some(meta.size as u64) } else { None },
-            modified: if meta.modified != 0 { Some(meta.modified) } else { None },
+            size: if meta.size >= 0 {
+                Some(meta.size as u64)
+            } else {
+                None
+            },
+            modified: if meta.modified != 0 {
+                Some(meta.modified)
+            } else {
+                None
+            },
             etag: None,
         })
     }
 
-    async fn lock(&self, path: &str, _timeout: std::time::Duration) -> std::result::Result<String, WebDavError> {
+    async fn lock(
+        &self,
+        path: &str,
+        _timeout: std::time::Duration,
+    ) -> std::result::Result<String, WebDavError> {
         // Simple lock implementation - just create a lock file
-        let lock_token = format!("lock_{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs());
+        let lock_token = format!(
+            "lock_{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_secs()
+        );
         let lock_path = format!("{}.lock", path);
 
         // Create lock file with token
@@ -115,7 +146,7 @@ impl WebDavClient for ReqwestWebDavClient {
 
         // Upload to destination
         match self.put_impl(to, &data).await {
-            Ok(_) => {},
+            Ok(_) => {}
             Err(e) => return Err(WebDavError::RequestFailed(format!("{:?}", e))),
         }
 

@@ -17,6 +17,8 @@ async-trait = { workspace = true }
 anyhow = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
+futures = "0.3"
+uuid = { version = "1.11", features = ["v4", "serde"] }
 
 [dev-dependencies]
 tokio-test = "0.4"

@@ -1,7 +1,7 @@
 // Core error types for Joplin operations
 
+use serde::{Deserialize, Serialize};
 use thiserror::Error;
-use serde::{Serialize, Deserialize};
 
 /// Core domain error type for Joplin operations
 #[derive(Error, Debug)]

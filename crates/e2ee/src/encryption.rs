@@ -1,6 +1,9 @@
 // High-level encryption service for notes and data
 
-use crate::{crypto::{CryptoService, EncryptionMethod}, E2eeError, E2eeResult};
+use crate::{
+    crypto::{CryptoService, EncryptionMethod},
+    E2eeError, E2eeResult,
+};
 
 /// High-level encryption service for notes and data
 pub struct EncryptionService;
@@ -140,10 +143,14 @@ mod tests {
         let key = vec![0u8; 32];
         let plain_text = "Hello, World!";
 
-        let encrypted = service.encrypt_string(plain_text, &key, EncryptionMethod::StringV1).unwrap();
+        let encrypted = service
+            .encrypt_string(plain_text, &key, EncryptionMethod::StringV1)
+            .unwrap();
         println!("Encrypted: {}", encrypted);
 
-        let decrypted = service.decrypt_string(&encrypted, &key, EncryptionMethod::StringV1).unwrap();
+        let decrypted = service
+            .decrypt_string(&encrypted, &key, EncryptionMethod::StringV1)
+            .unwrap();
         assert_eq!(decrypted, plain_text);
     }
 
@@ -153,8 +160,12 @@ mod tests {
         let key = vec![0u8; 32];
         let plain_data = b"Binary data";
 
-        let encrypted = service.encrypt_bytes(plain_data, &key, EncryptionMethod::KeyV1).unwrap();
-        let decrypted = service.decrypt_bytes(&encrypted, &key, EncryptionMethod::KeyV1).unwrap();
+        let encrypted = service
+            .encrypt_bytes(plain_data, &key, EncryptionMethod::KeyV1)
+            .unwrap();
+        let decrypted = service
+            .decrypt_bytes(&encrypted, &key, EncryptionMethod::KeyV1)
+            .unwrap();
 
         assert_eq!(decrypted, plain_data);
     }
@@ -167,10 +178,14 @@ mod tests {
         // Create data larger than chunk size
         let large_data = vec![0u8; 200000]; // 200KB
 
-        let chunks = service.encrypt_chunked(&large_data, &key, EncryptionMethod::FileV1).unwrap();
+        let chunks = service
+            .encrypt_chunked(&large_data, &key, EncryptionMethod::FileV1)
+            .unwrap();
         assert!(chunks.len() > 1, "Should have multiple chunks");
 
-        let decrypted = service.decrypt_chunked(&chunks, &key, EncryptionMethod::FileV1).unwrap();
+        let decrypted = service
+            .decrypt_chunked(&chunks, &key, EncryptionMethod::FileV1)
+            .unwrap();
         assert_eq!(decrypted, large_data);
     }
 
@@ -180,8 +195,12 @@ mod tests {
         let password = "test-password";
         let salt = vec![1u8; 32];
 
-        let key1 = service.derive_key_from_password(password, &salt, 3, 32).unwrap();
-        let key2 = service.derive_key_from_password(password, &salt, 3, 32).unwrap();
+        let key1 = service
+            .derive_key_from_password(password, &salt, 3, 32)
+            .unwrap();
+        let key2 = service
+            .derive_key_from_password(password, &salt, 3, 32)
+            .unwrap();
 
         assert_eq!(key1, key2);
         assert_eq!(key1.len(), 32);

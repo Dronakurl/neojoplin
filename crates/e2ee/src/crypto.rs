@@ -30,7 +30,7 @@ impl EncryptionMethod {
     pub fn chunk_size(&self) -> usize {
         match self {
             EncryptionMethod::StringV1 => 65536, // 64KB
-            EncryptionMethod::FileV1 => 131072, // 128KB
+            EncryptionMethod::FileV1 => 131072,  // 128KB
             EncryptionMethod::KeyV1 => 5000,
             _ => 5000, // Default for older methods
         }
@@ -187,24 +187,14 @@ impl CryptoService {
         key_length: usize,
     ) -> E2eeResult<Vec<u8>> {
         let mut key = vec![0u8; key_length];
-        pbkdf2_hmac::<Sha512>(
-            password.as_bytes(),
-            salt,
-            iterations,
-            &mut key,
-        );
+        pbkdf2_hmac::<Sha512>(password.as_bytes(), salt, iterations, &mut key);
         Ok(key)
     }
 
     /// Derive a data key from master key using PBKDF2
     fn derive_key(master_key: &[u8], salt: &[u8], iterations: u32) -> E2eeResult<Vec<u8>> {
         let mut data_key = vec![0u8; 32]; // 256-bit key
-        pbkdf2_hmac::<Sha512>(
-            master_key,
-            salt,
-            iterations,
-            &mut data_key,
-        );
+        pbkdf2_hmac::<Sha512>(master_key, salt, iterations, &mut data_key);
         Ok(data_key)
     }
 
@@ -240,10 +230,12 @@ mod tests {
         let key = [0u8; 32]; // Test key
         let plain_text = "Hello, World!";
 
-        let encrypted = CryptoService::encrypt_string(&key, plain_text, EncryptionMethod::StringV1).unwrap();
+        let encrypted =
+            CryptoService::encrypt_string(&key, plain_text, EncryptionMethod::StringV1).unwrap();
         println!("Encrypted: {}", encrypted);
 
-        let decrypted = CryptoService::decrypt_string(&key, &encrypted, EncryptionMethod::StringV1).unwrap();
+        let decrypted =
+            CryptoService::decrypt_string(&key, &encrypted, EncryptionMethod::StringV1).unwrap();
         assert_eq!(decrypted, plain_text);
     }
 
@@ -263,7 +255,10 @@ mod tests {
 
     #[test]
     fn test_encryption_method_conversion() {
-        assert_eq!(EncryptionMethod::from_i32(10).unwrap(), EncryptionMethod::StringV1);
+        assert_eq!(
+            EncryptionMethod::from_i32(10).unwrap(),
+            EncryptionMethod::StringV1
+        );
         assert_eq!(EncryptionMethod::StringV1.to_i32(), 10);
     }
 

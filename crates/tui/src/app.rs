@@ -10,11 +10,11 @@ use ratatui::{backend::CrosstermBackend, Terminal};
 use std::sync::Arc;
 use std::time::Duration;
 
-use joplin_domain::{Storage, Note, Folder, now_ms};
+use joplin_domain::{now_ms, Folder, Note, Storage};
 use neojoplin_storage::SqliteStorage;
 use std::path::Path;
 
-use crate::state::{AppState, FocusPanel};
+use crate::state::{AppState, FocusPanel, NoteSortMode, NotebookSortMode};
 use crate::ui;
 
 /// Main TUI application
@@ -43,8 +43,9 @@ impl App {
             tokio::fs::create_dir_all(data_dir.join("sync")).await?;
             tokio::fs::write(
                 &sync_config_path,
-                serde_json::to_string_pretty(&default_sync_config)?
-            ).await?;
+                serde_json::to_string_pretty(&default_sync_config)?,
+            )
+            .await?;
         }
 
         // Load folders
@@ -73,11 +74,12 @@ impl App {
             state.set_status("Created default notebook: My Notebook");
         }
 
-        state.set_folders(folders);
-
         // Start in "All Notebooks" mode and load all notes
-        state.all_notebooks_mode = true;
-        let notes = storage.list_notes(None).await?;
+        let mut notes = storage.list_notes(None).await?;
+        state.sort_folders(&mut folders, &notes);
+        state.set_folders(folders);
+        state.set_folder(None);
+        state.sort_notes(&mut notes);
         state.set_notes(notes);
 
         // Load all settings (encryption and sync)
@@ -99,8 +101,7 @@ impl App {
         execute!(stdout, EnterAlternateScreen, EnableMouseCapture)
             .context("Failed to setup terminal")?;
         let backend = CrosstermBackend::new(stdout);
-        let mut terminal = Terminal::new(backend)
-            .context("Failed to create terminal")?;
+        let mut terminal = Terminal::new(backend).context("Failed to create terminal")?;
 
         // Run main loop
         let res = self.run_main_loop(&mut terminal).await;
@@ -136,6 +137,8 @@ impl App {
                     ui::render_settings(f, &self.state);
                 } else if self.state.show_rename_prompt {
                     ui::render_rename_prompt(f, &self.state);
+                } else if self.state.show_sort_popup {
+                    ui::render_sort_popup(f, &self.state);
                 } else {
                     ui::render_ui(f, &self.state);
                 }
@@ -224,6 +227,10 @@ impl App {
             return Ok(false);
         }
 
+        if self.state.show_sort_popup {
+            return self.handle_sort_popup_key_event(key).await;
+        }
+
         // Handle settings popup
         if self.state.show_settings {
             return self.handle_settings_key_event(key).await;
@@ -243,6 +250,15 @@ impl App {
             // Help
             KeyCode::Char('?') => {
                 self.show_help = true;
+            }
+
+            KeyCode::Char(',') => {
+                if matches!(self.state.focus, FocusPanel::Notebooks | FocusPanel::Notes) {
+                    self.state.open_sort_popup();
+                } else {
+                    self.state
+                        .set_status("Focus notebooks or notes to change sorting");
+                }
             }
 
             // Sync
@@ -279,7 +295,8 @@ impl App {
             KeyCode::Char('j') | KeyCode::Down => {
                 if self.state.focus == FocusPanel::Content {
                     // Scroll content down
-                    self.state.content_scroll_offset = self.state.content_scroll_offset.saturating_add(1);
+                    self.state.content_scroll_offset =
+                        self.state.content_scroll_offset.saturating_add(1);
                 } else {
                     let folder_changed = self.state.move_selection(1);
                     if folder_changed {
@@ -290,7 +307,8 @@ impl App {
             KeyCode::Char('k') | KeyCode::Up => {
                 if self.state.focus == FocusPanel::Content {
                     // Scroll content up
-                    self.state.content_scroll_offset = self.state.content_scroll_offset.saturating_sub(1);
+                    self.state.content_scroll_offset =
+                        self.state.content_scroll_offset.saturating_sub(1);
                 } else {
                     let folder_changed = self.state.move_selection(-1);
                     if folder_changed {
@@ -330,10 +348,9 @@ impl App {
             }
 
             // Toggle todo completion (space bar, like most task managers)
-            KeyCode::Char(' ')
-                if self.state.focus == FocusPanel::Notes => {
-                    self.toggle_todo().await?;
-                }
+            KeyCode::Char(' ') if self.state.focus == FocusPanel::Notes => {
+                self.toggle_todo().await?;
+            }
 
             // Toggle todo completion (t key)
             KeyCode::Char('t') => {
@@ -374,18 +391,22 @@ impl App {
 
         // Use the loaded settings (from settings.json) to get the sync target
         let sync_settings = &self.state.settings.sync;
-        let target = match sync_settings.current_target_index
+        let target = match sync_settings
+            .current_target_index
             .and_then(|i| sync_settings.targets.get(i))
         {
             Some(t) => t.clone(),
             None => {
-                self.state.set_status("Sync not configured. Go to Settings (s) → Sync tab to add a WebDAV target.");
+                self.state.set_status(
+                    "Sync not configured. Go to Settings (s) → Sync tab to add a WebDAV target.",
+                );
                 return Ok(());
             }
         };
 
         if target.url.is_empty() {
-            self.state.set_status("Sync URL is empty. Go to Settings (s) → Sync tab to configure.");
+            self.state
+                .set_status("Sync URL is empty. Go to Settings (s) → Sync tab to configure.");
             return Ok(());
         }
 
@@ -393,9 +414,10 @@ impl App {
         // base_url (http://localhost:8080/webdav) + remote_path (/shared).
         let (base_url, remote_path) = split_webdav_url(&target.url);
 
-        self.state.set_status(&format!("Syncing to {}{}...", base_url, remote_path));
+        self.state
+            .set_status(&format!("Syncing to {}{}...", base_url, remote_path));
 
-        use joplin_sync::{ReqwestWebDavClient, WebDavConfig, SyncEngine};
+        use joplin_sync::{ReqwestWebDavClient, SyncEngine, WebDavConfig};
         use tokio::sync::mpsc;
 
         let webdav_config = WebDavConfig {
@@ -407,11 +429,8 @@ impl App {
         let webdav_client = Arc::new(ReqwestWebDavClient::new(webdav_config)?);
         let (event_tx, mut event_rx) = mpsc::unbounded_channel();
 
-        let mut sync_engine = SyncEngine::new(
-            self.storage.clone(),
-            webdav_client,
-            event_tx,
-        ).with_remote_path(remote_path.clone());
+        let mut sync_engine = SyncEngine::new(self.storage.clone(), webdav_client, event_tx)
+            .with_remote_path(remote_path.clone());
 
         // Load E2EE service from .env / encryption.json (same logic as CLI)
         if let Ok(e2ee) = load_e2ee_service(&data_dir).await {
@@ -421,21 +440,16 @@ impl App {
         }
 
         // Consume sync events without printing (avoids TUI rendering issues)
-        let storage_clone = self.storage.clone();
-        tokio::spawn(async move {
-            while let Some(_event) = event_rx.recv().await {}
-        });
+        tokio::spawn(async move { while let Some(_event) = event_rx.recv().await {} });
 
         match sync_engine.sync().await {
             Ok(_) => {
                 self.state.set_status("✓ Sync completed successfully");
-
-                // Reload data after sync
-                let folders = storage_clone.list_folders().await?;
-                self.state.set_folders(folders);
-
-                let notes = storage_clone.list_notes(None).await?;
-                self.state.set_notes(notes);
+                let selected_folder_id = self.state.selected_folder_id().map(str::to_string);
+                let selected_note_id = self.state.selected_note_id().map(str::to_string);
+                let all_notebooks_mode = self.state.all_notebooks_mode;
+                self.refresh_lists(all_notebooks_mode, selected_folder_id, selected_note_id)
+                    .await?;
             }
             Err(e) => {
                 self.state.show_error(&format!("Sync failed: {}", e));
@@ -453,17 +467,17 @@ impl App {
     ) -> Result<()> {
         use neojoplin_core::Editor;
 
-        self.state.set_status(&format!("Opening editor for: {}", note.title));
+        self.state
+            .set_status(&format!("Opening editor for: {}", note.title));
 
         // Exit raw mode and alternate screen so editor can work properly
         disable_raw_mode().context("Failed to disable raw mode")?;
         let mut stdout = std::io::stdout();
-        execute!(stdout, LeaveAlternateScreen)
-            .context("Failed to leave alternate screen")?;
+        execute!(stdout, LeaveAlternateScreen).context("Failed to leave alternate screen")?;
 
         let editor_result = async {
-            let editor = Editor::new()
-                .map_err(|e| anyhow::anyhow!("Failed to initialize editor: {}", e))?;
+            let editor =
+                Editor::new().map_err(|e| anyhow::anyhow!("Failed to initialize editor: {}", e))?;
 
             // Open editor with title as first line so the user can rename by editing it.
             // Body follows after a blank line (same convention as Joplin's desktop editor).
@@ -472,9 +486,12 @@ impl App {
             } else {
                 format!("{}\n\n{}", note.title, note.body)
             };
-            editor.edit(&full_content, &note.title).await
+            editor
+                .edit(&full_content, &note.title)
+                .await
                 .map_err(|e| anyhow::anyhow!("Editor failed: {}", e))
-        }.await;
+        }
+        .await;
 
         // Restore terminal for TUI
         execute!(stdout, EnterAlternateScreen, EnableMouseCapture)
@@ -493,12 +510,24 @@ impl App {
         let rest: String = {
             let remaining: Vec<&str> = lines.collect();
             // Drop a leading blank line that acts as separator
-            let skip = if remaining.first().map(|l| l.trim().is_empty()).unwrap_or(false) { 1 } else { 0 };
+            let skip = if remaining
+                .first()
+                .map(|l| l.trim().is_empty())
+                .unwrap_or(false)
+            {
+                1
+            } else {
+                0
+            };
             remaining[skip..].join("\n")
         };
         let new_body = rest.trim_end().to_string();
 
-        let updated_title = if new_title.is_empty() { note.title.clone() } else { new_title };
+        let updated_title = if new_title.is_empty() {
+            note.title.clone()
+        } else {
+            new_title
+        };
 
         // Update note if anything changed
         if updated_title != note.title || new_body != note.body {
@@ -509,19 +538,17 @@ impl App {
             updated_note.updated_time = now_ms();
 
             self.storage.update_note(&updated_note).await?;
-
-            // Update in-memory state to reflect changes immediately
-            if let Some(idx) = self.state.selected_note {
-                if idx < self.state.notes.len() {
-                    self.state.notes[idx] = updated_note.clone();
-                }
+            if updated_note.title != note.title {
+                self.state.clear_new_note_marker_if(&updated_note.id);
             }
 
-            // Reload content and clear it to force refresh
-            self.state.current_note_content.clear();
-            self.state.load_note_content();
-
-            self.state.set_status(&format!("Updated: {}", updated_note.title));
+            let all_notebooks_mode = self.state.all_notebooks_mode;
+            let selected_folder_id = self.state.selected_folder_id().map(str::to_string);
+            let selected_note_id = Some(updated_note.id.clone());
+            self.refresh_lists(all_notebooks_mode, selected_folder_id, selected_note_id)
+                .await?;
+            self.state
+                .set_status(&format!("Updated: {}", updated_note.title));
         } else {
             self.state.set_status("No changes made to note");
         }
@@ -589,10 +616,17 @@ impl App {
 
         self.storage.create_note(&note).await?;
 
-        // Reload notes for current folder
-        self.reload_notes().await?;
+        self.state.mark_new_note(note.id.clone());
+        self.state.focus = FocusPanel::Notes;
+        self.refresh_lists(
+            self.state.all_notebooks_mode,
+            self.state.selected_folder_id().map(str::to_string),
+            Some(note.id.clone()),
+        )
+        .await?;
 
-        self.state.set_status(&format!("Created note: {}", title));
+        self.state
+            .set_status(&format!("Created note: {} - press r to rename it", title));
         Ok(())
     }
 
@@ -651,16 +685,25 @@ impl App {
         };
 
         self.storage.create_note(&note).await?;
-        self.reload_notes().await?;
+        self.state.mark_new_note(note.id.clone());
+        self.state.focus = FocusPanel::Notes;
+        self.refresh_lists(
+            self.state.all_notebooks_mode,
+            self.state.selected_folder_id().map(str::to_string),
+            Some(note.id.clone()),
+        )
+        .await?;
 
-        self.state.set_status(&format!("Created todo: {}", title));
+        self.state
+            .set_status(&format!("Created todo: {} - press r to rename it", title));
         Ok(())
     }
 
     /// Toggle todo completion status
     async fn toggle_todo(&mut self) -> Result<()> {
         if self.state.focus != FocusPanel::Notes {
-            self.state.set_status("Select a todo in the notes panel first");
+            self.state
+                .set_status("Select a todo in the notes panel first");
             return Ok(());
         }
 
@@ -673,14 +716,21 @@ impl App {
             let mut updated = note.clone();
             if updated.todo_completed > 0 {
                 updated.todo_completed = 0;
-                self.state.set_status(&format!("󰄱 Uncompleted: {}", updated.title));
+                self.state
+                    .set_status(&format!("󰄱 Uncompleted: {}", updated.title));
             } else {
                 updated.todo_completed = now_ms();
-                self.state.set_status(&format!("󰄲 Completed: {}", updated.title));
+                self.state
+                    .set_status(&format!("󰄲 Completed: {}", updated.title));
             }
             updated.updated_time = now_ms();
             self.storage.update_note(&updated).await?;
-            self.reload_notes().await?;
+            self.refresh_lists(
+                self.state.all_notebooks_mode,
+                self.state.selected_folder_id().map(str::to_string),
+                Some(updated.id.clone()),
+            )
+            .await?;
         }
 
         Ok(())
@@ -708,21 +758,14 @@ impl App {
         };
 
         self.storage.create_folder(&folder).await?;
-
-        // Reload folders
-        let folders = self.storage.list_folders().await?;
-        self.state.set_folders(folders);
-
-        // Select the newly created notebook (it should be the last one)
-        if !self.state.folders.is_empty() {
-            self.state.selected_folder = Some(self.state.folders.len() - 1);
-            // Clear notes since new notebook is empty
-            self.state.notes.clear();
-            self.state.selected_note = None;
-            self.state.current_note_content.clear();
-        }
-
-        self.state.set_status(&format!("Created notebook: {}", title));
+        self.state.mark_new_folder(folder.id.clone());
+        self.state.focus = FocusPanel::Notebooks;
+        self.refresh_lists(false, Some(folder.id.clone()), None)
+            .await?;
+        self.state.set_status(&format!(
+            "Created notebook: {} - press r to rename it",
+            title
+        ));
 
         Ok(())
     }
@@ -733,22 +776,27 @@ impl App {
             FocusPanel::Notes => {
                 if let Some(note) = self.state.selected_note() {
                     let note_id = note.id.clone();
-                    self.state.set_status(&format!("Deleting note: {}", note.title));
+                    self.state
+                        .set_status(&format!("Deleting note: {}", note.title));
                     self.storage.delete_note(&note_id).await?;
-                    self.reload_notes().await?;
+                    self.state.clear_new_note_marker_if(&note_id);
+                    self.refresh_lists(
+                        self.state.all_notebooks_mode,
+                        self.state.selected_folder_id().map(str::to_string),
+                        None,
+                    )
+                    .await?;
                     self.state.set_status("Note deleted");
                 }
             }
             FocusPanel::Notebooks => {
                 if let Some(folder) = self.state.selected_folder() {
                     let folder_id = folder.id.clone();
-                    self.state.set_status(&format!("Deleting notebook: {}", folder.title));
+                    self.state
+                        .set_status(&format!("Deleting notebook: {}", folder.title));
                     self.storage.delete_folder(&folder_id).await?;
-                    // Reload folders
-                    let folders = self.storage.list_folders().await?;
-                    self.state.set_folders(folders);
-                    // Reload notes
-                    self.reload_notes().await?;
+                    self.state.clear_new_folder_marker_if(&folder_id);
+                    self.refresh_lists(false, None, None).await?;
                     self.state.set_status("Notebook deleted");
                 }
             }
@@ -761,19 +809,12 @@ impl App {
 
     /// Reload notes for currently selected notebook
     async fn reload_notes(&mut self) -> Result<()> {
-        let notes = if self.state.all_notebooks_mode {
-            // Load all notes when in "All Notebooks" mode
-            self.storage.list_notes(None).await?
-        } else if let Some(folder) = self.state.selected_folder() {
-            // Load notes for specific folder
-            self.storage.list_notes(Some(&folder.id)).await?
-        } else {
-            // No folder selected, no notes
-            vec![]
-        };
-
-        self.state.set_notes(notes);
-        Ok(())
+        self.refresh_lists(
+            self.state.all_notebooks_mode,
+            self.state.selected_folder_id().map(str::to_string),
+            self.state.selected_note_id().map(str::to_string),
+        )
+        .await
     }
 
     /// Rename selected item (note or notebook)
@@ -788,15 +829,16 @@ impl App {
                     updated_note.updated_time = now_ms();
 
                     self.storage.update_note(&updated_note).await?;
+                    self.state.clear_new_note_marker_if(&updated_note.id);
+                    self.refresh_lists(
+                        self.state.all_notebooks_mode,
+                        self.state.selected_folder_id().map(str::to_string),
+                        Some(updated_note.id.clone()),
+                    )
+                    .await?;
 
-                    // Update in-memory state
-                    if let Some(idx) = self.state.selected_note {
-                        if idx < self.state.notes.len() {
-                            self.state.notes[idx] = updated_note;
-                        }
-                    }
-
-                    self.state.set_status(&format!("Renamed note to: {}", new_name));
+                    self.state
+                        .set_status(&format!("Renamed note to: {}", new_name));
                 }
             }
             FocusPanel::Notebooks => {
@@ -806,15 +848,16 @@ impl App {
                     updated_folder.updated_time = now_ms();
 
                     self.storage.update_folder(&updated_folder).await?;
+                    self.state.clear_new_folder_marker_if(&updated_folder.id);
+                    self.refresh_lists(
+                        false,
+                        Some(updated_folder.id.clone()),
+                        self.state.selected_note_id().map(str::to_string),
+                    )
+                    .await?;
 
-                    // Update in-memory state to preserve order
-                    if let Some(idx) = self.state.selected_folder {
-                        if idx < self.state.folders.len() {
-                            self.state.folders[idx] = updated_folder;
-                        }
-                    }
-
-                    self.state.set_status(&format!("Renamed notebook to: {}", new_name));
+                    self.state
+                        .set_status(&format!("Renamed notebook to: {}", new_name));
                 }
             }
             FocusPanel::Content => {
@@ -864,18 +907,17 @@ impl App {
             }
 
             // Add new sync target
-            KeyCode::Char('n') => {
-                if self.state.settings.current_tab == SettingsTab::Sync {
-                    self.state.settings.sync.show_add_form = true;
-                    self.state.settings.sync.clear_form();
-                    self.state.settings.sync.active_field = Some(crate::settings::FormField::Name);
-                }
+            KeyCode::Char('n') if self.state.settings.current_tab == SettingsTab::Sync => {
+                self.state.settings.sync.show_add_form = true;
+                self.state.settings.sync.clear_form();
+                self.state.settings.sync.active_field = Some(crate::settings::FormField::Name);
             }
 
             // Edit / enable encryption
             KeyCode::Char('e') => {
                 if self.state.settings.current_tab == SettingsTab::Encryption
-                    && !self.state.settings.encryption.enabled {
+                    && !self.state.settings.encryption.enabled
+                {
                     self.state.settings.show_new_key_prompt();
                 } else if self.state.settings.current_tab == SettingsTab::Sync {
                     let sync = &mut self.state.settings.sync;
@@ -892,7 +934,8 @@ impl App {
             // Delete / disable encryption
             KeyCode::Char('d') => {
                 if self.state.settings.current_tab == SettingsTab::Encryption
-                    && self.state.settings.encryption.enabled {
+                    && self.state.settings.encryption.enabled
+                {
                     let data_dir = neojoplin_core::Config::data_dir()?;
                     self.state.settings.disable_encryption(&data_dir).await?;
                     self.state.set_status("Encryption disabled");
@@ -905,36 +948,34 @@ impl App {
             }
 
             // Navigate target list
-            KeyCode::Up | KeyCode::Char('k') => {
-                if self.state.settings.current_tab == SettingsTab::Sync {
-                    let sync = &mut self.state.settings.sync;
-                    if let Some(ref mut idx) = sync.current_target_index {
-                        if *idx > 0 {
-                            *idx -= 1;
-                        }
+            KeyCode::Up | KeyCode::Char('k')
+                if self.state.settings.current_tab == SettingsTab::Sync =>
+            {
+                let sync = &mut self.state.settings.sync;
+                if let Some(ref mut idx) = sync.current_target_index {
+                    if *idx > 0 {
+                        *idx -= 1;
                     }
                 }
             }
 
-            KeyCode::Down | KeyCode::Char('j') => {
-                if self.state.settings.current_tab == SettingsTab::Sync {
-                    let sync = &mut self.state.settings.sync;
-                    if let Some(ref mut idx) = sync.current_target_index {
-                        if *idx + 1 < sync.targets.len() {
-                            *idx += 1;
-                        }
+            KeyCode::Down | KeyCode::Char('j')
+                if self.state.settings.current_tab == SettingsTab::Sync =>
+            {
+                let sync = &mut self.state.settings.sync;
+                if let Some(ref mut idx) = sync.current_target_index {
+                    if *idx + 1 < sync.targets.len() {
+                        *idx += 1;
                     }
                 }
             }
 
             // Save active target
-            KeyCode::Enter => {
-                if self.state.settings.current_tab == SettingsTab::Sync {
-                    if let Some(_idx) = self.state.settings.sync.current_target_index {
-                        let data_dir = neojoplin_core::Config::data_dir()?;
-                        let _ = self.state.settings.save_sync_settings(&data_dir).await;
-                        self.state.set_status("Target saved as active");
-                    }
+            KeyCode::Enter if self.state.settings.current_tab == SettingsTab::Sync => {
+                if let Some(_idx) = self.state.settings.sync.current_target_index {
+                    let data_dir = neojoplin_core::Config::data_dir()?;
+                    let _ = self.state.settings.save_sync_settings(&data_dir).await;
+                    self.state.set_status("Target saved as active");
                 }
             }
 
@@ -942,6 +983,119 @@ impl App {
         }
 
         Ok(false)
+    }
+
+    async fn handle_sort_popup_key_event(&mut self, key: KeyEvent) -> Result<bool> {
+        match key.code {
+            KeyCode::Esc | KeyCode::Char(',') | KeyCode::Char('q') => {
+                self.state.close_sort_popup();
+            }
+            KeyCode::Char('t') => {
+                self.state.close_sort_popup();
+                match self.state.focus {
+                    FocusPanel::Notes => {
+                        self.state.note_sort = NoteSortMode::TimeAsc;
+                        self.refresh_current_lists().await?;
+                        self.state.set_status("Sorted notes by time");
+                    }
+                    FocusPanel::Notebooks => {
+                        self.state.notebook_sort = NotebookSortMode::TimeAsc;
+                        self.refresh_current_lists().await?;
+                        self.state.set_status("Sorted notebooks by time");
+                    }
+                    FocusPanel::Content => {}
+                }
+            }
+            KeyCode::Char('T') => {
+                self.state.close_sort_popup();
+                match self.state.focus {
+                    FocusPanel::Notes => {
+                        self.state.note_sort = NoteSortMode::TimeDesc;
+                        self.refresh_current_lists().await?;
+                        self.state.set_status("Sorted notes by descending time");
+                    }
+                    FocusPanel::Notebooks => {
+                        self.state.notebook_sort = NotebookSortMode::TimeDesc;
+                        self.refresh_current_lists().await?;
+                        self.state.set_status("Sorted notebooks by descending time");
+                    }
+                    FocusPanel::Content => {}
+                }
+            }
+            KeyCode::Char('a') => {
+                self.state.close_sort_popup();
+                match self.state.focus {
+                    FocusPanel::Notes => {
+                        self.state.note_sort = NoteSortMode::NameAsc;
+                        self.refresh_current_lists().await?;
+                        self.state.set_status("Sorted notes by name");
+                    }
+                    FocusPanel::Notebooks => {
+                        self.state.notebook_sort = NotebookSortMode::NameAsc;
+                        self.refresh_current_lists().await?;
+                        self.state.set_status("Sorted notebooks by name");
+                    }
+                    FocusPanel::Content => {}
+                }
+            }
+            KeyCode::Char('m') if self.state.focus == FocusPanel::Notebooks => {
+                self.state.close_sort_popup();
+                self.state.notebook_sort = NotebookSortMode::RecentNote;
+                self.refresh_current_lists().await?;
+                self.state
+                    .set_status("Sorted notebooks by most recently changed note");
+            }
+            _ => {}
+        }
+
+        Ok(false)
+    }
+
+    async fn refresh_current_lists(&mut self) -> Result<()> {
+        self.refresh_lists(
+            self.state.all_notebooks_mode,
+            self.state.selected_folder_id().map(str::to_string),
+            self.state.selected_note_id().map(str::to_string),
+        )
+        .await
+    }
+
+    async fn refresh_lists(
+        &mut self,
+        all_notebooks_mode: bool,
+        selected_folder_id: Option<String>,
+        selected_note_id: Option<String>,
+    ) -> Result<()> {
+        let all_notes = self.storage.list_notes(None).await?;
+        let mut folders = self.storage.list_folders().await?;
+        self.state.sort_folders(&mut folders, &all_notes);
+        self.state.set_folders(folders);
+
+        if all_notebooks_mode {
+            self.state.set_folder(None);
+        } else if let Some(folder_id) = selected_folder_id.as_deref() {
+            if !self.state.select_folder_by_id(folder_id) && !self.state.folders.is_empty() {
+                self.state.set_folder(Some(0));
+            }
+        } else if self.state.folders.is_empty() {
+            self.state.set_folder(None);
+        }
+
+        let mut notes = if self.state.all_notebooks_mode {
+            all_notes
+        } else if let Some(folder) = self.state.selected_folder() {
+            self.storage.list_notes(Some(&folder.id)).await?
+        } else {
+            Vec::new()
+        };
+        self.state.sort_notes(&mut notes);
+        self.state.set_notes(notes);
+
+        if let Some(note_id) = selected_note_id.as_deref() {
+            self.state.select_note_by_id(note_id);
+        }
+
+        Ok(())
     }
 
     /// Handle keyboard events in the encryption password prompt
@@ -973,7 +1127,10 @@ impl App {
             KeyCode::Enter => {
                 let password = self.state.settings.encryption.password_input.clone();
                 let data_dir = neojoplin_core::Config::data_dir()?;
-                self.state.settings.enable_encryption(&password, &data_dir).await?;
+                self.state
+                    .settings
+                    .enable_encryption(&password, &data_dir)
+                    .await?;
             }
 
             KeyCode::Backspace => {
@@ -984,12 +1141,10 @@ impl App {
                 self.state.settings.encryption.password_error = None;
             }
 
-            KeyCode::Char(c) => {
-                match self.state.settings.encryption.active_field {
-                    EncryptionField::Password => self.state.settings.add_password_char(c),
-                    EncryptionField::Confirm => self.state.settings.add_confirm_password_char(c),
-                }
-            }
+            KeyCode::Char(c) => match self.state.settings.encryption.active_field {
+                EncryptionField::Password => self.state.settings.add_password_char(c),
+                EncryptionField::Confirm => self.state.settings.add_confirm_password_char(c),
+            },
 
             _ => {}
         }
@@ -1038,20 +1193,27 @@ impl App {
                 self.state.settings.sync.cycle_field_backward();
             }
 
-            KeyCode::Char('t')
-                if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                    // Test connection
-                    self.test_webdav_connection().await?;
-                }
+            KeyCode::Char('t') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                // Test connection
+                self.test_webdav_connection().await?;
+            }
 
             KeyCode::Char(c) => {
                 // Add character to active field
                 let active_field = self.state.settings.sync.active_field;
                 match active_field {
-                    Some(crate::settings::FormField::Name) => self.state.settings.sync.add_name_char(c),
-                    Some(crate::settings::FormField::Url) => self.state.settings.sync.add_url_char(c),
-                    Some(crate::settings::FormField::Username) => self.state.settings.sync.add_username_char(c),
-                    Some(crate::settings::FormField::Password) => self.state.settings.sync.add_password_char(c),
+                    Some(crate::settings::FormField::Name) => {
+                        self.state.settings.sync.add_name_char(c)
+                    }
+                    Some(crate::settings::FormField::Url) => {
+                        self.state.settings.sync.add_url_char(c)
+                    }
+                    Some(crate::settings::FormField::Username) => {
+                        self.state.settings.sync.add_username_char(c)
+                    }
+                    Some(crate::settings::FormField::Password) => {
+                        self.state.settings.sync.add_password_char(c)
+                    }
                     None => {}
                 }
             }
@@ -1060,10 +1222,18 @@ impl App {
                 // Remove character from active field
                 let active_field = self.state.settings.sync.active_field;
                 match active_field {
-                    Some(crate::settings::FormField::Name) => self.state.settings.sync.remove_name_char(),
-                    Some(crate::settings::FormField::Url) => self.state.settings.sync.remove_url_char(),
-                    Some(crate::settings::FormField::Username) => self.state.settings.sync.remove_username_char(),
-                    Some(crate::settings::FormField::Password) => self.state.settings.sync.remove_password_char(),
+                    Some(crate::settings::FormField::Name) => {
+                        self.state.settings.sync.remove_name_char()
+                    }
+                    Some(crate::settings::FormField::Url) => {
+                        self.state.settings.sync.remove_url_char()
+                    }
+                    Some(crate::settings::FormField::Username) => {
+                        self.state.settings.sync.remove_username_char()
+                    }
+                    Some(crate::settings::FormField::Password) => {
+                        self.state.settings.sync.remove_password_char()
+                    }
                     None => {}
                 }
             }
@@ -1113,7 +1283,8 @@ impl App {
         // Create or update target; remote_path is derived from URL at sync time
         let target = crate::settings::SyncTarget {
             id: if sync.show_edit_form {
-                sync.editing_target_index.and_then(|i| sync.targets.get(i).map(|t| t.id.clone()))
+                sync.editing_target_index
+                    .and_then(|i| sync.targets.get(i).map(|t| t.id.clone()))
                     .unwrap_or_else(joplin_domain::joplin_id)
             } else {
                 joplin_domain::joplin_id()
@@ -1172,18 +1343,16 @@ impl App {
         let config = WebDavConfig::new(base_url, username, password);
 
         match ReqwestWebDavClient::new(config) {
-            Ok(webdav) => {
-                match webdav.list_impl(&remote_path).await {
-                    Ok(_) => {
-                        self.state.settings.sync.connection_result =
-                            Some(crate::settings::ConnectionResult::Success);
-                    }
-                    Err(e) => {
-                        self.state.settings.sync.connection_result =
-                            Some(crate::settings::ConnectionResult::Failed(e.to_string()));
-                    }
+            Ok(webdav) => match webdav.list_impl(&remote_path).await {
+                Ok(_) => {
+                    self.state.settings.sync.connection_result =
+                        Some(crate::settings::ConnectionResult::Success);
                 }
-            }
+                Err(e) => {
+                    self.state.settings.sync.connection_result =
+                        Some(crate::settings::ConnectionResult::Failed(e.to_string()));
+                }
+            },
             Err(e) => {
                 self.state.settings.sync.connection_result =
                     Some(crate::settings::ConnectionResult::Failed(e.to_string()));
@@ -1236,13 +1405,17 @@ async fn load_e2ee_service(data_dir: &Path) -> Result<joplin_sync::E2eeService> 
     let config_content = tokio::fs::read_to_string(&encryption_config_path).await?;
     let config: serde_json::Value = serde_json::from_str(&config_content)?;
 
-    let enabled = config.get("enabled").and_then(|v| v.as_bool()).unwrap_or(false);
+    let enabled = config
+        .get("enabled")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
     if !enabled {
         return Ok(E2eeService::new());
     }
 
     // Read master password from encryption.json (stored on enable), then fall back to env
-    let master_password = config.get("master_password")
+    let master_password = config
+        .get("master_password")
         .and_then(|v| v.as_str())
         .filter(|s| !s.is_empty())
         .map(|s| s.to_string())

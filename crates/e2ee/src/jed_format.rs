@@ -25,9 +25,11 @@ impl JedEncoder {
         let encrypted_json: serde_json::Value = serde_json::from_str(&encrypted)
             .map_err(|e| E2eeError::InvalidJedFormat(format!("Invalid encrypted JSON: {}", e)))?;
 
-        let iv = encrypted_json["iv"].as_str()
+        let iv = encrypted_json["iv"]
+            .as_str()
             .ok_or_else(|| E2eeError::InvalidJedFormat("Missing IV".to_string()))?;
-        let ct = encrypted_json["ct"].as_str()
+        let ct = encrypted_json["ct"]
+            .as_str()
             .ok_or_else(|| E2eeError::InvalidJedFormat("Missing ciphertext".to_string()))?;
 
         // Create chunk JSON
@@ -110,9 +112,10 @@ impl JedDecoder {
     pub fn decode(jed: &str, master_key: &[u8]) -> E2eeResult<String> {
         // Parse header
         if !jed.starts_with(JED_VERSION) {
-            return Err(E2eeError::InvalidJedFormat(
-                format!("Invalid JED version, expected {}", JED_VERSION)
-            ));
+            return Err(E2eeError::InvalidJedFormat(format!(
+                "Invalid JED version, expected {}",
+                JED_VERSION
+            )));
         }
 
         let mut pos = JED_VERSION.len();
@@ -139,7 +142,9 @@ impl JedDecoder {
         while pos < jed.len() {
             // Parse chunk length (6 hex digits)
             if jed.len() < pos + 6 {
-                return Err(E2eeError::InvalidJedFormat("Missing chunk length".to_string()));
+                return Err(E2eeError::InvalidJedFormat(
+                    "Missing chunk length".to_string(),
+                ));
             }
             let length_hex = &jed[pos..pos + 6];
             let chunk_len = usize::from_str_radix(length_hex, 16)
@@ -148,7 +153,9 @@ impl JedDecoder {
 
             // Parse chunk data
             if jed.len() < pos + chunk_len {
-                return Err(E2eeError::InvalidJedFormat("Incomplete chunk data".to_string()));
+                return Err(E2eeError::InvalidJedFormat(
+                    "Incomplete chunk data".to_string(),
+                ));
             }
             let chunk_hex = &jed[pos..pos + chunk_len];
             pos += chunk_len;
@@ -159,15 +166,18 @@ impl JedDecoder {
             let chunk_json: serde_json::Value = serde_json::from_slice(&chunk_str)
                 .map_err(|e| E2eeError::InvalidJedFormat(format!("Invalid chunk JSON: {}", e)))?;
 
-            let iv = chunk_json["iv"].as_str()
+            let iv = chunk_json["iv"]
+                .as_str()
                 .ok_or_else(|| E2eeError::InvalidJedFormat("Missing IV in chunk".to_string()))?;
-            let ct = chunk_json["ct"].as_str()
-                .ok_or_else(|| E2eeError::InvalidJedFormat("Missing ciphertext in chunk".to_string()))?;
+            let ct = chunk_json["ct"].as_str().ok_or_else(|| {
+                E2eeError::InvalidJedFormat("Missing ciphertext in chunk".to_string())
+            })?;
 
             let iv_bytes = hex::decode(iv)
                 .map_err(|e| E2eeError::InvalidJedFormat(format!("Invalid IV hex: {}", e)))?;
-            let ct_bytes = hex::decode(ct)
-                .map_err(|e| E2eeError::InvalidJedFormat(format!("Invalid ciphertext hex: {}", e)))?;
+            let ct_bytes = hex::decode(ct).map_err(|e| {
+                E2eeError::InvalidJedFormat(format!("Invalid ciphertext hex: {}", e))
+            })?;
 
             // Decrypt chunk
             let decrypted = CryptoService::decrypt_bytes(
@@ -198,7 +208,9 @@ impl JedFormat {
     /// Extract the master key ID from JED format
     pub fn extract_key_id(jed: &str) -> E2eeResult<String> {
         if !jed.starts_with(JED_VERSION) {
-            return Err(E2eeError::InvalidJedFormat("Not a JED format string".to_string()));
+            return Err(E2eeError::InvalidJedFormat(
+                "Not a JED format string".to_string(),
+            ));
         }
 
         let pos = JED_VERSION.len() + 2; // Skip version + method
@@ -217,7 +229,9 @@ impl JedFormat {
     /// Extract the encryption method from JED format
     pub fn extract_method(jed: &str) -> E2eeResult<u16> {
         if !jed.starts_with(JED_VERSION) {
-            return Err(E2eeError::InvalidJedFormat("Not a JED format string".to_string()));
+            return Err(E2eeError::InvalidJedFormat(
+                "Not a JED format string".to_string(),
+            ));
         }
 
         let pos = JED_VERSION.len();

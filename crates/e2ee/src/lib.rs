@@ -1,15 +1,15 @@
 // End-to-end encryption (E2EE) support for NeoJoplin
 // Joplin-compatible encryption implementation
 
-pub mod encryption;
-pub mod master_key;
-pub mod jed_format;
 pub mod crypto;
+pub mod encryption;
+pub mod jed_format;
+pub mod master_key;
 
+pub use crypto::{CryptoService, EncryptedData, EncryptionMethod};
 pub use encryption::EncryptionService;
-pub use crypto::{EncryptionMethod, CryptoService, EncryptedData};
+pub use jed_format::{JedDecoder, JedEncoder, JedFormat};
 pub use master_key::{MasterKey, MasterKeyManager};
-pub use jed_format::{JedFormat, JedEncoder, JedDecoder};
 
 /// E2EE error types
 #[derive(Debug, thiserror::Error)]
@@ -145,11 +145,8 @@ impl E2eeManager {
         let password_key = self.derive_password_key(password)?;
 
         // Use CryptoService directly to get EncryptedData
-        let encrypted = CryptoService::encrypt_bytes(
-            &password_key,
-            master_key,
-            EncryptionMethod::KeyV1,
-        )?;
+        let encrypted =
+            CryptoService::encrypt_bytes(&password_key, master_key, EncryptionMethod::KeyV1)?;
 
         // Format as JSON
         let json = serde_json::json!({
@@ -162,10 +159,17 @@ impl E2eeManager {
     }
 
     /// Decrypt a master key with a password
-    pub fn decrypt_master_key(&mut self, encrypted_json: &str, password: &str) -> E2eeResult<Vec<u8>> {
+    pub fn decrypt_master_key(
+        &mut self,
+        encrypted_json: &str,
+        password: &str,
+    ) -> E2eeResult<Vec<u8>> {
         let password_key = self.derive_password_key(password)?;
-        self.encryption_service
-            .decrypt_bytes(encrypted_json, &password_key, EncryptionMethod::KeyV1)
+        self.encryption_service.decrypt_bytes(
+            encrypted_json,
+            &password_key,
+            EncryptionMethod::KeyV1,
+        )
     }
 
     /// Generate a new master key
@@ -181,8 +185,8 @@ impl E2eeManager {
         self.encryption_service.derive_key_from_password(
             password,
             b"neojoplin-master-key-salt", // In production, this should be random
-            220000, // High iteration count for master keys
-            32, // 256-bit key
+            220000,                       // High iteration count for master keys
+            32,                           // 256-bit key
         )
     }
 }
@@ -214,7 +218,9 @@ mod tests {
         let mut manager = E2eeManager::new();
         let master_key = manager.generate_master_key();
 
-        manager.context().load_master_key("test-key".to_string(), master_key);
+        manager
+            .context()
+            .load_master_key("test-key".to_string(), master_key);
 
         let plain_text = "Hello, World!";
         let encrypted = manager.encrypt_note(plain_text, "test-key").unwrap();

@@ -1,13 +1,13 @@
 // NeoJoplin - Main entry point (CLI + TUI)
 
+use anyhow::Result;
 use clap::{Parser, Subcommand};
-use joplin_domain::{now_ms, Note, Folder, Storage};
+use joplin_domain::{now_ms, Folder, Note, Storage};
 use joplin_sync::E2eeService;
 use neojoplin_core::Editor;
 use neojoplin_storage::SqliteStorage;
-use std::sync::Arc;
 use std::path::PathBuf;
-use anyhow::Result;
+use std::sync::Arc;
 
 #[derive(Parser)]
 #[command(name = "neojoplin")]
@@ -168,8 +168,8 @@ enum E2eeCommands {
 
 /// Load E2EE service if encryption is enabled
 async fn load_e2ee_service(password_override: Option<String>) -> Result<E2eeService> {
-    use neojoplin_core::Config;
     use joplin_sync::MasterKey;
+    use neojoplin_core::Config;
 
     let data_dir = Config::data_dir()?;
     let encryption_config_path = data_dir.join("encryption.json");
@@ -198,19 +198,20 @@ async fn load_e2ee_service(password_override: Option<String>) -> Result<E2eeServ
             }
         }
         // Fall back to stored password in encryption.json
-        if from_env.is_none()
-            && encryption_config_path.exists() {
-                if let Ok(content) = tokio::fs::read_to_string(&encryption_config_path).await {
-                    if let Ok(config) = serde_json::from_str::<serde_json::Value>(&content) {
-                        from_env = config.get("master_password")
-                            .and_then(|v| v.as_str())
-                            .filter(|s| !s.is_empty())
-                            .map(|s| s.to_string());
-                    }
+        if from_env.is_none() && encryption_config_path.exists() {
+            if let Ok(content) = tokio::fs::read_to_string(&encryption_config_path).await {
+                if let Ok(config) = serde_json::from_str::<serde_json::Value>(&content) {
+                    from_env = config
+                        .get("master_password")
+                        .and_then(|v| v.as_str())
+                        .filter(|s| !s.is_empty())
+                        .map(|s| s.to_string());
                 }
             }
+        }
         from_env
-    }.unwrap_or_default();
+    }
+    .unwrap_or_default();
 
     // Create E2EE service
     let mut e2ee = E2eeService::new();
@@ -224,24 +225,37 @@ async fn load_e2ee_service(password_override: Option<String>) -> Result<E2eeServ
         let config_content = tokio::fs::read_to_string(&encryption_config_path).await?;
         let mut config: serde_json::Value = serde_json::from_str(&config_content)?;
 
-        let enabled = config.get("enabled").and_then(|v| v.as_bool()).unwrap_or(false);
+        let enabled = config
+            .get("enabled")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
         if !enabled {
             return Ok(e2ee);
         }
 
         // If a new password was provided, save it
         if !master_password.is_empty() {
-            let stored = config.get("master_password").and_then(|v| v.as_str()).unwrap_or("");
+            let stored = config
+                .get("master_password")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
             if stored != master_password {
                 config["master_password"] = serde_json::json!(master_password);
-                tokio::fs::write(&encryption_config_path, serde_json::to_string_pretty(&config)?).await?;
+                tokio::fs::write(
+                    &encryption_config_path,
+                    serde_json::to_string_pretty(&config)?,
+                )
+                .await?;
             }
         }
 
         // Get active master key ID
-        let active_key_id = config.get("active_master_key_id")
+        let active_key_id = config
+            .get("active_master_key_id")
             .and_then(|v| v.as_str())
-            .ok_or_else(|| anyhow::anyhow!("Invalid encryption config: missing active_master_key_id"))?;
+            .ok_or_else(|| {
+                anyhow::anyhow!("Invalid encryption config: missing active_master_key_id")
+            })?;
 
         // Load the active master key from disk
         let keys_dir = data_dir.join("keys");
@@ -274,9 +288,16 @@ async fn load_e2ee_service(password_override: Option<String>) -> Result<E2eeServ
             "active_master_key_id": key_id,
             "master_password": master_password
         });
-        tokio::fs::write(&encryption_config_path, serde_json::to_string_pretty(&config)?).await?;
+        tokio::fs::write(
+            &encryption_config_path,
+            serde_json::to_string_pretty(&config)?,
+        )
+        .await?;
 
-        eprintln!("✓ E2EE auto-enabled with provided password (key: {})", key_id);
+        eprintln!(
+            "✓ E2EE auto-enabled with provided password (key: {})",
+            key_id
+        );
     }
 
     Ok(e2ee)
@@ -300,7 +321,11 @@ async fn main() -> Result<()> {
             Ok(())
         }
 
-        Commands::MkNote { title, parent, body } => {
+        Commands::MkNote {
+            title,
+            parent,
+            body,
+        } => {
             let note_body = match body {
                 Some(body) => body,
                 None => {
@@ -310,7 +335,9 @@ async fn main() -> Result<()> {
                         .map_err(|e| anyhow::anyhow!("Failed to initialize editor: {}", e))?;
 
                     let initial_content = format!("# {}\n\n", title);
-                    editor.edit(&initial_content, &title).await
+                    editor
+                        .edit(&initial_content, &title)
+                        .await
                         .map_err(|e| anyhow::anyhow!("Editor failed: {}", e))?
                 }
             };
@@ -352,7 +379,12 @@ async fn main() -> Result<()> {
             Ok(())
         }
 
-        Commands::MkTodo { title, parent, body, due } => {
+        Commands::MkTodo {
+            title,
+            parent,
+            body,
+            due,
+        } => {
             let todo_body = body.unwrap_or_default();
             let todo_due = if let Some(due_str) = due {
                 chrono::DateTime::parse_from_rfc3339(&due_str)
@@ -408,7 +440,8 @@ async fn main() -> Result<()> {
                 found
             } else {
                 let notes = storage.list_notes(None).await?;
-                let found = notes.iter()
+                let found = notes
+                    .iter()
                     .find(|n| n.title == todo)
                     .ok_or_else(|| anyhow::anyhow!("Todo not found: {}", todo))?;
                 storage.get_note(&found.id).await?.unwrap()
@@ -438,7 +471,8 @@ async fn main() -> Result<()> {
             } else {
                 // Try to find by title
                 let notes = storage.list_notes(None).await?;
-                let found = notes.iter()
+                let found = notes
+                    .iter()
                     .find(|n| n.title == note)
                     .ok_or_else(|| anyhow::anyhow!("Note not found: {}", note))?;
                 storage.get_note(&found.id).await?.unwrap()
@@ -447,10 +481,12 @@ async fn main() -> Result<()> {
             println!("Editing note: {}", note_obj.title);
 
             // Launch editor
-            let editor = Editor::new()
-                .map_err(|e| anyhow::anyhow!("Failed to initialize editor: {}", e))?;
+            let editor =
+                Editor::new().map_err(|e| anyhow::anyhow!("Failed to initialize editor: {}", e))?;
 
-            let updated_body = editor.edit(&note_obj.body, &note_obj.title).await
+            let updated_body = editor
+                .edit(&note_obj.body, &note_obj.title)
+                .await
                 .map_err(|e| anyhow::anyhow!("Editor failed: {}", e))?;
 
             // Update note if content changed
@@ -490,7 +526,11 @@ async fn main() -> Result<()> {
             Ok(())
         }
 
-        Commands::Ls { pattern, folders, notes } => {
+        Commands::Ls {
+            pattern,
+            folders,
+            notes,
+        } => {
             if folders || !notes {
                 let folders = storage.list_folders().await?;
                 for folder in folders {
@@ -505,7 +545,11 @@ async fn main() -> Result<()> {
                 for note in notes {
                     if pattern.as_ref().is_none_or(|p| note.title.contains(p)) {
                         let icon = if note.is_todo == 1 {
-                            if note.todo_completed > 0 { "󰄲" } else { "󰄱" }
+                            if note.todo_completed > 0 {
+                                "󰄲"
+                            } else {
+                                "󰄱"
+                            }
                         } else {
                             "📝"
                         };
@@ -524,7 +568,8 @@ async fn main() -> Result<()> {
             } else {
                 // Try to find by title
                 let notes = storage.list_notes(None).await?;
-                let found = notes.iter()
+                let found = notes
+                    .iter()
                     .find(|n| n.title == note)
                     .ok_or_else(|| anyhow::anyhow!("Note not found: {}", note))?;
                 storage.get_note(&found.id).await?.unwrap()
@@ -537,10 +582,16 @@ async fn main() -> Result<()> {
             Ok(())
         }
 
-        Commands::Sync { url, username, password, remote, e2ee_password } => {
-            use joplin_sync::{SyncEngine, ReqwestWebDavClient, WebDavConfig};
-            use tokio::sync::mpsc;
+        Commands::Sync {
+            url,
+            username,
+            password,
+            remote,
+            e2ee_password,
+        } => {
             use joplin_domain::SyncEvent;
+            use joplin_sync::{ReqwestWebDavClient, SyncEngine, WebDavConfig};
+            use tokio::sync::mpsc;
 
             let url = url.ok_or_else(|| anyhow::anyhow!("WebDAV URL is required"))?;
 
@@ -556,12 +607,8 @@ async fn main() -> Result<()> {
             // Load E2EE service if encryption is enabled
             let e2ee_service = load_e2ee_service(e2ee_password).await.ok();
 
-            let mut sync_engine = SyncEngine::new(
-                storage.clone(),
-                webdav,
-                event_tx,
-            )
-            .with_remote_path(remote);
+            let mut sync_engine =
+                SyncEngine::new(storage.clone(), webdav, event_tx).with_remote_path(remote);
 
             // Add E2EE service if available
             if let Some(e2ee) = e2ee_service {
@@ -590,7 +637,10 @@ async fn main() -> Result<()> {
                         SyncEvent::Completed { duration } => {
                             let secs = duration.as_secs_f32();
                             if uploaded > 0 || downloaded > 0 || deleted > 0 {
-                                println!("  Uploaded: {}, Downloaded: {}, Deleted: {} ({:.1}s)", uploaded, downloaded, deleted, secs);
+                                println!(
+                                    "  Uploaded: {}, Downloaded: {}, Deleted: {} ({:.1}s)",
+                                    uploaded, downloaded, deleted, secs
+                                );
                             } else {
                                 println!("  No changes ({:.1}s)", secs);
                             }
@@ -633,7 +683,8 @@ async fn main() -> Result<()> {
             } else {
                 // Try to find by title
                 let notes = storage.list_notes(None).await?;
-                let found = notes.iter()
+                let found = notes
+                    .iter()
                     .find(|n| n.title == note)
                     .ok_or_else(|| anyhow::anyhow!("Note not found: {}", note))?;
                 found.id.clone()
@@ -656,7 +707,8 @@ async fn main() -> Result<()> {
             } else {
                 // Try to find by title
                 let folders = storage.list_folders().await?;
-                let found = folders.iter()
+                let found = folders
+                    .iter()
                     .find(|f| f.title == folder)
                     .ok_or_else(|| anyhow::anyhow!("Folder not found: {}", folder))?;
                 found.id.clone()
@@ -673,9 +725,9 @@ async fn main() -> Result<()> {
         }
 
         Commands::E2ee { command } => {
-            use joplin_sync::E2eeService;
             use dialoguer::Confirm;
             use dialoguer::Password;
+            use joplin_sync::E2eeService;
 
             let data_dir = neojoplin_core::Config::data_dir()?;
             let keys_dir = data_dir.join("keys");
@@ -776,7 +828,10 @@ async fn main() -> Result<()> {
                         let enabled = config["enabled"].as_bool().unwrap_or(false);
                         let active_key = config["active_master_key_id"].as_str().unwrap_or("none");
 
-                        println!("Encryption: {}", if enabled { "Enabled" } else { "Disabled" });
+                        println!(
+                            "Encryption: {}",
+                            if enabled { "Enabled" } else { "Disabled" }
+                        );
                         println!("Active master key: {}", active_key);
 
                         // List available keys
@@ -826,8 +881,9 @@ async fn main() -> Result<()> {
                     }
 
                     let encrypted_key_json = tokio::fs::read_to_string(&key_path).await?;
-                    let encrypted_master_key: joplin_sync::MasterKey = serde_json::from_str(&encrypted_key_json)
-                        .map_err(|e| anyhow::anyhow!("Failed to parse master key: {}", e))?;
+                    let encrypted_master_key: joplin_sync::MasterKey =
+                        serde_json::from_str(&encrypted_key_json)
+                            .map_err(|e| anyhow::anyhow!("Failed to parse master key: {}", e))?;
 
                     // Prompt for password
                     let password = Password::new()

@@ -1,8 +1,8 @@
 // Integration tests for sync engine using FakeWebDavClient
 
-use neojoplin_sync::FakeWebDavClient;
-use neojoplin_core::{WebDavClient};
 use futures::io::AsyncReadExt;
+use neojoplin_core::WebDavClient;
+use neojoplin_sync::FakeWebDavClient;
 
 #[tokio::test]
 async fn test_fake_webdav_full_workflow() {
@@ -31,12 +31,18 @@ async fn test_fake_webdav_full_workflow() {
     assert_eq!(buffer, b"content1");
 
     // Test move operation
-    webdav.mv("/test/file1.txt", "/test/moved.txt").await.unwrap();
+    webdav
+        .mv("/test/file1.txt", "/test/moved.txt")
+        .await
+        .unwrap();
     assert!(!webdav.exists("/test/file1.txt").await.unwrap());
     assert!(webdav.exists("/test/moved.txt").await.unwrap());
 
     // Test copy operation
-    webdav.copy("/test/file2.txt", "/test/copied.txt").await.unwrap();
+    webdav
+        .copy("/test/file2.txt", "/test/copied.txt")
+        .await
+        .unwrap();
     assert!(webdav.exists("/test/file2.txt").await.unwrap());
     assert!(webdav.exists("/test/copied.txt").await.unwrap());
 
@@ -76,7 +82,10 @@ async fn test_fake_webdav_integration() {
 
     // Upload a file
     let data = b"test content";
-    webdav.put("/test/file.txt", data, data.len() as u64).await.unwrap();
+    webdav
+        .put("/test/file.txt", data, data.len() as u64)
+        .await
+        .unwrap();
 
     // Verify file exists
     assert!(webdav.exists("/test/file.txt").await.unwrap());

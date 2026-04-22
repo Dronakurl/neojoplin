@@ -1,11 +1,11 @@
 // Simple sync test using fake WebDAV client
 
-use neojoplin_core::{Storage, Note, Folder, now_ms};
+use neojoplin_core::{now_ms, Folder, Note, Storage};
 use neojoplin_storage::SqliteStorage;
-use neojoplin_sync::{SyncEngine, FakeWebDavClient};
-use std::sync::Arc;
+use neojoplin_sync::{FakeWebDavClient, SyncEngine};
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::Arc;
 use tokio::sync::mpsc;
 use uuid::Uuid;
 
@@ -76,11 +76,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Setup sync engine
     let (event_tx, mut event_rx) = mpsc::unbounded_channel();
-    let mut sync_engine = SyncEngine::new(
-        storage.clone(),
-        webdav.clone(),
-        event_tx,
-    ).with_remote_path("/test-sync".to_string());
+    let mut sync_engine = SyncEngine::new(storage.clone(), webdav.clone(), event_tx)
+        .with_remote_path("/test-sync".to_string());
 
     // Run sync
     println!("Starting sync...");

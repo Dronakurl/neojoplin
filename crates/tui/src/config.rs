@@ -34,8 +34,7 @@ pub struct Config {
 impl Config {
     /// Get configuration file path
     pub fn config_path() -> Result<PathBuf> {
-        let config_dir = dirs::config_dir()
-            .context("Failed to determine config directory")?;
+        let config_dir = dirs::config_dir().context("Failed to determine config directory")?;
         Ok(config_dir.join("neojoplin").join("config.toml"))
     }
 
@@ -50,11 +49,9 @@ impl Config {
             return Ok(config);
         }
 
-        let content = fs::read_to_string(&path)
-            .context("Failed to read config file")?;
+        let content = fs::read_to_string(&path).context("Failed to read config file")?;
 
-        let config: Config = toml::from_str(&content)
-            .context("Failed to parse config file")?;
+        let config: Config = toml::from_str(&content).context("Failed to parse config file")?;
 
         Ok(config)
     }
@@ -65,15 +62,12 @@ impl Config {
 
         // Create config directory if it doesn't exist
         if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent)
-                .context("Failed to create config directory")?;
+            fs::create_dir_all(parent).context("Failed to create config directory")?;
         }
 
-        let content = toml::to_string_pretty(self)
-            .context("Failed to serialize config")?;
+        let content = toml::to_string_pretty(self).context("Failed to serialize config")?;
 
-        fs::write(&path, content)
-            .context("Failed to write config file")?;
+        fs::write(&path, content).context("Failed to write config file")?;
 
         Ok(())
     }

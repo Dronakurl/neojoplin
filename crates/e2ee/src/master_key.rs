@@ -67,7 +67,8 @@ impl MasterKey {
         let iterations = 220000; // High iteration count for master keys
 
         // Derive encryption key from password
-        let password_key = CryptoService::derive_key_from_password(password, &salt, iterations, 32)?;
+        let password_key =
+            CryptoService::derive_key_from_password(password, &salt, iterations, 32)?;
 
         // Generate random IV
         let mut iv = [0u8; 12];
@@ -109,7 +110,8 @@ impl MasterKey {
         // Derive decryption key from password
         let salt = hex::decode(&encrypted.salt)
             .map_err(|e| E2eeError::InvalidMasterKey(format!("Invalid salt: {}", e)))?;
-        let password_key = CryptoService::derive_key_from_password(password, &salt, encrypted.iterations, 32)?;
+        let password_key =
+            CryptoService::derive_key_from_password(password, &salt, encrypted.iterations, 32)?;
 
         // Decrypt the master key data directly (no second PBKDF2)
         let data_iv = hex::decode(&encrypted.data.iv)
@@ -170,7 +172,8 @@ impl MasterKeyManager {
 
     /// Ensure the keys directory exists
     async fn ensure_dir(&self) -> E2eeResult<()> {
-        fs::create_dir_all(&self.keys_dir).await
+        fs::create_dir_all(&self.keys_dir)
+            .await
             .map_err(|e| E2eeError::Crypto(format!("Failed to create keys directory: {}", e)))?;
         Ok(())
     }
@@ -182,7 +185,8 @@ impl MasterKeyManager {
         let encrypted: String = key.encrypt_with_password(password)?;
         let key_path = self.keys_dir.join(format!("{}.json", key.id));
 
-        fs::write(&key_path, encrypted.as_bytes()).await
+        fs::write(&key_path, encrypted.as_bytes())
+            .await
             .map_err(|e| E2eeError::Crypto(format!("Failed to write master key: {}", e)))?;
 
         Ok(())
@@ -192,8 +196,9 @@ impl MasterKeyManager {
     pub async fn load_key(&self, id: &str, password: &str) -> E2eeResult<MasterKey> {
         let key_path = self.keys_dir.join(format!("{}.json", id));
 
-        let encrypted = fs::read_to_string(&key_path).await
-            .map_err(|e| E2eeError::InvalidMasterKey(format!("Failed to read master key: {}", e)))?;
+        let encrypted = fs::read_to_string(&key_path).await.map_err(|e| {
+            E2eeError::InvalidMasterKey(format!("Failed to read master key: {}", e))
+        })?;
 
         MasterKey::decrypt_from_password(&encrypted, password)
     }
@@ -204,17 +209,23 @@ impl MasterKeyManager {
             return Ok(Vec::new());
         }
 
-        let mut entries = fs::read_dir(&self.keys_dir).await
+        let mut entries = fs::read_dir(&self.keys_dir)
+            .await
             .map_err(|e| E2eeError::Crypto(format!("Failed to read keys directory: {}", e)))?;
 
         let mut key_ids = Vec::new();
-        while let Some(entry) = entries.next_entry().await
-            .map_err(|e| E2eeError::Crypto(format!("Failed to read directory entry: {}", e)))? {
+        while let Some(entry) = entries
+            .next_entry()
+            .await
+            .map_err(|e| E2eeError::Crypto(format!("Failed to read directory entry: {}", e)))?
+        {
             let file_name = entry.file_name();
             let file_name_str = file_name.to_string_lossy();
 
             if file_name_str.ends_with(".json") {
-                let id = file_name_str.strip_suffix(".json").unwrap_or(&file_name_str);
+                let id = file_name_str
+                    .strip_suffix(".json")
+                    .unwrap_or(&file_name_str);
                 key_ids.push(id.to_string());
             }
         }
@@ -226,7 +237,8 @@ impl MasterKeyManager {
     pub async fn delete_key(&self, id: &str) -> E2eeResult<()> {
         let key_path = self.keys_dir.join(format!("{}.json", id));
 
-        fs::remove_file(&key_path).await
+        fs::remove_file(&key_path)
+            .await
             .map_err(|e| E2eeError::Crypto(format!("Failed to delete master key: {}", e)))?;
 
         Ok(())

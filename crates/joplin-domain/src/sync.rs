@@ -1,7 +1,7 @@
 // Sync-related types and utilities
 
-use serde::{Deserialize, Serialize};
 use crate::error::*;
+use serde::{Deserialize, Serialize};
 
 /// Sync state for tracking sync progress
 #[derive(Debug, Clone, Serialize, Deserialize)]

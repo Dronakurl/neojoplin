@@ -1,9 +1,9 @@
 // Configuration types and management
 
-use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
 use crate::ConfigError;
 use joplin_domain::SyncTarget;
+use serde::{Deserialize, Serialize};
+use std::path::PathBuf;
 
 /// Application configuration
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -162,8 +162,7 @@ impl Config {
         let content = serde_json::to_string_pretty(self)
             .map_err(|e| ConfigError::InvalidFormat(format!("Serialization error: {}", e)))?;
 
-        std::fs::write(path, content)
-            .map_err(ConfigError::from)?;
+        std::fs::write(path, content).map_err(ConfigError::from)?;
 
         Ok(())
     }
@@ -172,7 +171,9 @@ impl Config {
     pub fn config_dir() -> Result<PathBuf, crate::ConfigError> {
         let dir = dirs::home_dir()
             .map(|p| p.join(".config/neojoplin"))
-            .ok_or_else(|| ConfigError::NotFound("Could not determine home directory".to_string()))?;
+            .ok_or_else(|| {
+                ConfigError::NotFound("Could not determine home directory".to_string())
+            })?;
 
         Ok(dir)
     }
@@ -198,7 +199,9 @@ impl Config {
     pub fn data_dir() -> Result<PathBuf, crate::ConfigError> {
         let dir = dirs::home_dir()
             .map(|p| p.join(".local/share/neojoplin"))
-            .ok_or_else(|| ConfigError::NotFound("Could not determine home directory".to_string()))?;
+            .ok_or_else(|| {
+                ConfigError::NotFound("Could not determine home directory".to_string())
+            })?;
 
         Ok(dir)
     }
@@ -206,8 +209,7 @@ impl Config {
     /// Ensure data directory exists
     pub fn ensure_data_dir() -> Result<PathBuf, crate::ConfigError> {
         let dir = Self::data_dir()?;
-        std::fs::create_dir_all(&dir)
-            .map_err(ConfigError::from)?;
+        std::fs::create_dir_all(&dir).map_err(ConfigError::from)?;
         Ok(dir)
     }
 
@@ -219,8 +221,7 @@ impl Config {
     /// Get temp directory
     pub fn temp_dir() -> Result<PathBuf, crate::ConfigError> {
         let dir = Self::data_dir()?.join("temp");
-        std::fs::create_dir_all(&dir)
-            .map_err(ConfigError::from)?;
+        std::fs::create_dir_all(&dir).map_err(ConfigError::from)?;
         Ok(dir)
     }
 }

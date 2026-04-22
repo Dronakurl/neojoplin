@@ -4,13 +4,13 @@
 // the generic joplin-sync functionality.
 
 // Re-export from joplin-sync for convenience
-pub use joplin_sync::{
-    SyncEngine, ReqwestWebDavClient, WebDavConfig,
-    SyncInfo, DeltaContext
-};
+pub use joplin_sync::{DeltaContext, ReqwestWebDavClient, SyncEngine, SyncInfo, WebDavConfig};
+
+mod fake_webdav;
+
+pub use fake_webdav::FakeWebDavClient;
 
 // Re-export from joplin-domain for convenience
 pub use joplin_domain::{
-    WebDavClient, DavEntry, SyncEvent, LockHandle,
-    SyncPhase, SyncState, WebDavError, SyncError
+    DavEntry, LockHandle, SyncError, SyncEvent, SyncPhase, SyncState, WebDavClient, WebDavError,
 };

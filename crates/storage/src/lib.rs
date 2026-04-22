@@ -1,14 +1,12 @@
 // SQLite storage implementation for NeoJoplin
 
-use sqlx::{sqlite::SqliteConnectOptions, SqlitePool, sqlite::SqlitePoolOptions};
+use sqlx::{sqlite::SqliteConnectOptions, sqlite::SqlitePoolOptions, SqlitePool};
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 
 use joplin_domain::{
-    Storage, DatabaseError, Note, Folder, Tag, NoteTag,
-    SyncItem, DeletedItem, now_ms
+    now_ms, DatabaseError, DeletedItem, Folder, Note, NoteTag, Storage, SyncItem, Tag,
 };
-
 
 /// SQLite storage implementation
 pub struct SqliteStorage {
@@ -22,13 +20,15 @@ impl SqliteStorage {
 
         // Ensure parent directory exists
         if let Some(parent) = db_path.parent() {
-            tokio::fs::create_dir_all(parent)
-                .await
-                .map_err(|e| DatabaseError::ConnectionFailed(format!("Failed to create directory: {}", e)))?;
+            tokio::fs::create_dir_all(parent).await.map_err(|e| {
+                DatabaseError::ConnectionFailed(format!("Failed to create directory: {}", e))
+            })?;
         }
 
         let options = SqliteConnectOptions::from_str(&format!("sqlite:{}", db_path.display()))
-            .map_err(|e| DatabaseError::ConnectionFailed(format!("Invalid connection string: {}", e)))?
+            .map_err(|e| {
+                DatabaseError::ConnectionFailed(format!("Invalid connection string: {}", e))
+            })?
             .create_if_missing(true)
             .journal_mode(sqlx::sqlite::SqliteJournalMode::Wal)
             .synchronous(sqlx::sqlite::SqliteSynchronous::Normal);
@@ -47,8 +47,9 @@ impl SqliteStorage {
 
     /// Get the database path
     fn db_path() -> Result<PathBuf, DatabaseError> {
-        let data_dir = neojoplin_core::Config::data_dir()
-            .map_err(|e| DatabaseError::ConnectionFailed(format!("Could not determine data directory: {}", e)))?;
+        let data_dir = neojoplin_core::Config::data_dir().map_err(|e| {
+            DatabaseError::ConnectionFailed(format!("Could not determine data directory: {}", e))
+        })?;
         Ok(data_dir.join("joplin.db"))
     }
 
@@ -56,13 +57,15 @@ impl SqliteStorage {
     pub async fn with_path(path: &Path) -> Result<Self, DatabaseError> {
         // Ensure parent directory exists
         if let Some(parent) = path.parent() {
-            tokio::fs::create_dir_all(parent)
-                .await
-                .map_err(|e| DatabaseError::ConnectionFailed(format!("Failed to create directory: {}", e)))?;
+            tokio::fs::create_dir_all(parent).await.map_err(|e| {
+                DatabaseError::ConnectionFailed(format!("Failed to create directory: {}", e))
+            })?;
         }
 
         let options = SqliteConnectOptions::from_str(&format!("sqlite:{}", path.display()))
-            .map_err(|e| DatabaseError::ConnectionFailed(format!("Invalid connection string: {}", e)))?
+            .map_err(|e| {
+                DatabaseError::ConnectionFailed(format!("Invalid connection string: {}", e))
+            })?
             .create_if_missing(true)
             .journal_mode(sqlx::sqlite::SqliteJournalMode::Wal)
             .synchronous(sqlx::sqlite::SqliteSynchronous::Normal);
@@ -82,11 +85,10 @@ impl SqliteStorage {
     /// Initialize the database schema
     async fn initialize(&self) -> Result<(), DatabaseError> {
         // Check if database is already initialized
-        let version_result: Result<Option<i32>, _> = sqlx::query_scalar(
-            "SELECT version FROM version LIMIT 1"
-        )
-        .fetch_optional(&self.pool)
-        .await;
+        let version_result: Result<Option<i32>, _> =
+            sqlx::query_scalar("SELECT version FROM version LIMIT 1")
+                .fetch_optional(&self.pool)
+                .await;
 
         if let Ok(Some(version)) = version_result {
             if version >= 41 {
@@ -101,9 +103,9 @@ impl SqliteStorage {
 
     /// Create the database schema
     async fn create_schema(&self) -> Result<(), DatabaseError> {
-        let mut tx = self.pool.begin()
-            .await
-            .map_err(|e| DatabaseError::ConnectionFailed(format!("Failed to begin transaction: {}", e)))?;
+        let mut tx = self.pool.begin().await.map_err(|e| {
+            DatabaseError::ConnectionFailed(format!("Failed to begin transaction: {}", e))
+        })?;
 
         // Create version table first
         sqlx::query(
@@ -112,11 +114,13 @@ impl SqliteStorage {
                 version INTEGER NOT NULL,
                 table_fields_version INTEGER DEFAULT 0
             )
-            "#
+            "#,
         )
         .execute(&mut *tx)
         .await
-        .map_err(|e| DatabaseError::MigrationFailed(format!("Failed to create version table: {}", e)))?;
+        .map_err(|e| {
+            DatabaseError::MigrationFailed(format!("Failed to create version table: {}", e))
+        })?;
 
         // Create notes table
         sqlx::query(
@@ -152,11 +156,13 @@ impl SqliteStorage {
                 share_id TEXT,
                 conflict_original_id TEXT
             )
-            "#
+            "#,
         )
         .execute(&mut *tx)
         .await
-        .map_err(|e| DatabaseError::MigrationFailed(format!("Failed to create notes table: {}", e)))?;
+        .map_err(|e| {
+            DatabaseError::MigrationFailed(format!("Failed to create notes table: {}", e))
+        })?;
 
         // Create folders table
         sqlx::query(
@@ -174,11 +180,13 @@ impl SqliteStorage {
                 master_key_id TEXT,
                 is_shared INTEGER DEFAULT 0
             )
-            "#
+            "#,
         )
         .execute(&mut *tx)
         .await
-        .map_err(|e| DatabaseError::MigrationFailed(format!("Failed to create folders table: {}", e)))?;
+        .map_err(|e| {
+            DatabaseError::MigrationFailed(format!("Failed to create folders table: {}", e))
+        })?;
 
         // Create tags table
         sqlx::query(
@@ -193,11 +201,13 @@ impl SqliteStorage {
                 parent_id TEXT,
                 is_shared INTEGER DEFAULT 0
             )
-            "#
+            "#,
         )
         .execute(&mut *tx)
         .await
-        .map_err(|e| DatabaseError::MigrationFailed(format!("Failed to create tags table: {}", e)))?;
+        .map_err(|e| {
+            DatabaseError::MigrationFailed(format!("Failed to create tags table: {}", e))
+        })?;
 
         // Create note_tags table
         sqlx::query(
@@ -212,11 +222,13 @@ impl SqliteStorage {
                 FOREIGN KEY (note_id) REFERENCES notes(id) ON DELETE CASCADE,
                 FOREIGN KEY (tag_id) REFERENCES tags(id) ON DELETE CASCADE
             )
-            "#
+            "#,
         )
         .execute(&mut *tx)
         .await
-        .map_err(|e| DatabaseError::MigrationFailed(format!("Failed to create note_tags table: {}", e)))?;
+        .map_err(|e| {
+            DatabaseError::MigrationFailed(format!("Failed to create note_tags table: {}", e))
+        })?;
 
         // Create resources table
         sqlx::query(
@@ -240,11 +252,13 @@ impl SqliteStorage {
                 master_key_id TEXT,
                 is_shared INTEGER DEFAULT 0
             )
-            "#
+            "#,
         )
         .execute(&mut *tx)
         .await
-        .map_err(|e| DatabaseError::MigrationFailed(format!("Failed to create resources table: {}", e)))?;
+        .map_err(|e| {
+            DatabaseError::MigrationFailed(format!("Failed to create resources table: {}", e))
+        })?;
 
         // Create settings table
         sqlx::query(
@@ -254,11 +268,13 @@ impl SqliteStorage {
                 value TEXT,
                 type INTEGER
             )
-            "#
+            "#,
         )
         .execute(&mut *tx)
         .await
-        .map_err(|e| DatabaseError::MigrationFailed(format!("Failed to create settings table: {}", e)))?;
+        .map_err(|e| {
+            DatabaseError::MigrationFailed(format!("Failed to create settings table: {}", e))
+        })?;
 
         // Create sync_items table
         sqlx::query(
@@ -273,11 +289,13 @@ impl SqliteStorage {
                 sync_disabled_reason TEXT,
                 item_location INTEGER DEFAULT 1
             )
-            "#
+            "#,
         )
         .execute(&mut *tx)
         .await
-        .map_err(|e| DatabaseError::MigrationFailed(format!("Failed to create sync_items table: {}", e)))?;
+        .map_err(|e| {
+            DatabaseError::MigrationFailed(format!("Failed to create sync_items table: {}", e))
+        })?;
 
         // Create deleted_items table
         sqlx::query(
@@ -289,11 +307,13 @@ impl SqliteStorage {
                 deleted_time INTEGER NOT NULL,
                 sync_target INTEGER NOT NULL
             )
-            "#
+            "#,
         )
         .execute(&mut *tx)
         .await
-        .map_err(|e| DatabaseError::MigrationFailed(format!("Failed to create deleted_items table: {}", e)))?;
+        .map_err(|e| {
+            DatabaseError::MigrationFailed(format!("Failed to create deleted_items table: {}", e))
+        })?;
 
         // Create full-text search table (standalone, not external content)
         sqlx::query(
@@ -301,11 +321,13 @@ impl SqliteStorage {
             CREATE VIRTUAL TABLE IF NOT EXISTS notes_fts USING fts5(
                 id UNINDEXED, title, body
             )
-            "#
+            "#,
         )
         .execute(&mut *tx)
         .await
-        .map_err(|e| DatabaseError::MigrationFailed(format!("Failed to create notes_fts table: {}", e)))?;
+        .map_err(|e| {
+            DatabaseError::MigrationFailed(format!("Failed to create notes_fts table: {}", e))
+        })?;
 
         // Set database version
         sqlx::query("INSERT INTO version (version) VALUES (41)")
@@ -313,9 +335,9 @@ impl SqliteStorage {
             .await
             .map_err(|e| DatabaseError::MigrationFailed(format!("Failed to set version: {}", e)))?;
 
-        tx.commit()
-            .await
-            .map_err(|e| DatabaseError::MigrationFailed(format!("Failed to commit transaction: {}", e)))?;
+        tx.commit().await.map_err(|e| {
+            DatabaseError::MigrationFailed(format!("Failed to commit transaction: {}", e))
+        })?;
 
         tracing::info!("Database schema created successfully");
         Ok(())
@@ -335,7 +357,7 @@ impl SqliteStorage {
             r#"
             INSERT INTO notes_fts (id, title, body)
             VALUES (?, ?, ?)
-            "#
+            "#,
         )
         .bind(&note.id)
         .bind(&note.title)
@@ -418,7 +440,7 @@ impl Storage for SqliteStorage {
                 encryption_blob_encrypted, master_key_id, share_id,
                 conflict_original_id
             FROM notes WHERE id = ?
-            "#
+            "#,
         )
         .bind(id)
         .fetch_optional(&self.pool)
@@ -429,7 +451,6 @@ impl Storage for SqliteStorage {
     }
 
     async fn update_note(&self, note: &Note) -> Result<(), DatabaseError> {
-
         sqlx::query(
             r#"
             UPDATE notes SET
@@ -445,7 +466,7 @@ impl Storage for SqliteStorage {
                 master_key_id = ?, share_id = ?,
                 conflict_original_id = ?
             WHERE id = ?
-            "#
+            "#,
         )
         .bind(&note.title)
         .bind(&note.body)
@@ -510,7 +531,7 @@ impl Storage for SqliteStorage {
                 FROM notes
                 WHERE parent_id = ?
                 ORDER BY "order" ASC, title ASC
-                "#
+                "#,
             )
             .bind(folder_id)
             .fetch_all(&self.pool)
@@ -530,7 +551,7 @@ impl Storage for SqliteStorage {
                     conflict_original_id
                 FROM notes
                 ORDER BY "order" ASC, title ASC
-                "#
+                "#,
             )
             .fetch_all(&self.pool)
             .await
@@ -549,7 +570,7 @@ impl Storage for SqliteStorage {
                 user_created_time, user_updated_time, parent_id,
                 icon, share_id, master_key_id, is_shared
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            "#
+            "#,
         )
         .bind(&folder.id)
         .bind(&folder.title)
@@ -577,7 +598,7 @@ impl Storage for SqliteStorage {
                 user_created_time, user_updated_time, parent_id,
                 icon, share_id, master_key_id, is_shared
             FROM folders WHERE id = ?
-            "#
+            "#,
         )
         .bind(id)
         .fetch_optional(&self.pool)
@@ -595,7 +616,7 @@ impl Storage for SqliteStorage {
                 user_updated_time = ?, parent_id = ?,
                 icon = ?, share_id = ?, master_key_id = ?, is_shared = ?
             WHERE id = ?
-            "#
+            "#,
         )
         .bind(&folder.title)
         .bind(folder.updated_time)
@@ -632,7 +653,7 @@ impl Storage for SqliteStorage {
                 icon, share_id, master_key_id, is_shared
             FROM folders
             ORDER BY title ASC
-            "#
+            "#,
         )
         .fetch_all(&self.pool)
         .await
@@ -650,7 +671,7 @@ impl Storage for SqliteStorage {
                 user_created_time, user_updated_time, parent_id,
                 is_shared
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-            "#
+            "#,
         )
         .bind(&tag.id)
         .bind(&tag.title)
@@ -675,7 +696,7 @@ impl Storage for SqliteStorage {
                 user_created_time, user_updated_time, parent_id,
                 is_shared
             FROM tags WHERE id = ?
-            "#
+            "#,
         )
         .bind(id)
         .fetch_optional(&self.pool)
@@ -692,7 +713,7 @@ impl Storage for SqliteStorage {
                 title = ?, updated_time = ?,
                 user_updated_time = ?, parent_id = ?
             WHERE id = ?
-            "#
+            "#,
         )
         .bind(&tag.title)
         .bind(tag.updated_time)
@@ -725,7 +746,7 @@ impl Storage for SqliteStorage {
                 is_shared
             FROM tags
             ORDER BY title ASC
-            "#
+            "#,
         )
         .fetch_all(&self.pool)
         .await
@@ -741,7 +762,7 @@ impl Storage for SqliteStorage {
             INSERT INTO note_tags (
                 id, note_id, tag_id, created_time, updated_time, is_shared
             ) VALUES (?, ?, ?, ?, ?, ?)
-            "#
+            "#,
         )
         .bind(&note_tag.id)
         .bind(&note_tag.note_id)
@@ -778,7 +799,7 @@ impl Storage for SqliteStorage {
             INNER JOIN note_tags nt ON t.id = nt.tag_id
             WHERE nt.note_id = ?
             ORDER BY t.title ASC
-            "#
+            "#,
         )
         .bind(note_id)
         .fetch_all(&self.pool)
@@ -790,13 +811,11 @@ impl Storage for SqliteStorage {
 
     // Settings
     async fn get_setting(&self, key: &str) -> Result<Option<String>, DatabaseError> {
-        let value: Option<String> = sqlx::query_scalar(
-            "SELECT value FROM settings WHERE key = ?"
-        )
-        .bind(key)
-        .fetch_optional(&self.pool)
-        .await
-        .map_err(|e| DatabaseError::QueryFailed(format!("Failed to get setting: {}", e)))?;
+        let value: Option<String> = sqlx::query_scalar("SELECT value FROM settings WHERE key = ?")
+            .bind(key)
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(|e| DatabaseError::QueryFailed(format!("Failed to get setting: {}", e)))?;
 
         Ok(value)
     }
@@ -806,7 +825,7 @@ impl Storage for SqliteStorage {
             r#"
             INSERT INTO settings (key, value, type) VALUES (?, ?, 2)
             ON CONFLICT(key) DO UPDATE SET value = excluded.value
-            "#
+            "#,
         )
         .bind(key)
         .bind(value)
@@ -826,7 +845,7 @@ impl Storage for SqliteStorage {
                 sync_disabled, sync_disabled_reason, item_location
             FROM sync_items
             WHERE sync_target = ?
-            "#
+            "#,
         )
         .bind(sync_target)
         .fetch_all(&self.pool)
@@ -851,7 +870,7 @@ impl Storage for SqliteStorage {
                 sync_disabled = excluded.sync_disabled,
                 sync_disabled_reason = excluded.sync_disabled_reason,
                 item_location = excluded.item_location
-            "#
+            "#,
         )
         .bind(item.sync_target)
         .bind(item.sync_time)
@@ -872,7 +891,9 @@ impl Storage for SqliteStorage {
             .bind(id)
             .execute(&self.pool)
             .await
-            .map_err(|e| DatabaseError::QueryFailed(format!("Failed to delete sync item: {}", e)))?;
+            .map_err(|e| {
+                DatabaseError::QueryFailed(format!("Failed to delete sync item: {}", e))
+            })?;
 
         Ok(())
     }
@@ -881,7 +902,9 @@ impl Storage for SqliteStorage {
         let result = sqlx::query("DELETE FROM sync_items")
             .execute(&self.pool)
             .await
-            .map_err(|e| DatabaseError::QueryFailed(format!("Failed to clear sync items: {}", e)))?;
+            .map_err(|e| {
+                DatabaseError::QueryFailed(format!("Failed to clear sync items: {}", e))
+            })?;
 
         Ok(result.rows_affected() as usize)
     }
@@ -894,7 +917,7 @@ impl Storage for SqliteStorage {
                 id, item_type, item_id, deleted_time, sync_target
             FROM deleted_items
             WHERE sync_target = ?
-            "#
+            "#,
         )
         .bind(sync_target)
         .fetch_all(&self.pool)
@@ -910,7 +933,7 @@ impl Storage for SqliteStorage {
             INSERT INTO deleted_items (
                 item_type, item_id, deleted_time, sync_target
             ) VALUES (?, ?, ?, ?)
-            "#
+            "#,
         )
         .bind(item.item_type)
         .bind(&item.item_id)
@@ -928,95 +951,136 @@ impl Storage for SqliteStorage {
             .bind(id)
             .execute(&self.pool)
             .await
-            .map_err(|e| DatabaseError::QueryFailed(format!("Failed to remove deleted item: {}", e)))?;
+            .map_err(|e| {
+                DatabaseError::QueryFailed(format!("Failed to remove deleted item: {}", e))
+            })?;
 
         Ok(())
     }
 
     async fn clear_deleted_items(&self, limit: i64) -> Result<usize, DatabaseError> {
-        let result = sqlx::query("DELETE FROM deleted_items WHERE id IN (SELECT id FROM deleted_items LIMIT ?)")
-            .bind(limit)
-            .execute(&self.pool)
-            .await
-            .map_err(|e| DatabaseError::QueryFailed(format!("Failed to clear deleted items: {}", e)))?;
+        let result = sqlx::query(
+            "DELETE FROM deleted_items WHERE id IN (SELECT id FROM deleted_items LIMIT ?)",
+        )
+        .bind(limit)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| DatabaseError::QueryFailed(format!("Failed to clear deleted items: {}", e)))?;
 
         Ok(result.rows_affected() as usize)
     }
 
     // Sync helper methods
-    async fn get_folders_updated_since(&self, timestamp: i64) -> Result<Vec<Folder>, DatabaseError> {
+    async fn get_folders_updated_since(
+        &self,
+        timestamp: i64,
+    ) -> Result<Vec<Folder>, DatabaseError> {
         let folders = sqlx::query_as::<_, Folder>(
-            "SELECT * FROM folders WHERE updated_time > ? ORDER BY updated_time ASC"
+            "SELECT * FROM folders WHERE updated_time > ? ORDER BY updated_time ASC",
         )
         .bind(timestamp)
         .fetch_all(&self.pool)
         .await
-        .map_err(|e| DatabaseError::QueryFailed(format!("Failed to get folders updated since {}: {}", timestamp, e)))?;
+        .map_err(|e| {
+            DatabaseError::QueryFailed(format!(
+                "Failed to get folders updated since {}: {}",
+                timestamp, e
+            ))
+        })?;
 
         Ok(folders)
     }
 
     async fn get_tags_updated_since(&self, timestamp: i64) -> Result<Vec<Tag>, DatabaseError> {
         let tags = sqlx::query_as::<_, Tag>(
-            "SELECT * FROM tags WHERE updated_time > ? ORDER BY updated_time ASC"
+            "SELECT * FROM tags WHERE updated_time > ? ORDER BY updated_time ASC",
         )
         .bind(timestamp)
         .fetch_all(&self.pool)
         .await
-        .map_err(|e| DatabaseError::QueryFailed(format!("Failed to get tags updated since {}: {}", timestamp, e)))?;
+        .map_err(|e| {
+            DatabaseError::QueryFailed(format!(
+                "Failed to get tags updated since {}: {}",
+                timestamp, e
+            ))
+        })?;
 
         Ok(tags)
     }
 
     async fn get_notes_updated_since(&self, timestamp: i64) -> Result<Vec<Note>, DatabaseError> {
         let notes = sqlx::query_as::<_, Note>(
-            "SELECT * FROM notes WHERE updated_time > ? ORDER BY updated_time ASC"
+            "SELECT * FROM notes WHERE updated_time > ? ORDER BY updated_time ASC",
         )
         .bind(timestamp)
         .fetch_all(&self.pool)
         .await
-        .map_err(|e| DatabaseError::QueryFailed(format!("Failed to get notes updated since {}: {}", timestamp, e)))?;
+        .map_err(|e| {
+            DatabaseError::QueryFailed(format!(
+                "Failed to get notes updated since {}: {}",
+                timestamp, e
+            ))
+        })?;
 
         Ok(notes)
     }
 
-    async fn get_note_tags_updated_since(&self, timestamp: i64) -> Result<Vec<NoteTag>, DatabaseError> {
+    async fn get_note_tags_updated_since(
+        &self,
+        timestamp: i64,
+    ) -> Result<Vec<NoteTag>, DatabaseError> {
         let note_tags = sqlx::query_as::<_, NoteTag>(
-            "SELECT * FROM note_tags WHERE updated_time > ? ORDER BY updated_time ASC"
+            "SELECT * FROM note_tags WHERE updated_time > ? ORDER BY updated_time ASC",
         )
         .bind(timestamp)
         .fetch_all(&self.pool)
         .await
-        .map_err(|e| DatabaseError::QueryFailed(format!("Failed to get note_tags updated since {}: {}", timestamp, e)))?;
+        .map_err(|e| {
+            DatabaseError::QueryFailed(format!(
+                "Failed to get note_tags updated since {}: {}",
+                timestamp, e
+            ))
+        })?;
 
         Ok(note_tags)
     }
 
     async fn get_all_sync_items(&self) -> Result<Vec<SyncItem>, DatabaseError> {
-        let items = sqlx::query_as::<_, SyncItem>(
-            "SELECT * FROM sync_items ORDER BY sync_time DESC"
-        )
-        .fetch_all(&self.pool)
-        .await
-        .map_err(|e| DatabaseError::QueryFailed(format!("Failed to get all sync items: {}", e)))?;
+        let items =
+            sqlx::query_as::<_, SyncItem>("SELECT * FROM sync_items ORDER BY sync_time DESC")
+                .fetch_all(&self.pool)
+                .await
+                .map_err(|e| {
+                    DatabaseError::QueryFailed(format!("Failed to get all sync items: {}", e))
+                })?;
 
         Ok(items)
     }
 
-    async fn update_sync_time(&self, table: &str, id: &str, timestamp: i64) -> Result<(), DatabaseError> {
+    async fn update_sync_time(
+        &self,
+        table: &str,
+        id: &str,
+        timestamp: i64,
+    ) -> Result<(), DatabaseError> {
         // Convert table name to model type
         let item_type = match table {
-            "notes" => 1,      // Note
-            "folders" => 2,    // Folder
-            "tags" => 3,       // Tag
-            "note_tags" => 4,  // NoteTag
-            "resources" => 5,  // Resource
-            _ => return Err(DatabaseError::InvalidData(format!("Unknown table: {}", table))),
+            "notes" => 1,     // Note
+            "folders" => 2,   // Folder
+            "tags" => 3,      // Tag
+            "note_tags" => 4, // NoteTag
+            "resources" => 5, // Resource
+            _ => {
+                return Err(DatabaseError::InvalidData(format!(
+                    "Unknown table: {}",
+                    table
+                )))
+            }
         };
 
         // First, check if the item exists in sync_items
         let existing = sqlx::query_as::<_, SyncItem>(
-            "SELECT * FROM sync_items WHERE item_id = ? AND item_type = ?"
+            "SELECT * FROM sync_items WHERE item_id = ? AND item_type = ?",
         )
         .bind(id)
         .bind(item_type)
@@ -1026,14 +1090,14 @@ impl Storage for SqliteStorage {
 
         if let Some(existing_item) = existing {
             // Update existing
-            sqlx::query(
-                "UPDATE sync_items SET sync_time = ? WHERE id = ?"
-            )
-            .bind(timestamp)
-            .bind(existing_item.id)
-            .execute(&self.pool)
-            .await
-            .map_err(|e| DatabaseError::QueryFailed(format!("Failed to update sync time: {}", e)))?;
+            sqlx::query("UPDATE sync_items SET sync_time = ? WHERE id = ?")
+                .bind(timestamp)
+                .bind(existing_item.id)
+                .execute(&self.pool)
+                .await
+                .map_err(|e| {
+                    DatabaseError::QueryFailed(format!("Failed to update sync time: {}", e))
+                })?;
         } else {
             // Insert new
             sqlx::query(
@@ -1060,12 +1124,10 @@ impl Storage for SqliteStorage {
 
     // Database info
     async fn get_version(&self) -> Result<i32, DatabaseError> {
-        let version: Option<i32> = sqlx::query_scalar(
-            "SELECT version FROM version LIMIT 1"
-        )
-        .fetch_optional(&self.pool)
-        .await
-        .map_err(|e| DatabaseError::QueryFailed(format!("Failed to get version: {}", e)))?;
+        let version: Option<i32> = sqlx::query_scalar("SELECT version FROM version LIMIT 1")
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(|e| DatabaseError::QueryFailed(format!("Failed to get version: {}", e)))?;
 
         Ok(version.unwrap_or(0))
     }
@@ -1074,7 +1136,9 @@ impl Storage for SqliteStorage {
         sqlx::query("BEGIN TRANSACTION")
             .execute(&self.pool)
             .await
-            .map_err(|e| DatabaseError::QueryFailed(format!("Failed to begin transaction: {}", e)))?;
+            .map_err(|e| {
+                DatabaseError::QueryFailed(format!("Failed to begin transaction: {}", e))
+            })?;
         Ok(())
     }
 
@@ -1082,7 +1146,9 @@ impl Storage for SqliteStorage {
         sqlx::query("COMMIT")
             .execute(&self.pool)
             .await
-            .map_err(|e| DatabaseError::QueryFailed(format!("Failed to commit transaction: {}", e)))?;
+            .map_err(|e| {
+                DatabaseError::QueryFailed(format!("Failed to commit transaction: {}", e))
+            })?;
         Ok(())
     }
 
@@ -1090,7 +1156,9 @@ impl Storage for SqliteStorage {
         sqlx::query("ROLLBACK")
             .execute(&self.pool)
             .await
-            .map_err(|e| DatabaseError::QueryFailed(format!("Failed to rollback transaction: {}", e)))?;
+            .map_err(|e| {
+                DatabaseError::QueryFailed(format!("Failed to rollback transaction: {}", e))
+            })?;
         Ok(())
     }
 }

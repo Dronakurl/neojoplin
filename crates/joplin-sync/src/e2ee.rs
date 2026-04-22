@@ -12,7 +12,7 @@
 // Each chunk is JSON: {"salt":"base64","iv":"base64","ct":"base64"}
 // Encrypted with PBKDF2-HMAC-SHA512 + AES-256-GCM.
 
-use anyhow::{Result, anyhow};
+use anyhow::{anyhow, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
@@ -64,9 +64,15 @@ impl EncryptionMethod {
         self as u8
     }
 
-    pub fn default_string() -> Self { EncryptionMethod::StringV1 }
-    pub fn default_master_key() -> Self { EncryptionMethod::KeyV1 }
-    pub fn default_file() -> Self { EncryptionMethod::FileV1 }
+    pub fn default_string() -> Self {
+        EncryptionMethod::StringV1
+    }
+    pub fn default_master_key() -> Self {
+        EncryptionMethod::KeyV1
+    }
+    pub fn default_file() -> Self {
+        EncryptionMethod::FileV1
+    }
 
     fn iterations(self) -> u32 {
         match self {
@@ -166,7 +172,8 @@ impl E2eeService {
     }
 
     pub fn get_active_master_key(&self) -> Option<&String> {
-        self.active_master_key_id.as_ref()
+        self.active_master_key_id
+            .as_ref()
             .and_then(|id| self.master_keys.get(id))
     }
 
@@ -179,8 +186,11 @@ impl E2eeService {
         if key_id.len() == 32 {
             let with_dashes = format!(
                 "{}-{}-{}-{}-{}",
-                &key_id[0..8], &key_id[8..12], &key_id[12..16],
-                &key_id[16..20], &key_id[20..32]
+                &key_id[0..8],
+                &key_id[8..12],
+                &key_id[12..16],
+                &key_id[16..20],
+                &key_id[20..32]
             );
             if let Some(key) = self.master_keys.get(&with_dashes) {
                 return Ok(key);
@@ -191,8 +201,11 @@ impl E2eeService {
         if let Some(key) = self.master_keys.get(&without_dashes) {
             return Ok(key);
         }
-        Err(anyhow!("Master key not found: {} (loaded keys: {:?})",
-            key_id, self.master_keys.keys().collect::<Vec<_>>()))
+        Err(anyhow!(
+            "Master key not found: {} (loaded keys: {:?})",
+            key_id,
+            self.master_keys.keys().collect::<Vec<_>>()
+        ))
     }
 
     /// Generate a new master key encrypted with the user's password (KeyV1)
@@ -204,38 +217,43 @@ impl E2eeService {
         // Encrypt with KeyV1: PBKDF2(password, random_salt, 220000, SHA-512) -> AES-256-GCM
         let salt = crate::crypto::generate_salt();
         // Joplin encodes the hex string as hex bytes for KeyV1
-        let plaintext_bytes = hex::decode(&master_key_hex)
-            .map_err(|e| anyhow!("Invalid hex: {}", e))?;
-        let chunk = crate::crypto::encrypt_chunk(password, &salt, &plaintext_bytes, KEY_V1_ITERATIONS)?;
+        let plaintext_bytes =
+            hex::decode(&master_key_hex).map_err(|e| anyhow!("Invalid hex: {}", e))?;
+        let chunk =
+            crate::crypto::encrypt_chunk(password, &salt, &plaintext_bytes, KEY_V1_ITERATIONS)?;
         let encrypted_content = serde_json::to_string(&chunk)?;
 
-        let master_key_obj = MasterKey::new(key_id.clone(), encrypted_content, EncryptionMethod::KeyV1);
+        let master_key_obj =
+            MasterKey::new(key_id.clone(), encrypted_content, EncryptionMethod::KeyV1);
         Ok((key_id, master_key_obj))
     }
 
     /// Load and decrypt a master key from its encrypted form
     pub fn load_master_key(&mut self, master_key: &MasterKey) -> Result<()> {
-        let password = self.master_password.as_ref()
+        let password = self
+            .master_password
+            .as_ref()
             .ok_or_else(|| anyhow!("Master password not set"))?
             .clone();
 
         let method = EncryptionMethod::from_u8(master_key.encryption_method as u8)
             .unwrap_or(EncryptionMethod::KeyV1);
 
-        let decrypted_key = self.decrypt_single_chunk(
-            &password,
-            &master_key.content,
-            method,
-        )?;
+        let decrypted_key = self.decrypt_single_chunk(&password, &master_key.content, method)?;
 
-        tracing::info!("Loaded master key: {} (method: {:?}, decrypted key length: {})",
-            master_key.id, method, decrypted_key.len());
+        tracing::info!(
+            "Loaded master key: {} (method: {:?}, decrypted key length: {})",
+            master_key.id,
+            method,
+            decrypted_key.len()
+        );
 
         // Normalize key ID (remove dashes)
         let key_id = master_key.id.replace('-', "");
         self.master_keys.insert(key_id.clone(), decrypted_key);
         // Keep the full object so we can include it in info.json
-        self.master_key_objects.insert(key_id.clone(), master_key.clone());
+        self.master_key_objects
+            .insert(key_id.clone(), master_key.clone());
 
         if self.active_master_key_id.is_none() {
             self.active_master_key_id = Some(key_id);
@@ -250,10 +268,19 @@ impl E2eeService {
     }
 
     /// Decrypt a single encryption chunk (for master key decryption or single-chunk items)
-    fn decrypt_single_chunk(&self, password: &str, content: &str, method: EncryptionMethod) -> Result<String> {
-        let chunk: crate::crypto::EncryptionChunk = serde_json::from_str(content)
-            .map_err(|e| anyhow!("Invalid encryption chunk JSON: {} (content starts with: {})",
-                e, &content[..content.len().min(100)]))?;
+    fn decrypt_single_chunk(
+        &self,
+        password: &str,
+        content: &str,
+        method: EncryptionMethod,
+    ) -> Result<String> {
+        let chunk: crate::crypto::EncryptionChunk = serde_json::from_str(content).map_err(|e| {
+            anyhow!(
+                "Invalid encryption chunk JSON: {} (content starts with: {})",
+                e,
+                &content[..content.len().min(100)]
+            )
+        })?;
 
         let decrypted_bytes = crate::crypto::decrypt_chunk(password, &chunk, method.iterations())?;
 
@@ -282,10 +309,13 @@ impl E2eeService {
 
     /// Encrypt a string using the active master key (StringV1 with chunked JED format)
     pub fn encrypt_string(&self, plaintext: &str) -> Result<String> {
-        let master_key_hex = self.get_active_master_key()
+        let master_key_hex = self
+            .get_active_master_key()
             .ok_or_else(|| anyhow!("No active master key"))?
             .clone();
-        let key_id = self.active_master_key_id.as_ref()
+        let key_id = self
+            .active_master_key_id
+            .as_ref()
             .ok_or_else(|| anyhow!("No active master key ID"))?
             .replace('-', "");
 
@@ -302,7 +332,10 @@ impl E2eeService {
         for chunk_data in utf16le_bytes.chunks(STRING_V1_CHUNK_SIZE) {
             let salt = crate::crypto::generate_salt();
             let chunk = crate::crypto::encrypt_chunk(
-                &master_key_hex, &salt, chunk_data, STRING_V1_ITERATIONS,
+                &master_key_hex,
+                &salt,
+                chunk_data,
+                STRING_V1_ITERATIONS,
             )?;
             let chunk_json = serde_json::to_string(&chunk)?;
             result.push_str(&format!("{:06x}{}", chunk_json.len(), chunk_json));
@@ -334,18 +367,19 @@ impl E2eeService {
                 continue;
             }
             if pos + chunk_len > body.len() {
-                return Err(anyhow!("Chunk extends beyond data (need {} bytes at pos {}, have {})",
-                    chunk_len, pos, body.len()));
+                return Err(anyhow!(
+                    "Chunk extends beyond data (need {} bytes at pos {}, have {})",
+                    chunk_len,
+                    pos,
+                    body.len()
+                ));
             }
 
             let chunk_json = &body[pos..pos + chunk_len];
             pos += chunk_len;
 
-            let decrypted = self.decrypt_single_chunk(
-                master_key_hex,
-                chunk_json,
-                header.encryption_method,
-            )?;
+            let decrypted =
+                self.decrypt_single_chunk(master_key_hex, chunk_json, header.encryption_method)?;
             plaintext.push_str(&decrypted);
         }
 
@@ -369,9 +403,7 @@ impl Default for E2eeService {
 
 /// Encode UTF-16LE bytes from a string (matching Joplin's Buffer.from(str, 'utf16le'))
 fn encode_utf16le(s: &str) -> Vec<u8> {
-    s.encode_utf16()
-        .flat_map(|c| c.to_le_bytes())
-        .collect()
+    s.encode_utf16().flat_map(|c| c.to_le_bytes()).collect()
 }
 
 /// Decode UTF-16LE bytes to a string
@@ -379,17 +411,25 @@ fn decode_utf16le(bytes: &[u8]) -> Result<String> {
     if !bytes.len().is_multiple_of(2) {
         return Err(anyhow!("UTF-16LE data has odd length: {}", bytes.len()));
     }
-    let u16_values: Vec<u16> = bytes.chunks_exact(2)
+    let u16_values: Vec<u16> = bytes
+        .chunks_exact(2)
         .map(|chunk| u16::from_le_bytes([chunk[0], chunk[1]]))
         .collect();
-    String::from_utf16(&u16_values)
-        .map_err(|e| anyhow!("Invalid UTF-16LE data: {}", e))
+    String::from_utf16(&u16_values).map_err(|e| anyhow!("Invalid UTF-16LE data: {}", e))
 }
 
 /// Encode a JED header matching Joplin's encodeHeader_()
 fn encode_jed_header(header: &JedHeader) -> String {
-    assert_eq!(header.master_key_id.len(), 32, "Master key ID must be 32 hex chars");
-    let metadata = format!("{:02x}{}", header.encryption_method.as_u8(), header.master_key_id);
+    assert_eq!(
+        header.master_key_id.len(),
+        32,
+        "Master key ID must be 32 hex chars"
+    );
+    let metadata = format!(
+        "{:02x}{}",
+        header.encryption_method.as_u8(),
+        header.master_key_id
+    );
     format!("JED01{:06x}{}", metadata.len(), metadata)
 }
 
@@ -409,14 +449,21 @@ fn parse_jed_header(data: &str) -> Result<(JedHeader, &str)> {
 
     let header_end = 11 + md_size;
     if data.len() < header_end {
-        return Err(anyhow!("JED data too short for metadata (need {}, have {})", header_end, data.len()));
+        return Err(anyhow!(
+            "JED data too short for metadata (need {}, have {})",
+            header_end,
+            data.len()
+        ));
     }
 
     let metadata = &data[11..header_end];
 
     // Metadata format: encryption_method (2 hex) + master_key_id (32 hex)
     if metadata.len() < 34 {
-        return Err(anyhow!("Metadata too short: {} (expected >= 34)", metadata.len()));
+        return Err(anyhow!(
+            "Metadata too short: {} (expected >= 34)",
+            metadata.len()
+        ));
     }
 
     let method_val = u8::from_str_radix(&metadata[0..2], 16)
@@ -425,7 +472,10 @@ fn parse_jed_header(data: &str) -> Result<(JedHeader, &str)> {
     let master_key_id = metadata[2..34].to_string();
 
     Ok((
-        JedHeader { encryption_method, master_key_id },
+        JedHeader {
+            encryption_method,
+            master_key_id,
+        },
         &data[header_end..],
     ))
 }
@@ -438,7 +488,10 @@ mod tests {
     fn test_encryption_method_conversion() {
         assert_eq!(EncryptionMethod::StringV1.as_u8(), 10);
         assert_eq!(EncryptionMethod::KeyV1.as_u8(), 8);
-        assert_eq!(EncryptionMethod::from_u8(10).unwrap(), EncryptionMethod::StringV1);
+        assert_eq!(
+            EncryptionMethod::from_u8(10).unwrap(),
+            EncryptionMethod::StringV1
+        );
     }
 
     #[test]

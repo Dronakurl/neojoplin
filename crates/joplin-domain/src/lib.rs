@@ -6,14 +6,14 @@
 
 pub mod domain;
 pub mod error;
-pub mod traits;
 pub mod sync;
+pub mod traits;
 
 // Re-exports for convenience
 pub use domain::*;
 pub use error::*;
-pub use traits::*;
 pub use sync::*;
+pub use traits::*;
 
 /// Convenience Result type for domain operations
 pub type Result<T> = std::result::Result<T, DomainError>;

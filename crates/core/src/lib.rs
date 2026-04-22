@@ -6,21 +6,47 @@ pub mod editor;
 
 // Re-exports from joplin-domain for convenience
 pub use joplin_domain::{
-    // Domain types
-    Note, Folder, Tag, NoteTag, Resource, MasterKey, SyncItem, DeletedItem, Setting,
-    ModelType, SyncTarget, MarkupLanguage,
-
+    // Helpers
+    now_ms,
+    timestamp_to_datetime,
+    AuthError,
+    ConflictInfo,
+    ConflictResolution,
     // Error types
-    DatabaseError, SyncError, NetworkError, AuthError, WebDavError, DomainError,
+    DatabaseError,
+    DavEntry,
+    DeletedItem,
+    DomainError,
 
+    Folder,
+    ItemError,
+    LockHandle,
+
+    MarkupLanguage,
+
+    MasterKey,
+    ModelType,
+    NetworkError,
+    // Domain types
+    Note,
+    NoteTag,
+    PhaseResult,
+    Resource,
+    Result,
+    Setting,
     // Traits
-    Storage, WebDavClient, DavEntry, SyncEvent, LockHandle,
+    Storage,
+    SyncError,
+    SyncEvent,
+    SyncItem,
+    SyncPhase,
 
     // Sync types
-    SyncState, PhaseResult, ItemError, ConflictInfo, ConflictResolution, SyncPhase,
-
-    // Helpers
-    now_ms, timestamp_to_datetime, Result,
+    SyncState,
+    SyncTarget,
+    Tag,
+    WebDavClient,
+    WebDavError,
 };
 
 // NeoJoplin-specific error types
@@ -59,7 +85,7 @@ pub enum ConfigError {
 }
 
 // Re-export config and editor types
-pub use config::{Config, SyncConfig, EditorConfig, UiConfig, AdvancedConfig};
+pub use config::{AdvancedConfig, Config, EditorConfig, SyncConfig, UiConfig};
 pub use editor::{Editor, EditorConfig as RuntimeEditorConfig};
 
 /// Convenience Result type

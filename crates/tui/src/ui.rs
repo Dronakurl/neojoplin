@@ -70,7 +70,7 @@ fn render_main_content(f: &mut Frame, state: &AppState, area: Rect) {
 
 /// Render notebooks (folders) panel
 fn render_notebooks_panel(f: &mut Frame, state: &AppState, area: Rect) {
-    let title = "Notebooks";
+    let title = format!("Notebooks [{}]", state.notebook_sort.label());
     let theme = &state.theme;
 
     let items: Vec<ListItem> = if state.folders.is_empty() {
@@ -127,11 +127,11 @@ fn render_notebooks_panel(f: &mut Frame, state: &AppState, area: Rect) {
 /// Render notes panel
 fn render_notes_panel(f: &mut Frame, state: &AppState, area: Rect) {
     let title = if state.all_notebooks_mode {
-        "Notes - All Notebooks".to_string()
+        format!("Notes - All Notebooks [{}]", state.note_sort.label())
     } else if let Some(folder) = state.selected_folder() {
-        format!("Notes - {}", folder.title)
+        format!("Notes - {} [{}]", folder.title, state.note_sort.label())
     } else {
-        "Notes".to_string()
+        format!("Notes [{}]", state.note_sort.label())
     };
     let theme = &state.theme;
 
@@ -385,6 +385,7 @@ fn render_keybinding_ribbon(f: &mut Frame, state: &AppState, area: Rect) {
         ("T", "TODO"),
         // ("t", "TOGGLE"),
         ("N", "NOTEBOOK"),
+        (",", "SORT"),
         ("d", "DELETE"),
         ("s", "SYNC"),
         ("S", "SETTINGS"),
@@ -524,7 +525,10 @@ pub fn render_settings(f: &mut Frame, state: &AppState) {
 
     // Delete confirmation overlay
     if state.settings.sync.confirm_delete {
-        let target_name = state.settings.sync.current_target_index
+        let target_name = state
+            .settings
+            .sync
+            .current_target_index
             .and_then(|i| state.settings.sync.targets.get(i))
             .map(|t| t.name.as_str())
             .unwrap_or("this target");
@@ -548,33 +552,65 @@ fn settings_bottom_hints<'a>(state: &'a AppState, theme: &'a Theme) -> Line<'a> 
     let mut spans: Vec<Span<'_>> = Vec::new();
 
     if sync.show_add_form || sync.show_edit_form {
-        for s in kh(theme, "Tab", "next field") { spans.push(s); }
-        for s in kh(theme, "Enter", "save") { spans.push(s); }
-        for s in kh(theme, "Esc", "cancel") { spans.push(s); }
-        for s in kh(theme, "Ctrl+T", "test") { spans.push(s); }
+        for s in kh(theme, "Tab", "next field") {
+            spans.push(s);
+        }
+        for s in kh(theme, "Enter", "save") {
+            spans.push(s);
+        }
+        for s in kh(theme, "Esc", "cancel") {
+            spans.push(s);
+        }
+        for s in kh(theme, "Ctrl+T", "test") {
+            spans.push(s);
+        }
     } else if sync.confirm_delete {
-        for s in kh(theme, "y/Enter", "confirm") { spans.push(s); }
-        for s in kh(theme, "n/Esc", "cancel") { spans.push(s); }
+        for s in kh(theme, "y/Enter", "confirm") {
+            spans.push(s);
+        }
+        for s in kh(theme, "n/Esc", "cancel") {
+            spans.push(s);
+        }
     } else if enc.show_new_key_prompt {
-        for s in kh(theme, "Tab", "switch field") { spans.push(s); }
-        for s in kh(theme, "Enter", "confirm") { spans.push(s); }
-        for s in kh(theme, "Esc", "cancel") { spans.push(s); }
+        for s in kh(theme, "Tab", "switch field") {
+            spans.push(s);
+        }
+        for s in kh(theme, "Enter", "confirm") {
+            spans.push(s);
+        }
+        for s in kh(theme, "Esc", "cancel") {
+            spans.push(s);
+        }
     } else {
-        for s in kh(theme, "h/l", "switch tab") { spans.push(s); }
-        for s in kh(theme, "q", "close") { spans.push(s); }
+        for s in kh(theme, "h/l", "switch tab") {
+            spans.push(s);
+        }
+        for s in kh(theme, "q", "close") {
+            spans.push(s);
+        }
         match state.settings.current_tab {
             SettingsTab::Sync => {
-                for s in kh(theme, "n", "add") { spans.push(s); }
+                for s in kh(theme, "n", "add") {
+                    spans.push(s);
+                }
                 if !sync.targets.is_empty() {
-                    for s in kh(theme, "e", "edit") { spans.push(s); }
-                    for s in kh(theme, "d", "delete") { spans.push(s); }
+                    for s in kh(theme, "e", "edit") {
+                        spans.push(s);
+                    }
+                    for s in kh(theme, "d", "delete") {
+                        spans.push(s);
+                    }
                 }
             }
             SettingsTab::Encryption => {
                 if enc.enabled {
-                    for s in kh(theme, "d", "disable") { spans.push(s); }
+                    for s in kh(theme, "d", "disable") {
+                        spans.push(s);
+                    }
                 } else {
-                    for s in kh(theme, "e", "enable") { spans.push(s); }
+                    for s in kh(theme, "e", "enable") {
+                        spans.push(s);
+                    }
                 }
             }
         }
@@ -646,7 +682,11 @@ fn render_encryption_settings(f: &mut Frame, state: &AppState, area: Rect) {
         lines.push(Line::from(vec![
             Span::styled("✓ ", theme.success()),
             Span::styled(
-                if enc.enabled { "Encryption enabled" } else { "Encryption disabled" },
+                if enc.enabled {
+                    "Encryption enabled"
+                } else {
+                    "Encryption disabled"
+                },
                 theme.success(),
             ),
         ]));
@@ -675,17 +715,29 @@ fn render_encryption_password_form(f: &mut Frame, state: &AppState, area: Rect) 
         ])
         .split(area);
 
-    let header = Paragraph::new(vec![
-        Line::from("Set Master Password").bold(),
-    ])
-    .alignment(Alignment::Center);
+    let header =
+        Paragraph::new(vec![Line::from("Set Master Password").bold()]).alignment(Alignment::Center);
     f.render_widget(header, chunks[0]);
 
     let is_pw_active = enc.active_field == EncryptionField::Password;
     let is_confirm_active = enc.active_field == EncryptionField::Confirm;
 
-    render_form_field_password(f, "Password:", &enc.password_input, chunks[1], theme, is_pw_active);
-    render_form_field_password(f, "Confirm: ", &enc.confirm_password_input, chunks[2], theme, is_confirm_active);
+    render_form_field_password(
+        f,
+        "Password:",
+        &enc.password_input,
+        chunks[1],
+        theme,
+        is_pw_active,
+    );
+    render_form_field_password(
+        f,
+        "Confirm: ",
+        &enc.confirm_password_input,
+        chunks[2],
+        theme,
+        is_confirm_active,
+    );
 
     // Error or hint
     if let Some(ref error) = enc.password_error {
@@ -923,10 +975,38 @@ fn render_target_form(f: &mut Frame, state: &AppState, area: Rect) {
     let is_username_active = sync.active_field == Some(FormField::Username);
     let is_password_active = sync.active_field == Some(FormField::Password);
 
-    render_form_field(f, "Name:", &sync.name_input, form_chunks[0], theme, is_name_active);
-    render_form_field(f, "URL: ", &sync.url_input, form_chunks[1], theme, is_url_active);
-    render_form_field(f, "User:", &sync.username_input, form_chunks[2], theme, is_username_active);
-    render_form_field_password(f, "Pass:", &sync.password_input, form_chunks[3], theme, is_password_active);
+    render_form_field(
+        f,
+        "Name:",
+        &sync.name_input,
+        form_chunks[0],
+        theme,
+        is_name_active,
+    );
+    render_form_field(
+        f,
+        "URL: ",
+        &sync.url_input,
+        form_chunks[1],
+        theme,
+        is_url_active,
+    );
+    render_form_field(
+        f,
+        "User:",
+        &sync.username_input,
+        form_chunks[2],
+        theme,
+        is_username_active,
+    );
+    render_form_field_password(
+        f,
+        "Pass:",
+        &sync.password_input,
+        form_chunks[3],
+        theme,
+        is_password_active,
+    );
 
     // Error / connection result
     if let Some(ref error) = sync.form_error {
@@ -1005,7 +1085,11 @@ fn render_form_field_password(
     is_active: bool,
 ) {
     let display_value = if value.is_empty() {
-        if is_active { String::new() } else { "(not set)".to_string() }
+        if is_active {
+            String::new()
+        } else {
+            "(not set)".to_string()
+        }
     } else if is_active {
         "•".repeat(value.len())
     } else {
@@ -1041,6 +1125,10 @@ pub fn render_help(f: &mut Frame, scroll: u16, state: &AppState) {
         Line::from("  n      New note in current notebook"),
         Line::from("  N      New notebook"),
         Line::from("  r      Rename selected note or notebook"),
+        Line::from("  ,      Open sort help for the focused list"),
+        Line::from("  t / T  Sort focused list by time / descending time"),
+        Line::from("  a      Sort focused list by name"),
+        Line::from("  m      Sort notebooks by newest changed note"),
         Line::from("  d      Delete selected note or notebook"),
         Line::from(""),
         Line::from("Todos").style(theme.primary()),
@@ -1221,6 +1309,65 @@ pub fn render_rename_prompt(f: &mut Frame, state: &AppState) {
     let text = Text::from(vec![Line::from(""), Line::from(input_text), Line::from("")]);
 
     let paragraph = Paragraph::new(text)
+        .block(
+            Block::default()
+                .title(title)
+                .title_bottom(bottom_title)
+                .borders(Borders::ALL)
+                .border_style(theme.border_focused()),
+        )
+        .wrap(Wrap { trim: true })
+        .alignment(Alignment::Left);
+
+    f.render_widget(paragraph, area);
+}
+
+/// Render sort help popup
+pub fn render_sort_popup(f: &mut Frame, state: &AppState) {
+    let area = centered_rect_with_min_width(52, 22, 56, f.area());
+    let theme = &state.theme;
+
+    let (title, current_sort, lines) = match state.focus {
+        FocusPanel::Notebooks => (
+            "Sort Notebooks",
+            state.notebook_sort.label(),
+            vec![
+                Line::from("t  Sort by time (oldest first)").style(theme.text()),
+                Line::from("T  Sort by time (newest first)").style(theme.text()),
+                Line::from("a  Sort by name").style(theme.text()),
+                Line::from("m  Sort by newest changed note in notebook").style(theme.text()),
+            ],
+        ),
+        FocusPanel::Notes => (
+            "Sort Notes",
+            state.note_sort.label(),
+            vec![
+                Line::from("t  Sort by time (oldest first)").style(theme.text()),
+                Line::from("T  Sort by time (newest first)").style(theme.text()),
+                Line::from("a  Sort by name").style(theme.text()),
+            ],
+        ),
+        FocusPanel::Content => (
+            "Sort",
+            "n/a",
+            vec![Line::from("Focus notebooks or notes to change sorting").style(theme.text())],
+        ),
+    };
+
+    let bottom_title = Line::from(vec![
+        Span::styled("[", theme.muted()),
+        Span::styled("Esc", theme.accent()),
+        Span::styled("]", theme.muted()),
+        Span::raw(" close ").style(theme.text()),
+    ]);
+
+    let mut text_lines = vec![
+        Line::from(format!("Current sort: {}", current_sort)).style(theme.primary()),
+        Line::from(""),
+    ];
+    text_lines.extend(lines);
+
+    let paragraph = Paragraph::new(Text::from(text_lines))
         .block(
             Block::default()
                 .title(title)

@@ -4,12 +4,12 @@
 // info.json format. The info.json file is stored on the WebDAV server and contains
 // metadata about the synchronization state including E2EE master keys.
 
-use serde::{Deserialize, Serialize};
 use anyhow::Result;
+use chrono::Utc;
+use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use tokio::fs;
 use uuid::Uuid;
-use chrono::Utc;
 
 /// Sync information stored in info.json for Joplin compatibility
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -37,7 +37,9 @@ pub struct SyncInfo {
     pub delta_timestamp: i64,
 }
 
-fn is_zero(v: &i64) -> bool { *v == 0 }
+fn is_zero(v: &i64) -> bool {
+    *v == 0
+}
 
 fn default_app_min_version() -> String {
     "3.0.0".to_string()
@@ -106,7 +108,10 @@ impl SyncInfo {
         Self {
             version: 3,
             app_min_version: "3.0.0".to_string(),
-            e2ee: SyncInfoValueBool { value: false, updated_time: 0 },
+            e2ee: SyncInfoValueBool {
+                value: false,
+                updated_time: 0,
+            },
             active_master_key_id: SyncInfoValueString::default(),
             master_keys: Vec::new(),
             ppk: None,
@@ -115,22 +120,30 @@ impl SyncInfo {
     }
 
     /// Load sync info from remote WebDAV server (reads info.json)
-    pub async fn load_from_remote(webdav: &dyn joplin_domain::WebDavClient, remote_path: &str) -> Result<Option<Self>> {
+    pub async fn load_from_remote(
+        webdav: &dyn joplin_domain::WebDavClient,
+        remote_path: &str,
+    ) -> Result<Option<Self>> {
         let info_json_path = format!("{}/info.json", remote_path.trim_end_matches('/'));
 
-        let exists = webdav.exists(&info_json_path).await
+        let exists = webdav
+            .exists(&info_json_path)
+            .await
             .map_err(|e| anyhow::anyhow!("Failed to check info.json existence: {:?}", e))?;
 
         if !exists {
             return Ok(None);
         }
 
-        let mut content = webdav.get(&info_json_path).await
+        let mut content = webdav
+            .get(&info_json_path)
+            .await
             .map_err(|e| anyhow::anyhow!("Failed to download info.json: {:?}", e))?;
 
         use futures::io::AsyncReadExt;
         let mut bytes = Vec::new();
-        AsyncReadExt::read_to_end(&mut content, &mut bytes).await
+        AsyncReadExt::read_to_end(&mut content, &mut bytes)
+            .await
             .map_err(|e| anyhow::anyhow!("Failed to read info.json: {:?}", e))?;
 
         let sync_info: SyncInfo = serde_json::from_slice(&bytes)
@@ -140,14 +153,20 @@ impl SyncInfo {
     }
 
     /// Save sync info to remote WebDAV server (writes info.json)
-    pub async fn save_to_remote(&self, webdav: &dyn joplin_domain::WebDavClient, remote_path: &str) -> Result<()> {
+    pub async fn save_to_remote(
+        &self,
+        webdav: &dyn joplin_domain::WebDavClient,
+        remote_path: &str,
+    ) -> Result<()> {
         let info_json_path = format!("{}/info.json", remote_path.trim_end_matches('/'));
 
         let content = serde_json::to_string_pretty(self)
             .map_err(|e| anyhow::anyhow!("Failed to serialize info.json: {:?}", e))?;
 
         let bytes = content.as_bytes();
-        webdav.put(&info_json_path, bytes, bytes.len() as u64).await
+        webdav
+            .put(&info_json_path, bytes, bytes.len() as u64)
+            .await
             .map_err(|e| anyhow::anyhow!("Failed to upload info.json: {:?}", e))?;
 
         Ok(())
@@ -190,7 +209,8 @@ impl ClientIdManager {
         }
 
         let client_id = Self::generate();
-        fs::write(client_id_path, &client_id).await
+        fs::write(client_id_path, &client_id)
+            .await
             .map_err(|e| anyhow::anyhow!("Failed to write client_id file: {:?}", e))?;
 
         Ok(client_id)
@@ -240,7 +260,10 @@ mod tests {
         let info: SyncInfo = serde_json::from_str(json).unwrap();
         assert_eq!(info.version, 3);
         assert!(info.e2ee.value);
-        assert_eq!(info.active_master_key_id.value, "b892c8028cb246c5b124ac5880478be9");
+        assert_eq!(
+            info.active_master_key_id.value,
+            "b892c8028cb246c5b124ac5880478be9"
+        );
         assert_eq!(info.master_keys.len(), 1);
         assert_eq!(info.master_keys[0].id, "b892c8028cb246c5b124ac5880478be9");
         assert!(info.master_keys[0].has_been_used);

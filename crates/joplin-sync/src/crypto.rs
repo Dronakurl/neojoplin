@@ -4,21 +4,21 @@
 // StringV1/FileV1/KeyV1 encryption methods. Uses PBKDF2-HMAC-SHA512 for
 // key derivation, matching the reference TypeScript implementation.
 
-use anyhow::{Result, anyhow};
 use aes_gcm::{
     aead::{Aead, AeadCore, KeyInit, OsRng},
-    Aes256Gcm, Nonce, Key
+    Aes256Gcm, Key, Nonce,
 };
-use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
+use anyhow::{anyhow, Result};
+use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 use pbkdf2::pbkdf2_hmac;
-use sha2::{Sha256, Sha512, Digest};
+use sha2::{Digest, Sha256, Sha512};
 
 /// Joplin-compatible chunk encryption result (JSON serializable)
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub struct EncryptionChunk {
-    pub salt: String,  // base64-encoded
-    pub iv: String,    // base64-encoded
-    pub ct: String,    // base64-encoded (ciphertext + auth tag)
+    pub salt: String, // base64-encoded
+    pub iv: String,   // base64-encoded
+    pub ct: String,   // base64-encoded (ciphertext + auth tag)
 }
 
 /// Derive a 256-bit key using PBKDF2-HMAC-SHA512 (Joplin compatible)
@@ -37,12 +37,18 @@ pub fn sha256(data: &[u8]) -> Vec<u8> {
 /// Returns a JSON chunk `{"salt":"...","iv":"...","ct":"..."}` with base64 values.
 /// The `password` is the key material (hex master key for StringV1, user password for KeyV1).
 /// The `salt` is random bytes used as PBKDF2 salt.
-pub fn encrypt_chunk(password: &str, salt: &[u8], plaintext: &[u8], iterations: u32) -> Result<EncryptionChunk> {
+pub fn encrypt_chunk(
+    password: &str,
+    salt: &[u8],
+    plaintext: &[u8],
+    iterations: u32,
+) -> Result<EncryptionChunk> {
     let derived_key = derive_key_pbkdf2(password, salt, iterations);
     let cipher = Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(&derived_key));
     let nonce = Aes256Gcm::generate_nonce(&mut OsRng);
 
-    let ciphertext = cipher.encrypt(&nonce, plaintext)
+    let ciphertext = cipher
+        .encrypt(&nonce, plaintext)
         .map_err(|e| anyhow!("Encryption failed: {}", e))?;
 
     Ok(EncryptionChunk {
@@ -55,11 +61,14 @@ pub fn encrypt_chunk(password: &str, salt: &[u8], plaintext: &[u8], iterations: 
 /// Decrypt a Joplin encryption chunk using AES-256-GCM with PBKDF2 key derivation.
 /// The `password` is the key material (hex master key for StringV1, user password for KeyV1).
 pub fn decrypt_chunk(password: &str, chunk: &EncryptionChunk, iterations: u32) -> Result<Vec<u8>> {
-    let salt = BASE64.decode(&chunk.salt)
+    let salt = BASE64
+        .decode(&chunk.salt)
         .map_err(|e| anyhow!("Invalid base64 salt: {}", e))?;
-    let iv = BASE64.decode(&chunk.iv)
+    let iv = BASE64
+        .decode(&chunk.iv)
         .map_err(|e| anyhow!("Invalid base64 iv: {}", e))?;
-    let ct = BASE64.decode(&chunk.ct)
+    let ct = BASE64
+        .decode(&chunk.ct)
         .map_err(|e| anyhow!("Invalid base64 ct: {}", e))?;
 
     if iv.len() != 12 {
@@ -70,7 +79,8 @@ pub fn decrypt_chunk(password: &str, chunk: &EncryptionChunk, iterations: u32) -
     let cipher = Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(&derived_key));
     let nonce = Nonce::from_slice(&iv);
 
-    cipher.decrypt(nonce, ct.as_ref())
+    cipher
+        .decrypt(nonce, ct.as_ref())
         .map_err(|e| anyhow!("AES-256-GCM decryption failed: {}", e))
 }
 
@@ -146,19 +156,25 @@ mod integration_tests {
     fn test_joplin_master_key_decrypt() {
         // Actual Joplin master key from info.json
         let content = r#"{"salt":"okSe+f+4ElSnBgTkT/J/ngycAwmi/Cpd3mPYqeiWVb0=","iv":"vmh8UOTY91/LJJab","ct":"hLQay1bu2gdi1mYhGiGrQLeiaeabnLkauZ1vnbC9Gf1NYKgxEieEcgwGoJVlQHPCoY0FNEUAQ7dtGDzlySTC+bSQT6jix0WMQ8aTkuDrV80v2oFIKw6CsAcyFAWPWmXliFcfY4hLEv1k1Exm5a1N3rjoseZ06EqQxg6jwR4TWD0FnSw8Hq1GBS15pqy66APTf5wFPMfdd5vPXQQLYT9bXuTfZiyQE+hxnWCS2uLy0ERnrykWaQALvjh2TBTcuxBhV6UikMDnKrGv6ly4nXgADvSQvEd7bvlsmnyak4hCKx6Etb/buaAanOHjesL6T8TUoqSdJunhAWCAffah7xN/VoAy3BlfwnbjXjnZCL1FOAI="}"#;
-        
+
         let chunk: EncryptionChunk = serde_json::from_str(content).unwrap();
-        
+
         // Known-good derived key from Python
         let salt = BASE64.decode(&chunk.salt).unwrap();
         let key = derive_key_pbkdf2("Adidas", &salt, 220000);
-        let expected_key = hex::decode("70353b93e91ece98e7b1cf1ec6fd86fbfd83aa652585250e708ba0714a2bb525").unwrap();
-        assert_eq!(&key[..], &expected_key[..], "PBKDF2 key derivation mismatch");
-        
+        let expected_key =
+            hex::decode("70353b93e91ece98e7b1cf1ec6fd86fbfd83aa652585250e708ba0714a2bb525")
+                .unwrap();
+        assert_eq!(
+            &key[..],
+            &expected_key[..],
+            "PBKDF2 key derivation mismatch"
+        );
+
         // Now decrypt
         let result = decrypt_chunk("Adidas", &chunk, 220000);
         assert!(result.is_ok(), "Decryption failed: {:?}", result.err());
-        
+
         let plaintext = result.unwrap();
         assert_eq!(plaintext.len(), 256, "Expected 256-byte master key");
     }

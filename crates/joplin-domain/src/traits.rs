@@ -39,12 +39,21 @@ pub trait Storage: Send + Sync {
     async fn get_note_tags(&self, note_id: &str) -> Result<Vec<Tag>, DatabaseError>;
 
     // Sync helper methods
-    async fn get_folders_updated_since(&self, timestamp: i64) -> Result<Vec<Folder>, DatabaseError>;
+    async fn get_folders_updated_since(&self, timestamp: i64)
+        -> Result<Vec<Folder>, DatabaseError>;
     async fn get_tags_updated_since(&self, timestamp: i64) -> Result<Vec<Tag>, DatabaseError>;
     async fn get_notes_updated_since(&self, timestamp: i64) -> Result<Vec<Note>, DatabaseError>;
-    async fn get_note_tags_updated_since(&self, timestamp: i64) -> Result<Vec<NoteTag>, DatabaseError>;
+    async fn get_note_tags_updated_since(
+        &self,
+        timestamp: i64,
+    ) -> Result<Vec<NoteTag>, DatabaseError>;
     async fn get_all_sync_items(&self) -> Result<Vec<SyncItem>, DatabaseError>;
-    async fn update_sync_time(&self, table: &str, id: &str, timestamp: i64) -> Result<(), DatabaseError>;
+    async fn update_sync_time(
+        &self,
+        table: &str,
+        id: &str,
+        timestamp: i64,
+    ) -> Result<(), DatabaseError>;
 
     // Settings
     async fn get_setting(&self, key: &str) -> Result<Option<String>, DatabaseError>;

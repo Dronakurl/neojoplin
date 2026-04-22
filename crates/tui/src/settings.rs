@@ -1,9 +1,9 @@
 // Settings management for TUI
 
-use joplin_sync::E2eeService;
 use anyhow::Result;
+use joplin_sync::E2eeService;
+use serde::{Deserialize, Serialize};
 use std::path::Path;
-use serde::{Serialize, Deserialize};
 
 /// Settings menu tabs
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -24,15 +24,15 @@ pub enum EncryptionField {
 /// Sync target types (matching Joplin's target IDs)
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum SyncTargetType {
-    None = 0,           // No sync
-    Memory = 1,         // Memory sync (testing)
-    FileSystem = 2,     // Local filesystem
-    OneDrive = 3,       // Microsoft OneDrive
-    Nextcloud = 5,      // Nextcloud
-    WebDAV = 6,         // WebDAV
-    Dropbox = 7,        // Dropbox
-    AmazonS3 = 8,       // Amazon S3
-    JoplinServer = 9,   // Joplin Server
+    None = 0,         // No sync
+    Memory = 1,       // Memory sync (testing)
+    FileSystem = 2,   // Local filesystem
+    OneDrive = 3,     // Microsoft OneDrive
+    Nextcloud = 5,    // Nextcloud
+    WebDAV = 6,       // WebDAV
+    Dropbox = 7,      // Dropbox
+    AmazonS3 = 8,     // Amazon S3
+    JoplinServer = 9, // Joplin Server
 }
 
 /// WebDAV sync target configuration
@@ -275,23 +275,27 @@ impl Settings {
         let config: serde_json::Value = serde_json::from_str(&content)?;
 
         // Parse active target ID
-        let active_id = config.get("sync.target")
+        let active_id = config
+            .get("sync.target")
             .and_then(|v| v.as_u64())
             .unwrap_or(0) as u32;
 
         // Load WebDAV target (ID 6)
         if active_id == 6 {
-            let url = config.get("sync.6.path")
+            let url = config
+                .get("sync.6.path")
                 .and_then(|v| v.as_str())
                 .unwrap_or("")
                 .to_string();
 
-            let username = config.get("sync.6.username")
+            let username = config
+                .get("sync.6.username")
                 .and_then(|v| v.as_str())
                 .unwrap_or("")
                 .to_string();
 
-            let password = config.get("sync.6.password")
+            let password = config
+                .get("sync.6.password")
                 .and_then(|v| v.as_str())
                 .unwrap_or("")
                 .to_string();
@@ -321,7 +325,11 @@ impl Settings {
     pub async fn save_sync_settings(&self, data_dir: &Path) -> Result<()> {
         let config_path = data_dir.join("settings.json");
 
-        let target_id: u32 = if self.sync.current_target_index.is_some() { 6 } else { 0 };
+        let target_id: u32 = if self.sync.current_target_index.is_some() {
+            6
+        } else {
+            0
+        };
 
         let mut config = serde_json::json!({
             "$schema": "https://joplinapp.org/schema/settings.json",
@@ -416,7 +424,10 @@ impl Settings {
                 self.encryption.status_message = "Enabled (No active key)".to_string();
             }
         } else {
-            self.encryption.status_message = format!("Disabled ({} keys available)", self.encryption.master_key_count);
+            self.encryption.status_message = format!(
+                "Disabled ({} keys available)",
+                self.encryption.master_key_count
+            );
         }
     }
 

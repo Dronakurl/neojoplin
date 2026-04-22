@@ -1,14 +1,14 @@
 // NeoJoplin TUI - Terminal user interface with ratatui
 
+pub mod app;
 pub mod config;
-pub mod state;
 pub mod settings;
+pub mod state;
 pub mod theme;
 pub mod ui;
-pub mod app;
 
-pub use app::{App, run_app};
+pub use app::{run_app, App};
 pub use config::Config;
+pub use settings::{EncryptionSettings, Settings, SettingsTab};
 pub use state::{AppState, FocusPanel};
-pub use settings::{Settings, SettingsTab, EncryptionSettings};
-pub use theme::{Theme, dark_theme, light_theme, default_theme};
+pub use theme::{dark_theme, default_theme, light_theme, Theme};

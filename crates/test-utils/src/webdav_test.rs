@@ -1,6 +1,6 @@
 // Simple WebDAV connectivity test
-use neojoplin_sync::{ReqwestWebDavClient, WebDavConfig};
 use neojoplin_core::WebDavClient;
+use neojoplin_sync::{ReqwestWebDavClient, WebDavConfig};
 use std::env;
 
 #[tokio::main]
@@ -30,8 +30,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             println!("✓ Found {} files/directories:", files.len());
             for file in files.iter().take(10) {
                 let size = file.size.map_or("?".to_string(), |s| s.to_string());
-                println!("  - {} ({} bytes, is_dir: {})",
-                    file.path, size, file.is_directory);
+                println!(
+                    "  - {} ({} bytes, is_dir: {})",
+                    file.path, size, file.is_directory
+                );
             }
         }
         Err(e) => {
@@ -49,7 +51,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Test 3: Upload a test file
     println!("\n=== Test 3: Upload test file ===");
     let test_content = b"Hello from NeoJoplin WebDAV test!";
-    match client.put("/neojoplin-test/hello.txt", test_content, test_content.len() as u64).await {
+    match client
+        .put(
+            "/neojoplin-test/hello.txt",
+            test_content,
+            test_content.len() as u64,
+        )
+        .await
+    {
         Ok(_) => println!("✓ Uploaded test file"),
         Err(e) => println!("✗ Failed: {}", e),
     }
