@@ -1,6 +1,7 @@
 // External editor integration for NeoJoplin
 
 use anyhow::{Context, Result};
+use std::fs::OpenOptions;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -88,14 +89,16 @@ impl Editor {
 
     /// Create editor with specific config
     pub fn with_config(config: EditorConfig) -> Result<Self> {
-        // Create temp directory for editing sessions
-        let temp_dir = std::env::var("TMPDIR")
-            .or_else(|_| std::env::var("TMP"))
-            .or_else(|_| std::env::var("TEMP"))
-            .unwrap_or_else(|_| "/tmp".to_string());
-
-        let temp_dir = PathBuf::from(temp_dir).join("neojoplin");
+        // Store temporary editor files under the user's home directory so note
+        // contents aren't exposed via a shared system temp directory.
+        let home_dir = dirs::home_dir().context("Failed to locate home directory")?;
+        let temp_dir = home_dir
+            .join(".local")
+            .join("state")
+            .join("neojoplin")
+            .join("editor");
         std::fs::create_dir_all(&temp_dir).context("Failed to create temp directory")?;
+        secure_directory_permissions(&temp_dir)?;
 
         Ok(Self { config, temp_dir })
     }
@@ -130,10 +133,20 @@ impl Editor {
 
     /// Create temp file with content
     fn create_temp_file(&self, content: &str, hint: &str) -> Result<PathBuf> {
-        let filename = format!("{}.md", hint.replace("/", "_"));
+        let filename = format!(
+            "{}-{}.md",
+            sanitize_file_hint(hint),
+            uuid::Uuid::new_v4().simple()
+        );
         let temp_file = self.temp_dir.join(filename);
 
-        let mut file = std::fs::File::create(&temp_file).context("Failed to create temp file")?;
+        let mut file = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temp_file)
+            .context("Failed to create temp file")?;
+
+        secure_file_permissions(&temp_file)?;
 
         file.write_all(content.as_bytes())
             .context("Failed to write to temp file")?;
@@ -202,6 +215,49 @@ impl Drop for Editor {
     }
 }
 
+fn sanitize_file_hint(hint: &str) -> String {
+    let mut sanitized: String = hint
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
+        .collect();
+
+    sanitized.truncate(32);
+
+    if sanitized.trim_matches('_').is_empty() {
+        "note".to_string()
+    } else {
+        sanitized
+    }
+}
+
+#[cfg(unix)]
+fn secure_directory_permissions(path: &Path) -> Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700))
+        .context("Failed to secure temp directory permissions")?;
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn secure_directory_permissions(_path: &Path) -> Result<()> {
+    Ok(())
+}
+
+#[cfg(unix)]
+fn secure_file_permissions(path: &Path) -> Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
+        .context("Failed to secure temp file permissions")?;
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn secure_file_permissions(_path: &Path) -> Result<()> {
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -224,5 +280,13 @@ mod tests {
         let config = EditorConfig::new("code".to_string()).with_args(vec!["--wait".to_string()]);
         assert_eq!(config.command, "code");
         assert_eq!(config.args, vec!["--wait".to_string()]);
+    }
+
+    #[test]
+    fn test_editor_temp_dir_is_under_home() {
+        let editor = Editor::with_config(EditorConfig::new("true".to_string())).unwrap();
+        let home = dirs::home_dir().unwrap();
+
+        assert!(editor.temp_dir.starts_with(home));
     }
 }

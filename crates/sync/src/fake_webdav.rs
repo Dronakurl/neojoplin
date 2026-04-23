@@ -231,7 +231,6 @@ fn parent_dir(path: &str) -> String {
     let normalized = normalize_file_path(path);
     match normalized.rsplit_once('/') {
         Some(("", _)) | None => "/".to_string(),
-        Some((parent, _)) if parent.is_empty() => "/".to_string(),
         Some((parent, _)) => parent.to_string(),
     }
 }

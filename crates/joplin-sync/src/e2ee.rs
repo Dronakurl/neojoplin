@@ -544,7 +544,7 @@ mod tests {
         let mut service = E2eeService::new();
         service.set_master_password("test_password".to_string());
 
-        let (key_id, master_key) = service.generate_master_key("test_password").unwrap();
+        let (_key_id, master_key) = service.generate_master_key("test_password").unwrap();
         service.load_master_key(&master_key).unwrap();
 
         assert!(service.is_enabled());

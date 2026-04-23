@@ -234,7 +234,7 @@ mod tests {
     fn test_config_default() {
         let config = Config::default();
         assert_eq!(config.sync.remote_path, "/neojoplin");
-        assert_eq!(config.ui.show_emoji, true);
+        assert!(config.ui.show_emoji);
     }
 
     #[test]

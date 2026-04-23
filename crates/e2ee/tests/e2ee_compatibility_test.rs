@@ -11,9 +11,6 @@ use neojoplin_e2ee::{
 use tokio::runtime::Runtime;
 use uuid::Uuid;
 
-// Test data from actual Joplin encrypted notes
-const JOPLIN_ENCRYPTED_SAMPLE: &str = r#"{"iv":"7bba4f5f276553cc7cecf231","ct":"fcb835407d255bf6e14b7e6f96e135b80df9d7ab27d2e1dd8f27e3332b8448e670b98b19f797006704353025ec34bf53","salt":"89bfd70f216bd421cf53fc1f5cd8c75209f66a96425e6d00d13cba29c60be22a"}"#;
-
 #[test]
 fn test_encryption_method_string_v1_parameters() {
     // StringV1 is used for encrypting notes

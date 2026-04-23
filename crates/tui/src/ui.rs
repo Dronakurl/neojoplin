@@ -70,14 +70,26 @@ fn render_main_content(f: &mut Frame, state: &AppState, area: Rect) {
 
 /// Render notebooks (folders) panel
 fn render_notebooks_panel(f: &mut Frame, state: &AppState, area: Rect) {
-    let title = format!("Notebooks [{}]", state.notebook_sort.label());
+    let title = if state.has_active_filter(FocusPanel::Notebooks) {
+        format!(
+            "Notebooks [{}] / {}",
+            state.notebook_sort.label(),
+            state.notebook_filter_query
+        )
+    } else {
+        format!("Notebooks [{}]", state.notebook_sort.label())
+    };
     let theme = &state.theme;
 
     let items: Vec<ListItem> = if state.folders.is_empty() {
-        vec![
-            ListItem::new("No notebooks yet").style(theme.dim()),
-            ListItem::new("Press N to create one").style(theme.dim()),
-        ]
+        if state.has_active_filter(FocusPanel::Notebooks) {
+            vec![ListItem::new("No matching notebooks").style(theme.dim())]
+        } else {
+            vec![
+                ListItem::new("No notebooks yet").style(theme.dim()),
+                ListItem::new("Press N to create one").style(theme.dim()),
+            ]
+        }
     } else {
         let mut all_items = vec![];
 
@@ -127,16 +139,27 @@ fn render_notebooks_panel(f: &mut Frame, state: &AppState, area: Rect) {
 /// Render notes panel
 fn render_notes_panel(f: &mut Frame, state: &AppState, area: Rect) {
     let title = if state.all_notebooks_mode {
-        format!("Notes - All Notebooks [{}]", state.note_sort.label())
+        format_with_filter(
+            format!("Notes - All Notebooks [{}]", state.note_sort.label()),
+            &state.note_filter_query,
+        )
     } else if let Some(folder) = state.selected_folder() {
-        format!("Notes - {} [{}]", folder.title, state.note_sort.label())
+        format_with_filter(
+            format!("Notes - {} [{}]", folder.title, state.note_sort.label()),
+            &state.note_filter_query,
+        )
     } else {
-        format!("Notes [{}]", state.note_sort.label())
+        format_with_filter(
+            format!("Notes [{}]", state.note_sort.label()),
+            &state.note_filter_query,
+        )
     };
     let theme = &state.theme;
 
     let items: Vec<ListItem> = if state.notes.is_empty() {
-        if state.all_notebooks_mode || state.selected_folder().is_some() {
+        if state.has_active_filter(FocusPanel::Notes) {
+            vec![ListItem::new("No matching notes").style(theme.dim())]
+        } else if state.all_notebooks_mode || state.selected_folder().is_some() {
             vec![
                 ListItem::new("No notes in this notebook").style(theme.dim()),
                 ListItem::new("Press n to create one").style(theme.dim()),
@@ -385,6 +408,7 @@ fn render_keybinding_ribbon(f: &mut Frame, state: &AppState, area: Rect) {
         ("T", "TODO"),
         // ("t", "TOGGLE"),
         ("N", "NOTEBOOK"),
+        ("f", "FILTER"),
         (",", "SORT"),
         ("d", "DELETE"),
         ("s", "SYNC"),
@@ -465,7 +489,18 @@ fn render_keybinding_ribbon(f: &mut Frame, state: &AppState, area: Rect) {
 fn render_status_line(f: &mut Frame, state: &AppState, area: Rect) {
     let theme = &state.theme;
 
-    let status_text = if state.status_message.is_empty() {
+    let status_text = if state.show_filter_prompt {
+        let target = match state.filter_target {
+            FocusPanel::Notebooks => "Filter notebooks: ",
+            FocusPanel::Notes | FocusPanel::Content => "Filter notes: ",
+        };
+        Line::from(vec![
+            Span::styled(target, theme.muted()),
+            Span::styled(&state.filter_input, theme.primary()),
+            Span::styled("█", theme.muted()),
+            Span::styled("  [Enter confirm] [Esc cancel]", theme.muted()),
+        ])
+    } else if state.status_message.is_empty() {
         Line::from(vec![Span::from("Ready").style(theme.muted())])
     } else {
         Line::from(vec![
@@ -1016,8 +1051,8 @@ fn render_target_form(f: &mut Frame, state: &AppState, area: Rect) {
         f.render_widget(error_text, form_chunks[4]);
     } else if let Some(ref result) = sync.connection_result {
         match result {
-            ConnectionResult::Success => {
-                let success_text = Paragraph::new("✓ Connection successful!")
+            ConnectionResult::Success(message) => {
+                let success_text = Paragraph::new(format!("✓ {}", message))
                     .style(theme.success())
                     .alignment(Alignment::Center);
                 f.render_widget(success_text, form_chunks[4]);
@@ -1125,11 +1160,13 @@ pub fn render_help(f: &mut Frame, scroll: u16, state: &AppState) {
         Line::from("  n      New note in current notebook"),
         Line::from("  N      New notebook"),
         Line::from("  r      Rename selected note or notebook"),
+        Line::from("  f      Filter the focused list"),
         Line::from("  ,      Open sort help for the focused list"),
         Line::from("  t / T  Sort focused list by time / descending time"),
         Line::from("  a      Sort focused list by name"),
         Line::from("  m      Sort notebooks by newest changed note"),
-        Line::from("  d      Delete selected note or notebook"),
+        Line::from("  d      Delete selected note or notebook (with confirmation)"),
+        Line::from("  D      Delete selected note immediately"),
         Line::from(""),
         Line::from("Todos").style(theme.primary()),
         Line::from("  T        Create new todo"),
@@ -1190,6 +1227,49 @@ pub fn render_quit_confirmation(f: &mut Frame, state: &AppState) {
                 .title_bottom(bottom_title)
                 .borders(Borders::ALL)
                 .border_style(theme.border_focused()),
+        )
+        .wrap(Wrap { trim: true })
+        .alignment(Alignment::Center);
+
+    f.render_widget(paragraph, area);
+}
+
+pub fn render_delete_confirmation(f: &mut Frame, state: &AppState) {
+    let area = centered_rect_with_min_width(42, 18, 52, f.area());
+    let theme = &state.theme;
+
+    let (title, item_label) = match state.pending_delete.as_ref() {
+        Some(crate::state::PendingDelete::Note { title, .. }) => ("Delete note?", title.as_str()),
+        Some(crate::state::PendingDelete::Notebook { title, .. }) => {
+            ("Delete notebook?", title.as_str())
+        }
+        None => ("Delete?", ""),
+    };
+
+    let bottom_title = Line::from(vec![
+        Span::styled("[", theme.muted()),
+        Span::styled("y/Enter", theme.accent()),
+        Span::styled("]", theme.muted()),
+        Span::raw(" delete ").style(theme.text()),
+        Span::styled("[", theme.muted()),
+        Span::styled("n/Esc", theme.accent()),
+        Span::styled("]", theme.muted()),
+        Span::raw(" cancel ").style(theme.text()),
+    ]);
+
+    let text = Text::from(vec![
+        Line::from(""),
+        Line::from(item_label).style(theme.primary()),
+        Line::from(""),
+    ]);
+
+    let paragraph = Paragraph::new(text)
+        .block(
+            Block::default()
+                .title(title)
+                .title_bottom(bottom_title)
+                .borders(Borders::ALL)
+                .border_style(theme.error()),
         )
         .wrap(Wrap { trim: true })
         .alignment(Alignment::Center);
@@ -1379,6 +1459,14 @@ pub fn render_sort_popup(f: &mut Frame, state: &AppState) {
         .alignment(Alignment::Left);
 
     f.render_widget(paragraph, area);
+}
+
+fn format_with_filter(base_title: String, filter_query: &str) -> String {
+    if filter_query.is_empty() {
+        base_title
+    } else {
+        format!("{base_title} / {filter_query}")
+    }
 }
 
 /// Extract emoji from folder icon JSON field

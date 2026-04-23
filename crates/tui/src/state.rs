@@ -5,6 +5,8 @@ use std::collections::HashMap;
 
 use crate::settings::Settings;
 use crate::theme::Theme;
+use fuzzy_matcher::skim::SkimMatcherV2;
+use fuzzy_matcher::FuzzyMatcher;
 use joplin_domain::{Folder, Note};
 
 /// Which panel has focus
@@ -13,6 +15,12 @@ pub enum FocusPanel {
     Notebooks,
     Notes,
     Content,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PendingDelete {
+    Note { id: String, title: String },
+    Notebook { id: String, title: String },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -84,10 +92,24 @@ pub struct AppState {
     pub show_rename_prompt: bool,
     /// Current rename input
     pub rename_input: String,
+    /// Whether filter prompt is active
+    pub show_filter_prompt: bool,
+    /// Which panel the filter prompt is editing
+    pub filter_target: FocusPanel,
+    /// Current filter prompt input
+    pub filter_input: String,
+    /// Filter input value before opening the prompt
+    pub filter_original_input: String,
+    /// Active notebook filter query
+    pub notebook_filter_query: String,
+    /// Active note filter query
+    pub note_filter_query: String,
     /// Newly created note kept at end of the list until renamed
     pub new_note_id: Option<String>,
     /// Newly created notebook kept at end of the list until renamed
     pub new_folder_id: Option<String>,
+    /// Pending note or notebook deletion
+    pub pending_delete: Option<PendingDelete>,
     /// Whether sort help is active
     pub show_sort_popup: bool,
     /// Current note sort mode
@@ -120,8 +142,15 @@ impl Default for AppState {
             settings: Settings::new(),
             show_rename_prompt: false,
             rename_input: String::new(),
+            show_filter_prompt: false,
+            filter_target: FocusPanel::Notes,
+            filter_input: String::new(),
+            filter_original_input: String::new(),
+            notebook_filter_query: String::new(),
+            note_filter_query: String::new(),
             new_note_id: None,
             new_folder_id: None,
+            pending_delete: None,
             show_sort_popup: false,
             note_sort: NoteSortMode::TimeAsc,
             notebook_sort: NotebookSortMode::TimeAsc,
@@ -344,6 +373,16 @@ impl AppState {
         move_folder_to_end(folders, self.new_folder_id.as_deref());
     }
 
+    /// Apply the active notebook filter query to a list of folders.
+    pub fn filter_folders(&self, folders: Vec<Folder>) -> Vec<Folder> {
+        fuzzy_filter_by_query(folders, &self.notebook_filter_query, |folder| &folder.title)
+    }
+
+    /// Apply the active note filter query to a list of notes.
+    pub fn filter_notes(&self, notes: Vec<Note>) -> Vec<Note> {
+        fuzzy_filter_by_query(notes, &self.note_filter_query, |note| &note.title)
+    }
+
     /// Set status message
     pub fn set_status(&mut self, message: &str) {
         self.status_message = message.to_string();
@@ -406,6 +445,75 @@ impl AppState {
     /// Hide sort popup
     pub fn close_sort_popup(&mut self) {
         self.show_sort_popup = false;
+    }
+
+    /// Open the filter prompt for the active list panel.
+    pub fn open_filter_prompt(&mut self) {
+        self.filter_target = if self.focus == FocusPanel::Notebooks {
+            FocusPanel::Notebooks
+        } else {
+            FocusPanel::Notes
+        };
+        self.filter_input = self.current_filter_query().to_string();
+        self.filter_original_input = self.filter_input.clone();
+        self.show_filter_prompt = true;
+    }
+
+    /// Close the filter prompt and optionally restore the original query.
+    pub fn close_filter_prompt(&mut self, restore_original: bool) {
+        if restore_original {
+            let original = self.filter_original_input.clone();
+            self.set_filter_query(original);
+        }
+        self.show_filter_prompt = false;
+        self.filter_original_input.clear();
+    }
+
+    /// Add a character to the live filter query.
+    pub fn add_filter_char(&mut self, c: char) {
+        self.filter_input.push(c);
+        self.set_filter_query(self.filter_input.clone());
+    }
+
+    /// Remove a character from the live filter query.
+    pub fn remove_filter_char(&mut self) {
+        self.filter_input.pop();
+        self.set_filter_query(self.filter_input.clone());
+    }
+
+    /// Return the filter query for the active filter target.
+    pub fn current_filter_query(&self) -> &str {
+        match self.filter_target {
+            FocusPanel::Notebooks => &self.notebook_filter_query,
+            FocusPanel::Notes | FocusPanel::Content => &self.note_filter_query,
+        }
+    }
+
+    /// Set the filter query for the current filter target.
+    pub fn set_filter_query(&mut self, query: String) {
+        match self.filter_target {
+            FocusPanel::Notebooks => self.notebook_filter_query = query,
+            FocusPanel::Notes | FocusPanel::Content => self.note_filter_query = query,
+        }
+    }
+
+    /// Whether any panel filter is currently active.
+    pub fn has_active_filter(&self, panel: FocusPanel) -> bool {
+        match panel {
+            FocusPanel::Notebooks => !self.notebook_filter_query.is_empty(),
+            FocusPanel::Notes => !self.note_filter_query.is_empty(),
+            FocusPanel::Content => false,
+        }
+    }
+
+    /// Open a delete confirmation dialog.
+    pub fn confirm_delete(&mut self, pending_delete: PendingDelete) {
+        self.pending_delete = Some(pending_delete);
+    }
+
+    /// Close the delete confirmation dialog.
+    pub fn clear_pending_delete(&mut self) {
+        self.pending_delete = None;
     }
 
     /// Keep a newly created note at the end of the list until it is renamed.
@@ -504,6 +612,32 @@ fn normalized_name(name: &str) -> String {
     name.to_lowercase()
 }
 
+fn fuzzy_filter_by_query<T, F>(items: Vec<T>, query: &str, text_fn: F) -> Vec<T>
+where
+    T: Clone,
+    F: Fn(&T) -> &str,
+{
+    let query = query.trim();
+    if query.is_empty() {
+        return items;
+    }
+
+    let matcher = SkimMatcherV2::default().smart_case();
+    let mut matches: Vec<(usize, i64, T)> = items
+        .iter()
+        .enumerate()
+        .filter_map(|(idx, item)| {
+            matcher
+                .fuzzy_match(text_fn(item), query)
+                .map(|score| (idx, score, item.clone()))
+        })
+        .collect();
+
+    matches.sort_by(|left, right| right.1.cmp(&left.1).then_with(|| left.0.cmp(&right.0)));
+
+    matches.into_iter().map(|(_, _, item)| item).collect()
+}
+
 fn move_note_to_end(notes: &mut [Note], note_id: Option<&str>) {
     if let Some(note_id) = note_id {
         if let Some(idx) = notes.iter().position(|note| note.id == note_id) {
@@ -531,7 +665,7 @@ mod tests {
         assert_eq!(state.focus, FocusPanel::Notebooks);
         assert_eq!(state.selected_folder, None);
         assert_eq!(state.selected_note, None);
-        assert_eq!(state.all_notebooks_mode, false);
+        assert!(!state.all_notebooks_mode);
         assert_eq!(state.note_sort, NoteSortMode::TimeAsc);
         assert_eq!(state.notebook_sort, NotebookSortMode::TimeAsc);
     }

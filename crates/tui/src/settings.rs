@@ -3,7 +3,7 @@
 use anyhow::Result;
 use joplin_sync::E2eeService;
 use serde::{Deserialize, Serialize};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 /// Settings menu tabs
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -60,8 +60,14 @@ pub enum FormField {
 /// Connection test result
 #[derive(Debug, Clone)]
 pub enum ConnectionResult {
-    Success,
+    Success(String),
     Failed(String),
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct StoredSyncTargets {
+    current_target_id: Option<String>,
+    targets: Vec<SyncTarget>,
 }
 
 /// Sync settings state
@@ -264,6 +270,28 @@ impl Settings {
 
     /// Load sync settings from Joplin-compatible format
     pub async fn load_sync_settings(&mut self, data_dir: &Path) -> Result<()> {
+        self.sync.targets.clear();
+        self.sync.current_target_index = None;
+
+        let targets_path = sync_targets_path(data_dir);
+        if targets_path.exists() {
+            let content = tokio::fs::read_to_string(&targets_path).await?;
+            let stored: StoredSyncTargets = serde_json::from_str(&content)?;
+            self.sync.targets = stored.targets;
+            self.sync.current_target_index = stored.current_target_id.and_then(|target_id| {
+                self.sync
+                    .targets
+                    .iter()
+                    .position(|target| target.id == target_id)
+            });
+
+            if self.sync.current_target_index.is_none() && !self.sync.targets.is_empty() {
+                self.sync.current_target_index = Some(0);
+            }
+
+            return Ok(());
+        }
+
         let config_path = data_dir.join("settings.json");
 
         if !config_path.exists() {
@@ -300,6 +328,7 @@ impl Settings {
                 .unwrap_or("")
                 .to_string();
 
+            let (_, remote_path) = split_sync_url(&url);
             let target = SyncTarget {
                 id: "webdav-default".to_string(),
                 name: "WebDAV".to_string(),
@@ -307,7 +336,7 @@ impl Settings {
                 url,
                 username,
                 password,
-                remote_path: "/neojoplin".to_string(),
+                remote_path,
                 ignore_tls_errors: false,
             };
 
@@ -323,6 +352,20 @@ impl Settings {
 
     /// Save sync settings to Joplin-compatible format
     pub async fn save_sync_settings(&self, data_dir: &Path) -> Result<()> {
+        let stored = StoredSyncTargets {
+            current_target_id: self
+                .sync
+                .current_target_index
+                .and_then(|idx| self.sync.targets.get(idx))
+                .map(|target| target.id.clone()),
+            targets: self.sync.targets.clone(),
+        };
+        tokio::fs::write(
+            sync_targets_path(data_dir),
+            serde_json::to_string_pretty(&stored)?,
+        )
+        .await?;
+
         let config_path = data_dir.join("settings.json");
 
         let target_id: u32 = if self.sync.current_target_index.is_some() {
@@ -362,6 +405,7 @@ impl Settings {
             if let Ok(old_config) = serde_json::from_str::<serde_json::Value>(&content) {
                 let url = old_config.get("url").and_then(|v| v.as_str()).unwrap_or("");
 
+                let (_, remote_path) = split_sync_url(url);
                 let target = SyncTarget {
                     id: "migrated".to_string(),
                     name: "Migrated WebDAV".to_string(),
@@ -369,7 +413,7 @@ impl Settings {
                     url: url.to_string(),
                     username: String::new(),
                     password: String::new(),
-                    remote_path: "/neojoplin".to_string(),
+                    remote_path,
                     ignore_tls_errors: false,
                 };
 
@@ -543,6 +587,25 @@ impl Settings {
         self.encryption.active_field = EncryptionField::Password;
         self.clear_passwords();
     }
+}
+
+fn sync_targets_path(data_dir: &Path) -> PathBuf {
+    data_dir.join("sync-targets.json")
+}
+
+fn split_sync_url(full_url: &str) -> (String, String) {
+    let trimmed = full_url.trim_end_matches('/');
+    let scheme_end = trimmed.find("://").map(|i| i + 3).unwrap_or(0);
+    if let Some(slash_pos) = trimmed[scheme_end..].rfind('/') {
+        let abs_pos = scheme_end + slash_pos;
+        let base = &trimmed[..abs_pos];
+        let path = &trimmed[abs_pos..];
+        if !path.is_empty() && path != "/" {
+            return (base.to_string(), path.to_string());
+        }
+    }
+
+    (trimmed.to_string(), "/neojoplin".to_string())
 }
 
 #[cfg(test)]

@@ -14,7 +14,7 @@ use joplin_domain::{now_ms, Folder, Note, Storage};
 use neojoplin_storage::SqliteStorage;
 use std::path::Path;
 
-use crate::state::{AppState, FocusPanel, NoteSortMode, NotebookSortMode};
+use crate::state::{AppState, FocusPanel, NoteSortMode, NotebookSortMode, PendingDelete};
 use crate::ui;
 
 /// Main TUI application
@@ -131,6 +131,8 @@ impl App {
                     ui::render_help(f, self.help_scroll, &self.state);
                 } else if self.state.show_quit_confirmation {
                     ui::render_quit_confirmation(f, &self.state);
+                } else if self.state.pending_delete.is_some() {
+                    ui::render_delete_confirmation(f, &self.state);
                 } else if self.state.show_error_dialog {
                     ui::render_error_dialog(f, &self.state);
                 } else if self.state.show_settings {
@@ -184,6 +186,10 @@ impl App {
             return Ok(false);
         }
 
+        if self.state.pending_delete.is_some() {
+            return self.handle_pending_delete_key_event(key).await;
+        }
+
         // Handle rename prompt
         if self.state.show_rename_prompt {
             match key.code {
@@ -205,6 +211,10 @@ impl App {
                 _ => {}
             }
             return Ok(false);
+        }
+
+        if self.state.show_filter_prompt {
+            return self.handle_filter_prompt_key_event(key).await;
         }
 
         // Handle help popup
@@ -258,6 +268,15 @@ impl App {
                 } else {
                     self.state
                         .set_status("Focus notebooks or notes to change sorting");
+                }
+            }
+
+            KeyCode::Char('f') => {
+                if matches!(self.state.focus, FocusPanel::Notebooks | FocusPanel::Notes) {
+                    self.state.open_filter_prompt();
+                } else {
+                    self.state
+                        .set_status("Focus notebooks or notes to filter the current list");
                 }
             }
 
@@ -344,7 +363,12 @@ impl App {
 
             // Delete
             KeyCode::Char('d') => {
-                self.delete_selected().await?;
+                self.request_delete_selected();
+            }
+
+            // Immediate note delete (hidden from ribbon)
+            KeyCode::Char('D') => {
+                self.delete_selected_note_immediately().await?;
             }
 
             // Toggle todo completion (space bar, like most task managers)
@@ -771,40 +795,28 @@ impl App {
     }
 
     /// Delete selected item (note or notebook)
-    async fn delete_selected(&mut self) -> Result<()> {
+    fn request_delete_selected(&mut self) {
         match self.state.focus {
             FocusPanel::Notes => {
                 if let Some(note) = self.state.selected_note() {
-                    let note_id = note.id.clone();
-                    self.state
-                        .set_status(&format!("Deleting note: {}", note.title));
-                    self.storage.delete_note(&note_id).await?;
-                    self.state.clear_new_note_marker_if(&note_id);
-                    self.refresh_lists(
-                        self.state.all_notebooks_mode,
-                        self.state.selected_folder_id().map(str::to_string),
-                        None,
-                    )
-                    .await?;
-                    self.state.set_status("Note deleted");
+                    self.state.confirm_delete(PendingDelete::Note {
+                        id: note.id.clone(),
+                        title: note.title.clone(),
+                    });
                 }
             }
             FocusPanel::Notebooks => {
                 if let Some(folder) = self.state.selected_folder() {
-                    let folder_id = folder.id.clone();
-                    self.state
-                        .set_status(&format!("Deleting notebook: {}", folder.title));
-                    self.storage.delete_folder(&folder_id).await?;
-                    self.state.clear_new_folder_marker_if(&folder_id);
-                    self.refresh_lists(false, None, None).await?;
-                    self.state.set_status("Notebook deleted");
+                    self.state.confirm_delete(PendingDelete::Notebook {
+                        id: folder.id.clone(),
+                        title: folder.title.clone(),
+                    });
                 }
             }
             FocusPanel::Content => {
                 self.state.set_status("Cannot delete from content panel");
             }
         }
-        Ok(())
     }
 
     /// Reload notes for currently selected notebook
@@ -1069,6 +1081,7 @@ impl App {
         let all_notes = self.storage.list_notes(None).await?;
         let mut folders = self.storage.list_folders().await?;
         self.state.sort_folders(&mut folders, &all_notes);
+        folders = self.state.filter_folders(folders);
         self.state.set_folders(folders);
 
         if all_notebooks_mode {
@@ -1089,6 +1102,7 @@ impl App {
             Vec::new()
         };
         self.state.sort_notes(&mut notes);
+        notes = self.state.filter_notes(notes);
         self.state.set_notes(notes);
 
         if let Some(note_id) = selected_note_id.as_deref() {
@@ -1179,6 +1193,44 @@ impl App {
 
             _ => {}
         }
+        Ok(false)
+    }
+
+    async fn handle_pending_delete_key_event(&mut self, key: KeyEvent) -> Result<bool> {
+        match key.code {
+            KeyCode::Char('y') | KeyCode::Enter => {
+                self.perform_pending_delete().await?;
+            }
+            KeyCode::Char('n') | KeyCode::Esc => {
+                self.state.clear_pending_delete();
+            }
+            _ => {}
+        }
+
+        Ok(false)
+    }
+
+    async fn handle_filter_prompt_key_event(&mut self, key: KeyEvent) -> Result<bool> {
+        match key.code {
+            KeyCode::Char(c) => {
+                self.state.add_filter_char(c);
+                self.refresh_current_lists().await?;
+            }
+            KeyCode::Backspace => {
+                self.state.remove_filter_char();
+                self.refresh_current_lists().await?;
+            }
+            KeyCode::Enter => {
+                self.state.close_filter_prompt(false);
+                self.refresh_current_lists().await?;
+            }
+            KeyCode::Esc => {
+                self.state.close_filter_prompt(true);
+                self.refresh_current_lists().await?;
+            }
+            _ => {}
+        }
+
         Ok(false)
     }
 
@@ -1294,7 +1346,7 @@ impl App {
             url: sync.url_input.trim().to_string(),
             username: sync.username_input.trim().to_string(),
             password: sync.password_input.clone(),
-            remote_path: String::new(),
+            remote_path: split_webdav_url(sync.url_input.trim()).1,
             ignore_tls_errors: false,
         };
 
@@ -1343,16 +1395,39 @@ impl App {
         let config = WebDavConfig::new(base_url, username, password);
 
         match ReqwestWebDavClient::new(config) {
-            Ok(webdav) => match webdav.list_impl(&remote_path).await {
-                Ok(_) => {
-                    self.state.settings.sync.connection_result =
-                        Some(crate::settings::ConnectionResult::Success);
+            Ok(webdav) => {
+                if !webdav.exists_impl(&remote_path).await.unwrap_or(false) {
+                    webdav.mkdir_impl(&remote_path).await?;
                 }
-                Err(e) => {
-                    self.state.settings.sync.connection_result =
-                        Some(crate::settings::ConnectionResult::Failed(e.to_string()));
+
+                let probe_path = format!(
+                    "{}/.neojoplin-connection-test-{}",
+                    remote_path.trim_end_matches('/'),
+                    joplin_domain::joplin_id()
+                );
+
+                match webdav.put_impl(&probe_path, b"ok").await {
+                    Ok(()) => {
+                        let _ = webdav.delete_impl(&probe_path).await;
+                        match webdav.list_impl(&remote_path).await {
+                            Ok(_) => {
+                                self.state.settings.sync.connection_result =
+                                    Some(crate::settings::ConnectionResult::Success(
+                                        "Remote path is reachable and writable".to_string(),
+                                    ));
+                            }
+                            Err(e) => {
+                                self.state.settings.sync.connection_result =
+                                    Some(crate::settings::ConnectionResult::Failed(e.to_string()));
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        self.state.settings.sync.connection_result =
+                            Some(crate::settings::ConnectionResult::Failed(e.to_string()));
+                    }
                 }
-            },
+            }
             Err(e) => {
                 self.state.settings.sync.connection_result =
                     Some(crate::settings::ConnectionResult::Failed(e.to_string()));
@@ -1360,6 +1435,62 @@ impl App {
         }
 
         self.state.settings.sync.testing_connection = false;
+        Ok(())
+    }
+
+    async fn perform_pending_delete(&mut self) -> Result<()> {
+        let pending = self.state.pending_delete.clone();
+        self.state.clear_pending_delete();
+
+        match pending {
+            Some(PendingDelete::Note { id, title }) => {
+                self.state.set_status(&format!("Deleting note: {}", title));
+                self.storage.delete_note(&id).await?;
+                self.state.clear_new_note_marker_if(&id);
+                self.refresh_lists(
+                    self.state.all_notebooks_mode,
+                    self.state.selected_folder_id().map(str::to_string),
+                    None,
+                )
+                .await?;
+                self.state.set_status("Note deleted");
+            }
+            Some(PendingDelete::Notebook { id, title }) => {
+                self.state
+                    .set_status(&format!("Deleting notebook: {}", title));
+                self.storage.delete_folder(&id).await?;
+                self.state.clear_new_folder_marker_if(&id);
+                self.refresh_lists(false, None, None).await?;
+                self.state.set_status("Notebook deleted");
+            }
+            None => {}
+        }
+
+        Ok(())
+    }
+
+    async fn delete_selected_note_immediately(&mut self) -> Result<()> {
+        if self.state.focus != FocusPanel::Notes {
+            self.state
+                .set_status("D deletes notes immediately only from the notes panel");
+            return Ok(());
+        }
+
+        if let Some(note) = self.state.selected_note() {
+            let note_id = note.id.clone();
+            self.state
+                .set_status(&format!("Deleting note immediately: {}", note.title));
+            self.storage.delete_note(&note_id).await?;
+            self.state.clear_new_note_marker_if(&note_id);
+            self.refresh_lists(
+                self.state.all_notebooks_mode,
+                self.state.selected_folder_id().map(str::to_string),
+                None,
+            )
+            .await?;
+            self.state.set_status("Note deleted");
+        }
+
         Ok(())
     }
 }

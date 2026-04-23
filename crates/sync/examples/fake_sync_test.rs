@@ -75,7 +75,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("✓ Created test data");
 
     // Setup sync engine
-    let (event_tx, mut event_rx) = mpsc::unbounded_channel();
+    let (event_tx, _event_rx) = mpsc::unbounded_channel();
     let mut sync_engine = SyncEngine::new(storage.clone(), webdav.clone(), event_tx)
         .with_remote_path("/test-sync".to_string());
 
@@ -95,7 +95,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("  - {}", path);
     }
 
-    if all_files.len() > 0 {
+    if !all_files.is_empty() {
         println!("\n✅ SYNC TEST PASSED");
         println!("  - Database creation: ✓");
         println!("  - Test data creation: ✓");

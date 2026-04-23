@@ -25,6 +25,7 @@ dirs = "5.0"
 uuid = { version = "1.11", features = ["v4", "serde"] }
 termimad = "0.22"
 minimad = "=0.11.0"
+fuzzy-matcher = "0.3"
 
 [dev-dependencies]
 tokio-test = "0.4"
