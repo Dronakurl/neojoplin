@@ -3,6 +3,7 @@
 use std::cmp::Ordering;
 use std::collections::HashMap;
 
+use crate::command_line::CommandPromptState;
 use crate::settings::Settings;
 use crate::theme::Theme;
 use fuzzy_matcher::skim::SkimMatcherV2;
@@ -20,7 +21,11 @@ pub enum FocusPanel {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PendingDelete {
     Note { id: String, title: String },
-    Notebook { id: String, title: String },
+    Notebook {
+        id: String,
+        title: String,
+        note_count: usize,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -116,6 +121,10 @@ pub struct AppState {
     pub note_sort: NoteSortMode,
     /// Current notebook sort mode
     pub notebook_sort: NotebookSortMode,
+    /// Vim-style command prompt state
+    pub command_prompt: CommandPromptState,
+    /// Tag names keyed by note ID for filtering
+    pub note_tags: HashMap<String, Vec<String>>,
     /// Color theme
     pub theme: Theme,
     /// Whether to show error dialog
@@ -154,6 +163,8 @@ impl Default for AppState {
             show_sort_popup: false,
             note_sort: NoteSortMode::TimeAsc,
             notebook_sort: NotebookSortMode::TimeAsc,
+            command_prompt: CommandPromptState::default(),
+            note_tags: HashMap::new(),
             theme: crate::theme::default_theme(),
             show_error_dialog: false,
             error_message: String::new(),
@@ -375,12 +386,50 @@ impl AppState {
 
     /// Apply the active notebook filter query to a list of folders.
     pub fn filter_folders(&self, folders: Vec<Folder>) -> Vec<Folder> {
-        fuzzy_filter_by_query(folders, &self.notebook_filter_query, |folder| &folder.title)
+        fuzzy_filter_by_query(folders, &self.notebook_filter_query, |folder| {
+            folder.title.clone()
+        })
     }
 
     /// Apply the active note filter query to a list of notes.
     pub fn filter_notes(&self, notes: Vec<Note>) -> Vec<Note> {
-        fuzzy_filter_by_query(notes, &self.note_filter_query, |note| &note.title)
+        let (text_query, tag_terms) = split_note_filter_query(&self.note_filter_query);
+        if text_query.is_empty() && tag_terms.is_empty() {
+            return notes;
+        }
+
+        let matcher = SkimMatcherV2::default().smart_case();
+        let mut matches: Vec<(usize, i64, Note)> = notes
+            .iter()
+            .enumerate()
+            .filter_map(|(idx, note)| {
+                let tags = self
+                    .note_tags
+                    .get(&note.id)
+                    .cloned()
+                    .unwrap_or_default();
+                if !note_matches_tag_terms(&matcher, &tags, &tag_terms) {
+                    return None;
+                }
+
+                let searchable_text = if tags.is_empty() {
+                    format!("{} {}", note.title, note.body)
+                } else {
+                    format!("{} {} {}", note.title, note.body, tags.join(" "))
+                };
+
+                let score = if text_query.is_empty() {
+                    0
+                } else {
+                    matcher.fuzzy_match(&searchable_text, &text_query)?
+                };
+
+                Some((idx, score, note.clone()))
+            })
+            .collect();
+
+        matches.sort_by(|left, right| right.1.cmp(&left.1).then_with(|| left.0.cmp(&right.0)));
+        matches.into_iter().map(|(_, _, note)| note).collect()
     }
 
     /// Set status message
@@ -516,6 +565,11 @@ impl AppState {
         self.pending_delete = None;
     }
 
+    /// Replace the tag cache for the currently loaded notes.
+    pub fn set_note_tags(&mut self, note_tags: HashMap<String, Vec<String>>) {
+        self.note_tags = note_tags;
+    }
+
     /// Keep a newly created note at the end of the list until it is renamed.
     pub fn mark_new_note(&mut self, note_id: String) {
         self.new_note_id = Some(note_id);
@@ -548,6 +602,16 @@ impl AppState {
     /// Remove last character from rename input
     pub fn remove_rename_char(&mut self) {
         self.rename_input.pop();
+    }
+
+    /// Open the vim-style command prompt.
+    pub fn open_command_prompt(&mut self, initial_input: impl Into<String>) {
+        self.command_prompt.open(initial_input);
+    }
+
+    /// Close the command prompt.
+    pub fn close_command_prompt(&mut self) {
+        self.command_prompt.close();
     }
 }
 
@@ -615,7 +679,7 @@ fn normalized_name(name: &str) -> String {
 fn fuzzy_filter_by_query<T, F>(items: Vec<T>, query: &str, text_fn: F) -> Vec<T>
 where
     T: Clone,
-    F: Fn(&T) -> &str,
+    F: Fn(&T) -> String,
 {
     let query = query.trim();
     if query.is_empty() {
@@ -627,8 +691,9 @@ where
         .iter()
         .enumerate()
         .filter_map(|(idx, item)| {
+            let text = text_fn(item);
             matcher
-                .fuzzy_match(text_fn(item), query)
+                .fuzzy_match(&text, query)
                 .map(|score| (idx, score, item.clone()))
         })
         .collect();

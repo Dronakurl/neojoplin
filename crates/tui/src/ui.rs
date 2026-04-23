@@ -100,7 +100,7 @@ fn render_notebooks_panel(f: &mut Frame, state: &AppState, area: Rect) {
         } else {
             theme.text()
         };
-        all_items.push(ListItem::new("📚 All Notebooks").style(all_style));
+        all_items.push(ListItem::new("📚 All Notes").style(all_style));
 
         // Add individual notebooks
         for (i, folder) in state.folders.iter().enumerate() {
@@ -1380,7 +1380,7 @@ pub fn render_rename_prompt(f: &mut Frame, state: &AppState) {
 
     // Input field with visual highlighting using a styled paragraph
     let input_text = vec![
-        Span::styled("New name: ", theme.muted()),
+        Span::styled("New name: ", theme.text()),
         Span::styled(&state.rename_input, theme.primary()),
         Span::styled("█", theme.muted()), // Cursor indicator
     ];

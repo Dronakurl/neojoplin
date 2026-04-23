@@ -1,7 +1,9 @@
 // NeoJoplin TUI - Terminal user interface with ratatui
 
 pub mod app;
+pub mod command_line;
 pub mod config;
+pub mod importer;
 pub mod settings;
 pub mod state;
 pub mod theme;

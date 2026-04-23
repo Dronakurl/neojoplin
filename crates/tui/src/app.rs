@@ -248,6 +248,12 @@ impl App {
 
         // Handle vim-style navigation and actions
         match key.code {
+            // Escape - clear active filters
+            KeyCode::Esc if self.state.has_active_filter(self.state.focus) => {
+                self.state.set_filter_query(String::new());
+                self.refresh_current_lists().await?;
+            }
+
             // Quit
             KeyCode::Char('q') => {
                 if key.modifiers.contains(KeyModifiers::CONTROL) {
@@ -349,16 +355,19 @@ impl App {
                 }
             }
 
-            // New note
+            // New item (context-aware: notebook or note based on focus)
             KeyCode::Char('n') => {
-                // n - New note
-                self.create_note().await?;
-            }
-
-            // New notebook
-            KeyCode::Char('N') => {
-                // N - New notebook
-                self.create_notebook().await?;
+                match self.state.focus {
+                    FocusPanel::Notebooks => {
+                        self.create_notebook().await?;
+                    }
+                    FocusPanel::Notes => {
+                        self.create_note().await?;
+                    }
+                    FocusPanel::Content => {
+                        self.state.set_status("Focus notebooks or notes panel to create new items");
+                    }
+                }
             }
 
             // Delete
@@ -1225,7 +1234,8 @@ impl App {
                 self.refresh_current_lists().await?;
             }
             KeyCode::Esc => {
-                self.state.close_filter_prompt(true);
+                self.state.set_filter_query(String::new());
+                self.state.close_filter_prompt(false);
                 self.refresh_current_lists().await?;
             }
             _ => {}

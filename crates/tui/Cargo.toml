@@ -8,11 +8,12 @@ repository.workspace = true
 description = "TUI application for NeoJoplin (ratatui)"
 
 [dependencies]
-joplin-domain = { path = "../joplin-domain" }
+joplin-domain = { path = "../joplin-domain", features = ["sqlx"] }
 joplin-sync = { path = "../joplin-sync" }
 neojoplin-core = { path = "../core" }
 neojoplin-storage = { path = "../storage" }
 tokio = { workspace = true }
+sqlx = { workspace = true }
 ratatui = "0.28"
 crossterm = "0.28"
 anyhow = { workspace = true }
