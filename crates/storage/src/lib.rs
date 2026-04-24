@@ -670,7 +670,7 @@ impl Storage for SqliteStorage {
                 id, title, created_time, updated_time,
                 user_created_time, user_updated_time, parent_id,
                 is_shared
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             "#,
         )
         .bind(&tag.id)

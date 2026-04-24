@@ -276,11 +276,25 @@ fn render_content_panel(f: &mut Frame, state: &AppState, area: Rect) {
         " All ".to_string()
     };
 
+    let bottom_indicator = if let Some(note) = state.selected_note() {
+        if let Some(tags) = state.note_tags.get(&note.id) {
+            if !tags.is_empty() {
+                format!("{} • tags: {}", scroll_indicator.trim(), tags.join(", "))
+            } else {
+                scroll_indicator
+            }
+        } else {
+            scroll_indicator
+        }
+    } else {
+        scroll_indicator
+    };
+
     let paragraph = Paragraph::new(content)
         .block(
             Block::default()
                 .title(title)
-                .title_bottom(Line::from(scroll_indicator).style(theme.muted()))
+                .title_bottom(Line::from(bottom_indicator).style(theme.muted()))
                 .borders(Borders::ALL)
                 .border_style(if state.focus == FocusPanel::Content {
                     theme.border_focused()
@@ -492,7 +506,7 @@ fn render_status_line(f: &mut Frame, state: &AppState, area: Rect) {
     let status_text = if state.show_filter_prompt {
         let target = match state.filter_target {
             FocusPanel::Notebooks => "Filter notebooks: ",
-            FocusPanel::Notes | FocusPanel::Content => "Filter notes: ",
+            FocusPanel::Notes | FocusPanel::Content => "Filter notes (#tag): ",
         };
         Line::from(vec![
             Span::styled(target, theme.muted()),
@@ -500,6 +514,33 @@ fn render_status_line(f: &mut Frame, state: &AppState, area: Rect) {
             Span::styled("█", theme.muted()),
             Span::styled("  [Enter confirm] [Esc cancel]", theme.muted()),
         ])
+    } else if state.command_prompt.visible {
+        let mut spans = vec![
+            Span::styled(":", theme.muted()),
+            Span::styled(&state.command_prompt.input, theme.primary()),
+            Span::styled("█", theme.muted()),
+        ];
+
+        if let Some(completion) = state.command_prompt.completion.as_ref() {
+            if !completion.items.is_empty() {
+                let preview = completion
+                    .items
+                    .iter()
+                    .take(3)
+                    .cloned()
+                    .collect::<Vec<_>>()
+                    .join("  ");
+                spans.push(Span::styled("  [Tab cycle] ", theme.muted()));
+                spans.push(Span::styled(preview, theme.text()));
+            }
+        } else {
+            spans.push(Span::styled(
+                "  [Tab complete] [Enter run] [Esc cancel]",
+                theme.muted(),
+            ));
+        }
+
+        Line::from(spans)
     } else if state.status_message.is_empty() {
         Line::from(vec![Span::from("Ready").style(theme.muted())])
     } else {
@@ -1159,21 +1200,30 @@ pub fn render_help(f: &mut Frame, scroll: u16, state: &AppState) {
         Line::from("Notes & Notebooks").style(theme.primary()),
         Line::from("  n      New note in current notebook"),
         Line::from("  N      New notebook"),
+        Line::from("  M      Move the selected note to another notebook"),
         Line::from("  r      Rename selected note or notebook"),
-        Line::from("  f      Filter the focused list"),
+        Line::from("  f      Filter the focused list (notes also support #tag filters)"),
         Line::from("  ,      Open sort help for the focused list"),
-        Line::from("  t / T  Sort focused list by time / descending time"),
-        Line::from("  a      Sort focused list by name"),
-        Line::from("  m      Sort notebooks by newest changed note"),
         Line::from("  d      Delete selected note or notebook (with confirmation)"),
         Line::from("  D      Delete selected note immediately"),
+        Line::from(""),
+        Line::from("Commands").style(theme.primary()),
+        Line::from("  :move <notebook>       Move the selected note to a notebook"),
+        Line::from("  :delete-orphaned       Delete notes whose notebook no longer exists"),
+        Line::from("  :read <file>           Create a note from a file"),
+        Line::from("  :tag <tag-name>        Add a tag to the selected note"),
+        Line::from("  :import                Import from ~/.config/joplin/database.sqlite"),
+        Line::from("  :import <db>           Import from an explicit Joplin SQLite file"),
+        Line::from("  :import-desktop        Import from ~/.config/joplin-desktop/database.sqlite"),
+        Line::from("  :quit / :q             Quit immediately"),
+        Line::from("  Tab                    Complete commands, notebooks, tags, and file paths"),
         Line::from(""),
         Line::from("Todos").style(theme.primary()),
         Line::from("  T        Create new todo"),
         Line::from("  Space    Toggle todo completed / unchecked"),
         Line::from(""),
         Line::from("Other").style(theme.primary()),
-        Line::from("  e / Enter  Edit selected note in $EDITOR"),
+        Line::from("  Enter      Edit selected note in $EDITOR"),
         Line::from("  s          Sync with WebDAV"),
         Line::from("  S          Open settings"),
         Line::from("  q          Quit"),
@@ -1246,22 +1296,45 @@ pub fn render_delete_confirmation(f: &mut Frame, state: &AppState) {
         None => ("Delete?", ""),
     };
 
-    let bottom_title = Line::from(vec![
-        Span::styled("[", theme.muted()),
-        Span::styled("y/Enter", theme.accent()),
-        Span::styled("]", theme.muted()),
-        Span::raw(" delete ").style(theme.text()),
-        Span::styled("[", theme.muted()),
-        Span::styled("n/Esc", theme.accent()),
-        Span::styled("]", theme.muted()),
-        Span::raw(" cancel ").style(theme.text()),
-    ]);
+    let bottom_title = match state.pending_delete.as_ref() {
+        Some(crate::state::PendingDelete::Notebook { .. }) => Line::from(vec![
+            Span::styled("[", theme.muted()),
+            Span::styled("y/Enter", theme.accent()),
+            Span::styled("]", theme.muted()),
+            Span::raw(" notebook only ").style(theme.text()),
+            Span::styled("[", theme.muted()),
+            Span::styled("Y", theme.accent()),
+            Span::styled("]", theme.muted()),
+            Span::raw(" delete notebook + notes ").style(theme.text()),
+            Span::styled("[", theme.muted()),
+            Span::styled("n/Esc", theme.accent()),
+            Span::styled("]", theme.muted()),
+            Span::raw(" cancel ").style(theme.text()),
+        ]),
+        _ => Line::from(vec![
+            Span::styled("[", theme.muted()),
+            Span::styled("y/Enter", theme.accent()),
+            Span::styled("]", theme.muted()),
+            Span::raw(" delete ").style(theme.text()),
+            Span::styled("[", theme.muted()),
+            Span::styled("n/Esc", theme.accent()),
+            Span::styled("]", theme.muted()),
+            Span::raw(" cancel ").style(theme.text()),
+        ]),
+    };
 
-    let text = Text::from(vec![
-        Line::from(""),
-        Line::from(item_label).style(theme.primary()),
-        Line::from(""),
-    ]);
+    let mut text_lines = vec![Line::from(""), Line::from(item_label).style(theme.primary())];
+    if let Some(crate::state::PendingDelete::Notebook { note_count, .. }) = state.pending_delete.as_ref()
+    {
+        text_lines.push(Line::from(""));
+        text_lines.push(Line::from(format!(
+            "{} notes will become orphaned if you keep them.",
+            note_count
+        )));
+    }
+    text_lines.push(Line::from(""));
+
+    let text = Text::from(text_lines);
 
     let paragraph = Paragraph::new(text)
         .block(

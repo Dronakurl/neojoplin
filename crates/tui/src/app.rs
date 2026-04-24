@@ -7,13 +7,18 @@ use crossterm::{
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
 use ratatui::{backend::CrosstermBackend, Terminal};
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Duration;
 
-use joplin_domain::{now_ms, Folder, Note, Storage};
+use joplin_domain::{now_ms, Folder, Note, NoteTag, Storage, Tag};
 use neojoplin_storage::SqliteStorage;
 use std::path::Path;
 
+use crate::command_line::{complete_path_input, parse_command, CommandAction, CompletionState};
+use crate::importer::{
+    default_cli_database_path, default_desktop_database_path, import_database, resolve_import_path,
+};
 use crate::state::{AppState, FocusPanel, NoteSortMode, NotebookSortMode, PendingDelete};
 use crate::ui;
 
@@ -217,6 +222,10 @@ impl App {
             return self.handle_filter_prompt_key_event(key).await;
         }
 
+        if self.state.command_prompt.visible {
+            return self.handle_command_prompt_key_event(key).await;
+        }
+
         // Handle help popup
         if self.show_help {
             match key.code {
@@ -266,6 +275,10 @@ impl App {
             // Help
             KeyCode::Char('?') => {
                 self.show_help = true;
+            }
+
+            KeyCode::Char(':') => {
+                self.state.open_command_prompt(String::new());
             }
 
             KeyCode::Char(',') => {
@@ -372,12 +385,22 @@ impl App {
 
             // Delete
             KeyCode::Char('d') => {
-                self.request_delete_selected();
+                self.request_delete_selected().await?;
             }
 
             // Immediate note delete (hidden from ribbon)
             KeyCode::Char('D') => {
                 self.delete_selected_note_immediately().await?;
+            }
+
+            // Hidden move shortcut
+            KeyCode::Char('M') => {
+                if self.state.selected_note().is_some() {
+                    self.state.open_command_prompt("move ".to_string());
+                } else {
+                    self.state
+                        .set_status("Select a note before choosing a destination notebook");
+                }
             }
 
             // Toggle todo completion (space bar, like most task managers)
@@ -804,7 +827,7 @@ impl App {
     }
 
     /// Delete selected item (note or notebook)
-    fn request_delete_selected(&mut self) {
+    async fn request_delete_selected(&mut self) -> Result<()> {
         match self.state.focus {
             FocusPanel::Notes => {
                 if let Some(note) = self.state.selected_note() {
@@ -815,10 +838,12 @@ impl App {
                 }
             }
             FocusPanel::Notebooks => {
-                if let Some(folder) = self.state.selected_folder() {
+                if let Some(folder) = self.state.selected_folder().cloned() {
+                    let note_count = self.storage.list_notes(Some(&folder.id)).await?.len();
                     self.state.confirm_delete(PendingDelete::Notebook {
                         id: folder.id.clone(),
                         title: folder.title.clone(),
+                        note_count,
                     });
                 }
             }
@@ -826,6 +851,8 @@ impl App {
                 self.state.set_status("Cannot delete from content panel");
             }
         }
+
+        Ok(())
     }
 
     /// Reload notes for currently selected notebook
@@ -1110,6 +1137,8 @@ impl App {
         } else {
             Vec::new()
         };
+        let note_tags = self.load_note_tag_titles(&notes).await?;
+        self.state.set_note_tags(note_tags);
         self.state.sort_notes(&mut notes);
         notes = self.state.filter_notes(notes);
         self.state.set_notes(notes);
@@ -1119,6 +1148,23 @@ impl App {
         }
 
         Ok(())
+    }
+
+    async fn load_note_tag_titles(&self, notes: &[Note]) -> Result<HashMap<String, Vec<String>>> {
+        let mut note_tags = HashMap::new();
+
+        for note in notes {
+            let tags = self
+                .storage
+                .get_note_tags(&note.id)
+                .await?
+                .into_iter()
+                .map(|tag| tag.title)
+                .collect();
+            note_tags.insert(note.id.clone(), tags);
+        }
+
+        Ok(note_tags)
     }
 
     /// Handle keyboard events in the encryption password prompt
@@ -1208,7 +1254,10 @@ impl App {
     async fn handle_pending_delete_key_event(&mut self, key: KeyEvent) -> Result<bool> {
         match key.code {
             KeyCode::Char('y') | KeyCode::Enter => {
-                self.perform_pending_delete().await?;
+                self.perform_pending_delete(false).await?;
+            }
+            KeyCode::Char('Y') => {
+                self.perform_pending_delete(true).await?;
             }
             KeyCode::Char('n') | KeyCode::Esc => {
                 self.state.clear_pending_delete();
@@ -1242,6 +1291,162 @@ impl App {
         }
 
         Ok(false)
+    }
+
+    async fn handle_command_prompt_key_event(&mut self, key: KeyEvent) -> Result<bool> {
+        match key.code {
+            KeyCode::Esc => {
+                self.state.close_command_prompt();
+            }
+            KeyCode::Backspace => {
+                self.state.command_prompt.pop_char();
+            }
+            KeyCode::Tab => {
+                self.cycle_command_completion(false).await?;
+            }
+            KeyCode::BackTab => {
+                self.cycle_command_completion(true).await?;
+            }
+            KeyCode::Enter => {
+                let input = self.state.command_prompt.input.clone();
+                self.state.close_command_prompt();
+
+                match parse_command(&input) {
+                    Ok(action) => return self.execute_command(action).await,
+                    Err(error) => self.state.show_error(&error),
+                }
+            }
+            KeyCode::Char(c)
+                if !key.modifiers.contains(KeyModifiers::CONTROL)
+                    && !key.modifiers.contains(KeyModifiers::ALT) =>
+            {
+                self.state.command_prompt.push_char(c);
+            }
+            _ => {}
+        }
+
+        Ok(false)
+    }
+
+    async fn cycle_command_completion(&mut self, backwards: bool) -> Result<()> {
+        let current_input = self.state.command_prompt.input.clone();
+        let reuse_existing = self
+            .state
+            .command_prompt
+            .completion
+            .as_ref()
+            .and_then(|completion| completion.current().map(|current| (completion, current)))
+            .map(|(completion, current)| current_input == current && !completion.items.is_empty())
+            .unwrap_or(false);
+
+        if reuse_existing {
+            if let Some(completion) = self.state.command_prompt.completion.as_mut() {
+                completion.advance(backwards);
+                if let Some(current) = completion.current() {
+                    self.state.command_prompt.input = current.to_string();
+                }
+            }
+            return Ok(());
+        }
+
+        let items = self.command_completion_items(&current_input).await?;
+        if items.is_empty() {
+            return Ok(());
+        }
+
+        let mut completion = CompletionState {
+            items,
+            index: 0,
+        };
+        if backwards {
+            completion.index = completion.items.len() - 1;
+        }
+        if let Some(current) = completion.current() {
+            self.state.command_prompt.input = current.to_string();
+        }
+        self.state.command_prompt.completion = Some(completion);
+        Ok(())
+    }
+
+    async fn command_completion_items(&self, input: &str) -> Result<Vec<String>> {
+        let trimmed = input.trim_start();
+        if trimmed.is_empty() {
+            return Ok(crate::command_line::COMMANDS
+                .iter()
+                .map(|command| command.name.to_string())
+                .collect());
+        }
+
+        let (command_name, arg, has_argument_context) = split_command_input(trimmed);
+        if !has_argument_context {
+            let mut items: Vec<String> = crate::command_line::COMMANDS
+                .iter()
+                .filter(|command| starts_with_ignore_case(command.name, command_name))
+                .map(|command| command.name.to_string())
+                .collect();
+            items.sort_by_key(|item| item.to_lowercase());
+            items.dedup();
+            return Ok(items);
+        }
+
+        let argument = arg.trim_start();
+        let mut items = match command_name {
+            "move" => self
+                .storage
+                .list_folders()
+                .await?
+                .into_iter()
+                .filter(|folder| starts_with_ignore_case(&folder.title, argument))
+                .map(|folder| format!("move {}", folder.title))
+                .collect(),
+            "tag" => self
+                .storage
+                .list_tags()
+                .await?
+                .into_iter()
+                .filter(|tag| starts_with_ignore_case(&tag.title, argument))
+                .map(|tag| format!("tag {}", tag.title))
+                .collect(),
+            "read" => complete_path_input("read", argument),
+            "import" => complete_path_input("import", argument),
+            _ => Vec::new(),
+        };
+        items.sort_by_key(|item: &String| item.to_lowercase());
+        items.dedup();
+        Ok(items)
+    }
+
+    async fn execute_command(&mut self, action: CommandAction) -> Result<bool> {
+        match action {
+            CommandAction::Move(notebook_name) => {
+                self.move_selected_note_to_notebook(&notebook_name).await?;
+                Ok(false)
+            }
+            CommandAction::DeleteOrphaned => {
+                self.delete_orphaned_notes().await?;
+                Ok(false)
+            }
+            CommandAction::Quit => Ok(true),
+            CommandAction::ImportDesktop => {
+                self.import_from_database(&default_desktop_database_path()).await?;
+                Ok(false)
+            }
+            CommandAction::Import(path) => {
+                let import_path = path
+                    .map(|value| resolve_import_path(&value))
+                    .unwrap_or_else(default_cli_database_path);
+                self.import_from_database(&import_path).await?;
+                Ok(false)
+            }
+            CommandAction::Read(path) => {
+                self.create_note_from_file(&resolve_import_path(&path)).await?;
+                Ok(false)
+            }
+            CommandAction::Tag(tag_name) => {
+                self.tag_selected_note(&tag_name).await?;
+                Ok(false)
+            }
+        }
     }
 
     /// Handle keyboard events in sync target form
@@ -1448,7 +1653,7 @@ impl App {
         Ok(())
     }
 
-    async fn perform_pending_delete(&mut self) -> Result<()> {
+    async fn perform_pending_delete(&mut self, delete_notes_in_notebook: bool) -> Result<()> {
         let pending = self.state.pending_delete.clone();
         self.state.clear_pending_delete();
 
@@ -1465,13 +1670,23 @@ impl App {
                 .await?;
                 self.state.set_status("Note deleted");
             }
-            Some(PendingDelete::Notebook { id, title }) => {
+            Some(PendingDelete::Notebook { id, title, .. }) => {
                 self.state
                     .set_status(&format!("Deleting notebook: {}", title));
+                if delete_notes_in_notebook {
+                    for note in self.storage.list_notes(Some(&id)).await? {
+                        self.storage.delete_note(&note.id).await?;
+                        self.state.clear_new_note_marker_if(&note.id);
+                    }
+                }
                 self.storage.delete_folder(&id).await?;
                 self.state.clear_new_folder_marker_if(&id);
                 self.refresh_lists(false, None, None).await?;
-                self.state.set_status("Notebook deleted");
+                self.state.set_status(if delete_notes_in_notebook {
+                    "Notebook and contained notes deleted"
+                } else {
+                    "Notebook deleted; contained notes are now orphaned"
+                });
             }
             None => {}
         }
@@ -1503,6 +1718,232 @@ impl App {
 
         Ok(())
     }
+
+    async fn move_selected_note_to_notebook(&mut self, notebook_name: &str) -> Result<()> {
+        let note = self
+            .state
+            .selected_note()
+            .cloned()
+            .ok_or_else(|| anyhow::anyhow!("Select a note before using :move"))?;
+        let folders = self.storage.list_folders().await?;
+        let target_folder = resolve_folder_by_title(&folders, notebook_name)?;
+        let target_folder_id = target_folder.id.clone();
+        let target_folder_title = target_folder.title.clone();
+
+        if note.parent_id == target_folder_id {
+            self.state
+                .set_status(&format!("{} is already in {}", note.title, target_folder_title));
+            return Ok(());
+        }
+
+        let mut updated_note = note.clone();
+        updated_note.parent_id = target_folder_id.clone();
+        updated_note.updated_time = now_ms();
+        self.storage.update_note(&updated_note).await?;
+
+        self.refresh_lists(
+            false,
+            Some(target_folder_id),
+            Some(updated_note.id.clone()),
+        )
+        .await?;
+        self.state.focus = FocusPanel::Notes;
+        self.state.set_status(&format!(
+            "Moved {} to {}",
+            updated_note.title, target_folder_title
+        ));
+        Ok(())
+    }
+
+    async fn delete_orphaned_notes(&mut self) -> Result<()> {
+        let folder_ids: HashSet<String> = self
+            .storage
+            .list_folders()
+            .await?
+            .into_iter()
+            .map(|folder| folder.id)
+            .collect();
+
+        let orphan_ids: Vec<String> = self
+            .storage
+            .list_notes(None)
+            .await?
+            .into_iter()
+            .filter(|note| note.parent_id.is_empty() || !folder_ids.contains(&note.parent_id))
+            .map(|note| note.id)
+            .collect();
+
+        if orphan_ids.is_empty() {
+            self.state.set_status("No orphaned notes found");
+            return Ok(());
+        }
+
+        for note_id in &orphan_ids {
+            self.storage.delete_note(note_id).await?;
+            self.state.clear_new_note_marker_if(note_id);
+        }
+
+        self.refresh_current_lists().await?;
+        self.state
+            .set_status(&format!("Deleted {} orphaned notes", orphan_ids.len()));
+        Ok(())
+    }
+
+    async fn import_from_database(&mut self, source_path: &Path) -> Result<()> {
+        self.state
+            .set_status(&format!("Importing from {}...", source_path.display()));
+        self.storage.begin_transaction().await?;
+
+        let result = import_database(self.storage.as_ref(), source_path).await;
+        match result {
+            Ok(summary) => {
+                self.storage.commit_transaction().await?;
+                self.refresh_current_lists().await?;
+                self.state.set_status(&summary.describe());
+                Ok(())
+            }
+            Err(error) => {
+                self.storage.rollback_transaction().await?;
+                Err(error)
+            }
+        }
+    }
+
+    async fn create_note_from_file(&mut self, file_path: &Path) -> Result<()> {
+        let body = tokio::fs::read_to_string(file_path)
+            .await
+            .with_context(|| format!("Failed to read {}", file_path.display()))?;
+        let parent_id = self.default_parent_folder_id().await?;
+        let title = file_path
+            .file_name()
+            .map(|name| name.to_string_lossy().to_string())
+            .filter(|name| !name.is_empty())
+            .unwrap_or_else(|| "Imported file".to_string());
+
+        let note = Note {
+            id: joplin_domain::joplin_id(),
+            title: title.clone(),
+            body,
+            parent_id,
+            created_time: now_ms(),
+            updated_time: now_ms(),
+            user_created_time: 0,
+            user_updated_time: 0,
+            is_shared: 0,
+            share_id: None,
+            master_key_id: None,
+            encryption_applied: 0,
+            encryption_cipher_text: None,
+            is_conflict: 0,
+            is_todo: 0,
+            todo_completed: 0,
+            todo_due: 0,
+            source: String::new(),
+            source_application: String::new(),
+            order: 0,
+            latitude: 0,
+            longitude: 0,
+            altitude: 0,
+            author: String::new(),
+            source_url: String::new(),
+            application_data: String::new(),
+            markup_language: 1,
+            encryption_blob_encrypted: 0,
+            conflict_original_id: String::new(),
+        };
+
+        self.storage.create_note(&note).await?;
+        self.state.mark_new_note(note.id.clone());
+        self.state.focus = FocusPanel::Notes;
+        self.refresh_lists(
+            self.state.all_notebooks_mode,
+            self.state.selected_folder_id().map(str::to_string),
+            Some(note.id.clone()),
+        )
+        .await?;
+        self.state.set_status(&format!(
+            "Created note from {} - press r to rename it",
+            title
+        ));
+        Ok(())
+    }
+
+    async fn tag_selected_note(&mut self, tag_name: &str) -> Result<()> {
+        let note = self
+            .state
+            .selected_note()
+            .cloned()
+            .ok_or_else(|| anyhow::anyhow!("Select a note before using :tag"))?;
+        let tag_name = tag_name.trim();
+        if tag_name.is_empty() {
+            anyhow::bail!("Usage: :tag <tag-name>");
+        }
+
+        let existing_tags = self.storage.list_tags().await?;
+        let tag = if let Some(existing_tag) = resolve_tag_by_title(&existing_tags, tag_name) {
+            existing_tag.clone()
+        } else {
+            let tag = Tag {
+                id: joplin_domain::joplin_id(),
+                title: tag_name.to_string(),
+                created_time: now_ms(),
+                updated_time: now_ms(),
+                user_created_time: 0,
+                user_updated_time: 0,
+                parent_id: String::new(),
+                is_shared: 0,
+            };
+            self.storage.create_tag(&tag).await?;
+            tag
+        };
+
+        if self
+            .storage
+            .get_note_tags(&note.id)
+            .await?
+            .iter()
+            .any(|existing| existing.id == tag.id)
+        {
+            self.state
+                .set_status(&format!("{} already has tag {}", note.title, tag.title));
+            return Ok(());
+        }
+
+        let note_tag = NoteTag {
+            id: joplin_domain::joplin_id(),
+            note_id: note.id.clone(),
+            tag_id: tag.id.clone(),
+            created_time: now_ms(),
+            updated_time: now_ms(),
+            is_shared: 0,
+        };
+        self.storage.add_note_tag(&note_tag).await?;
+        self.refresh_current_lists().await?;
+        self.state
+            .set_status(&format!("Tagged {} with {}", note.title, tag.title));
+        Ok(())
+    }
+
+    async fn default_parent_folder_id(&mut self) -> Result<String> {
+        if self.state.all_notebooks_mode {
+            if let Some(folder) = self.state.folders.first() {
+                return Ok(folder.id.clone());
+            }
+
+            self.create_notebook().await?;
+            return self
+                .state
+                .folders
+                .first()
+                .map(|folder| folder.id.clone())
+                .ok_or_else(|| anyhow::anyhow!("Failed to create notebook for new note"));
+        }
+
+        self.state
+            .selected_folder()
+            .map(|folder| folder.id.clone())
+            .ok_or_else(|| anyhow::anyhow!("No notebook selected"))
+    }
 }
 
 /// Run the TUI application
@@ -1531,6 +1972,45 @@ fn split_webdav_url(full_url: &str) -> (String, String) {
     }
     // No sub-path; use a default remote folder
     (trimmed.to_string(), "/neojoplin".to_string())
+}
+
+fn split_command_input(input: &str) -> (&str, &str, bool) {
+    if let Some(index) = input.find(char::is_whitespace) {
+        let command = &input[..index];
+        let argument = &input[index + 1..];
+        (command, argument, true)
+    } else {
+        (input, "", false)
+    }
+}
+
+fn starts_with_ignore_case(text: &str, prefix: &str) -> bool {
+    text.to_lowercase().starts_with(&prefix.to_lowercase())
+}
+
+fn resolve_folder_by_title<'a>(folders: &'a [Folder], title: &str) -> Result<&'a Folder> {
+    let normalized = title.trim().to_lowercase();
+    if normalized.is_empty() {
+        anyhow::bail!("Usage: :move <notebook>");
+    }
+
+    let mut matches = folders
+        .iter()
+        .filter(|folder| folder.title.to_lowercase() == normalized);
+    match (matches.next(), matches.next()) {
+        (Some(folder), None) => Ok(folder),
+        (Some(_), Some(_)) => Err(anyhow::anyhow!(
+            "Multiple notebooks are named {}. Rename one or use tab completion.",
+            title.trim()
+        )),
+        _ => Err(anyhow::anyhow!("No notebook named {}", title.trim())),
+    }
+}
+
+fn resolve_tag_by_title<'a>(tags: &'a [Tag], title: &str) -> Option<&'a Tag> {
+    let normalized = title.trim().to_lowercase();
+    tags.iter()
+        .find(|tag| tag.title.to_lowercase() == normalized)
 }
 
 /// Load the E2EE service from disk (encryption.json + key files).

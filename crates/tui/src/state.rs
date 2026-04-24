@@ -703,6 +703,44 @@ where
     matches.into_iter().map(|(_, _, item)| item).collect()
 }
 
+fn split_note_filter_query(query: &str) -> (String, Vec<String>) {
+    let mut text_terms = Vec::new();
+    let mut tag_terms = Vec::new();
+
+    for token in query.split_whitespace() {
+        if let Some(tag) = token.strip_prefix('#') {
+            if !tag.is_empty() {
+                tag_terms.push(tag.to_string());
+            }
+        } else if let Some(tag) = token.strip_prefix("tag:") {
+            if !tag.is_empty() {
+                tag_terms.push(tag.to_string());
+            }
+        } else {
+            text_terms.push(token.to_string());
+        }
+    }
+
+    (text_terms.join(" "), tag_terms)
+}
+
+fn note_matches_tag_terms(
+    matcher: &SkimMatcherV2,
+    tags: &[String],
+    tag_terms: &[String],
+) -> bool {
+    if tag_terms.is_empty() {
+        return true;
+    }
+
+    tag_terms.iter().all(|term| {
+        tags.iter().any(|tag| {
+            tag.to_lowercase().contains(&term.to_lowercase())
+                || matcher.fuzzy_match(tag, term).is_some()
+        })
+    })
+}
+
 fn move_note_to_end(notes: &mut [Note], note_id: Option<&str>) {
     if let Some(note_id) = note_id {
         if let Some(idx) = notes.iter().position(|note| note.id == note_id) {
@@ -946,5 +984,35 @@ mod tests {
         assert!(state.select_note_by_id("b"));
         assert_eq!(state.selected_note, Some(1));
         assert_eq!(state.current_note_content, "second");
+    }
+
+    #[test]
+    fn test_filter_notes_by_tag_query() {
+        let mut state = AppState::new();
+        state.note_filter_query = "#work".to_string();
+        state.note_tags.insert(
+            "1".to_string(),
+            vec!["work".to_string(), "urgent".to_string()],
+        );
+        state
+            .note_tags
+            .insert("2".to_string(), vec!["home".to_string()]);
+
+        let notes = vec![
+            Note {
+                id: "1".to_string(),
+                title: "Project".to_string(),
+                ..Note::default()
+            },
+            Note {
+                id: "2".to_string(),
+                title: "Groceries".to_string(),
+                ..Note::default()
+            },
+        ];
+
+        let filtered = state.filter_notes(notes);
+        assert_eq!(filtered.len(), 1);
+        assert_eq!(filtered[0].id, "1");
     }
 }
