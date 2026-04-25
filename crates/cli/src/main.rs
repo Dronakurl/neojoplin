@@ -16,7 +16,7 @@ use std::sync::Arc;
 #[derive(Parser)]
 #[command(name = "neojoplin")]
 #[command(about = "A fast, terminal-based Joplin client", long_about = None)]
-#[command(version = "0.1.0")]
+#[command(version)]
 struct Cli {
     #[command(subcommand)]
     command: Option<Commands>,
@@ -920,17 +920,26 @@ async fn main() -> Result<()> {
                 }
 
                 E2eeCommands::Decrypt { encrypted } => {
-                    // Check if it's JED format (starts with "JED")
-                    if !encrypted.starts_with("JED") {
-                        return Err(anyhow::anyhow!("Input is not in JED format"));
-                    }
+                    let encrypted = if encrypted.starts_with("JED") {
+                        encrypted
+                    } else {
+                        encrypted
+                            .lines()
+                            .find_map(|line| {
+                                line.strip_prefix("encryption_cipher_text: ")
+                                    .map(str::trim)
+                                    .filter(|value| value.starts_with("JED"))
+                                    .map(ToOwned::to_owned)
+                            })
+                            .ok_or_else(|| anyhow::anyhow!("Input is not in JED format"))?
+                    };
 
-                    // Extract key ID from JED format (positions 15-46 in the header)
-                    if encrypted.len() < 47 {
+                    // Extract key ID from the JED header.
+                    if encrypted.len() < 45 {
                         return Err(anyhow::anyhow!("JED data too short to extract key ID"));
                     }
 
-                    let key_id_hex = &encrypted[15..47];
+                    let key_id_hex = &encrypted[13..45];
                     let key_id = format!(
                         "{}-{}-{}-{}-{}",
                         &key_id_hex[0..8],

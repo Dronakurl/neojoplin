@@ -16,16 +16,10 @@ test:
 run ARGV="":
     cargo run --release --bin neojoplin -- {{ARGV}}
 
-# Build and install to ~/.local/bin
-install: build
-    @mkdir -p ~/.local/bin
-    @cp target/release/neojoplin ~/.local/bin/neojoplin
-    @echo "Installed neojoplin (CLI + TUI combined)"
-
-# Development mode with hot reload
-dev:
-    @echo "Install cargo-watch for this command: cargo install cargo-watch"
-    cargo watch -x run
+# Build and install to ~/.cargo/bin
+install:
+    cargo install --path crates/cli --force
+    @echo "Installed neojoplin to ~/.cargo/bin"
 
 # Check code with clippy
 check:
@@ -70,11 +64,6 @@ test-db:
 # Run tests with output
 test-verbose:
     cargo test -- --nocapture
-
-# Watch and rebuild on changes
-watch:
-    @echo "Install cargo-watch for this command: cargo install cargo-watch"
-    cargo watch -x build
 
 # Reset database (careful!)
 reset-db:
@@ -153,4 +142,3 @@ webdav-logs:
 # Test bidirectional sync with Joplin CLI
 test-sync:
     ./tests/integration/sync_test.sh
-

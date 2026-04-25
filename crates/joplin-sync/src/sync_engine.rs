@@ -114,24 +114,34 @@ impl SyncEngine {
         Ok(())
     }
 
-    /// Detect E2EE state changes and force re-upload of all items if needed.
-    /// When encryption is enabled on a previously unencrypted sync target (or vice versa),
+    /// Detect E2EE state or active-key changes and force re-upload of all items if needed.
+    /// When encryption is enabled/disabled, or when a different active master key is selected,
     /// all items must be re-uploaded in the new format.
     async fn handle_encryption_state_change(&mut self) -> Result<()> {
-        let remote_encrypted = self
-            .sync_info
-            .as_ref()
-            .map(|info| info.e2ee.value)
-            .unwrap_or(false);
+        let remote_info = self.sync_info.as_ref();
+        let remote_encrypted = remote_info.map(|info| info.e2ee.value).unwrap_or(false);
+        let remote_active_key = remote_info
+            .map(|info| info.active_master_key_id.value.replace('-', ""))
+            .filter(|id| !id.is_empty());
 
         let local_encrypted = self
             .e2ee_service
             .as_ref()
             .map(|e| e.is_enabled())
             .unwrap_or(false);
+        let local_active_key = self
+            .e2ee_service
+            .as_ref()
+            .and_then(|e| e.get_active_master_key_id().cloned())
+            .map(|id| id.replace('-', ""));
 
-        if local_encrypted != remote_encrypted {
-            let direction = if local_encrypted {
+        let active_key_changed =
+            local_encrypted && remote_encrypted && local_active_key != remote_active_key;
+
+        if local_encrypted != remote_encrypted || active_key_changed {
+            let direction = if active_key_changed {
+                "Active master key changed — re-uploading all items with the new encryption key"
+            } else if local_encrypted {
                 "Encryption enabled — re-uploading all items encrypted"
             } else {
                 "Encryption disabled — re-uploading all items unencrypted"
@@ -141,7 +151,7 @@ impl SyncEngine {
                 message: direction.to_string(),
             });
 
-            // Clear sync_items so all items appear as "changed" and get re-uploaded
+            // Clear sync_items so all items appear as "changed" and get re-uploaded.
             let cleared = self
                 .storage
                 .clear_all_sync_items()
@@ -149,7 +159,7 @@ impl SyncEngine {
                 .map_err(SyncError::Local)?;
             tracing::info!("Cleared {} sync items for E2EE state change", cleared);
 
-            // Reset last_sync_time to 0 so everything is considered new
+            // Reset last_sync_time to 0 so everything is considered new.
             self.context.last_sync_time = 0;
             // Clear local sync time so next load doesn't restore the old value
             let key = self.last_sync_setting_key();
@@ -587,6 +597,7 @@ impl SyncEngine {
     async fn save_sync_info(&mut self) -> Result<()> {
         if let Some(ref mut sync_info) = self.sync_info {
             sync_info.update_delta_timestamp();
+            let sync_info_updated_at = now_ms();
 
             // Update E2EE state in sync info
             let e2ee_enabled = self
@@ -596,15 +607,19 @@ impl SyncEngine {
                 .unwrap_or(false);
 
             if e2ee_enabled {
-                sync_info.e2ee.value = true;
-                if sync_info.e2ee.updated_time == 0 {
-                    sync_info.e2ee.updated_time = now_ms();
+                if !sync_info.e2ee.value {
+                    sync_info.e2ee.value = true;
+                    sync_info.e2ee.updated_time = sync_info_updated_at;
+                } else if sync_info.e2ee.updated_time == 0 {
+                    sync_info.e2ee.updated_time = sync_info_updated_at;
                 }
                 if let Some(ref e2ee) = self.e2ee_service {
                     if let Some(active_id) = e2ee.get_active_master_key_id() {
-                        sync_info.active_master_key_id.value = active_id.clone();
-                        if sync_info.active_master_key_id.updated_time == 0 {
-                            sync_info.active_master_key_id.updated_time = now_ms();
+                        if sync_info.active_master_key_id.value != *active_id {
+                            sync_info.active_master_key_id.value = active_id.clone();
+                            sync_info.active_master_key_id.updated_time = sync_info_updated_at;
+                        } else if sync_info.active_master_key_id.updated_time == 0 {
+                            sync_info.active_master_key_id.updated_time = sync_info_updated_at;
                         }
                     }
                     // Populate masterKeys array so other clients (Joplin) can find the keys
@@ -631,7 +646,7 @@ impl SyncEngine {
             } else if sync_info.e2ee.value {
                 // E2EE was previously enabled but now disabled
                 sync_info.e2ee.value = false;
-                sync_info.e2ee.updated_time = now_ms();
+                sync_info.e2ee.updated_time = sync_info_updated_at;
             }
 
             sync_info

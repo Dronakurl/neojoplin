@@ -1239,7 +1239,7 @@ pub fn render_help(f: &mut Frame, scroll: u16, state: &AppState) {
     let text = Text::from(vec![
         Line::from("Navigation").style(theme.primary()),
         Line::from("  Tab / Shift-Tab    Switch panels (Notebooks → Notes → Content)"),
-        Line::from("  h / l              Switch panels left / right"),
+        Line::from("  h / l / ←→         Switch panels left / right"),
         Line::from("  j / k / ↑↓        Move selection or scroll content"),
         Line::from("  Enter              Open notebook (in Notebooks panel)"),
         Line::from(""),

@@ -4,6 +4,7 @@ use anyhow::{Context, Result};
 use joplin_domain::{Folder, Note, NoteTag, Storage, Tag};
 use neojoplin_storage::SqliteStorage;
 use sqlx::sqlite::SqliteConnectOptions;
+use sqlx::Row;
 
 #[derive(Debug, Clone, Default)]
 pub struct ImportSummary {
@@ -137,24 +138,56 @@ async fn load_folders(pool: &sqlx::SqlitePool) -> Result<Vec<Folder>> {
 }
 
 async fn load_notes(pool: &sqlx::SqlitePool) -> Result<Vec<Note>> {
-    sqlx::query_as::<_, Note>(
+    let has_encryption_blob_encrypted =
+        table_has_column(pool, "notes", "encryption_blob_encrypted").await?;
+    let has_deleted_time = table_has_column(pool, "notes", "deleted_time").await?;
+
+    let query = format!(
         r#"
         SELECT
             id, title, body, created_time, updated_time,
             user_created_time, user_updated_time, parent_id,
             is_conflict, is_todo, todo_completed, todo_due,
-            source, source_application, "order", latitude, longitude,
-            altitude, author, source_url, is_shared, application_data,
+            source, source_application, CAST("order" AS INTEGER) AS "order",
+            CAST(latitude AS INTEGER) AS latitude,
+            CAST(longitude AS INTEGER) AS longitude,
+            CAST(altitude AS INTEGER) AS altitude,
+            author, source_url, is_shared, application_data,
             markup_language, encryption_cipher_text, encryption_applied,
-            encryption_blob_encrypted, master_key_id, share_id,
-            conflict_original_id
+            {}, master_key_id, share_id,
+            conflict_original_id, {}
         FROM notes
         ORDER BY updated_time ASC, title ASC
         "#,
-    )
-    .fetch_all(pool)
-    .await
-    .context("Failed to load notes from source database")
+        if has_encryption_blob_encrypted {
+            "encryption_blob_encrypted"
+        } else {
+            "0 AS encryption_blob_encrypted"
+        },
+        if has_deleted_time {
+            "deleted_time"
+        } else {
+            "0 AS deleted_time"
+        }
+    );
+
+    sqlx::query_as::<_, Note>(&query)
+        .fetch_all(pool)
+        .await
+        .context("Failed to load notes from source database")
+}
+
+async fn table_has_column(pool: &sqlx::SqlitePool, table: &str, column: &str) -> Result<bool> {
+    let pragma = format!("PRAGMA table_info({table})");
+    let rows = sqlx::query(&pragma)
+        .fetch_all(pool)
+        .await
+        .with_context(|| format!("Failed to inspect schema for table {}", table))?;
+
+    Ok(rows
+        .iter()
+        .filter_map(|row| row.try_get::<String, _>("name").ok())
+        .any(|name| name == column))
 }
 
 async fn load_tags(pool: &sqlx::SqlitePool) -> Result<Vec<Tag>> {

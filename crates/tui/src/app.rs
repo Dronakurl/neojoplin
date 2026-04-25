@@ -322,11 +322,11 @@ impl App {
             }
 
             // Vim-style horizontal panel navigation
-            KeyCode::Char('h') => {
+            KeyCode::Char('h') | KeyCode::Left => {
                 // Move left (previous panel)
                 self.state.prev_panel();
             }
-            KeyCode::Char('l') => {
+            KeyCode::Char('l') | KeyCode::Right => {
                 // Move right (next panel)
                 self.state.next_panel();
             }
@@ -960,11 +960,11 @@ impl App {
             }
 
             // Tab navigation (h/l and </> and Tab/BackTab)
-            KeyCode::Char('l') | KeyCode::Char('>') | KeyCode::Tab => {
+            KeyCode::Char('l') | KeyCode::Char('>') | KeyCode::Tab | KeyCode::Right => {
                 self.state.settings.cycle_tab_forward();
             }
 
-            KeyCode::Char('h') | KeyCode::Char('<') | KeyCode::BackTab => {
+            KeyCode::Char('h') | KeyCode::Char('<') | KeyCode::BackTab | KeyCode::Left => {
                 self.state.settings.cycle_tab_backward();
             }
 
