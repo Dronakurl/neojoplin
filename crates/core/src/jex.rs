@@ -48,10 +48,18 @@ pub async fn export_jex<S: Storage>(storage: &S, path: &Path) -> Result<JexSumma
     let mut builder = tar::Builder::new(file);
 
     for folder in &folders {
-        append_tar_entry(&mut builder, &format!("{}.md", folder.id), serialize_folder(folder)?)?;
+        append_tar_entry(
+            &mut builder,
+            &format!("{}.md", folder.id),
+            serialize_folder(folder)?,
+        )?;
     }
     for note in &all_notes {
-        append_tar_entry(&mut builder, &format!("{}.md", note.id), serialize_note(note)?)?;
+        append_tar_entry(
+            &mut builder,
+            &format!("{}.md", note.id),
+            serialize_note(note)?,
+        )?;
     }
     for tag in &tags {
         append_tar_entry(&mut builder, &format!("{}.md", tag.id), serialize_tag(tag)?)?;
@@ -75,8 +83,8 @@ pub async fn export_jex<S: Storage>(storage: &S, path: &Path) -> Result<JexSumma
 }
 
 pub async fn import_jex<S: Storage>(storage: &S, path: &Path) -> Result<JexSummary> {
-    let file =
-        File::open(path).with_context(|| format!("Failed to open JEX archive {}", path.display()))?;
+    let file = File::open(path)
+        .with_context(|| format!("Failed to open JEX archive {}", path.display()))?;
     let mut archive = tar::Archive::new(file);
 
     let mut folders = Vec::new();
@@ -204,7 +212,10 @@ fn serialize_note(note: &Note) -> Result<String> {
             ("user_updated_time", note.user_updated_time.to_string()),
             ("is_shared", note.is_shared.to_string()),
             ("share_id", note.share_id.clone().unwrap_or_default()),
-            ("master_key_id", note.master_key_id.clone().unwrap_or_default()),
+            (
+                "master_key_id",
+                note.master_key_id.clone().unwrap_or_default(),
+            ),
             ("encryption_applied", note.encryption_applied.to_string()),
             (
                 "encryption_cipher_text",
@@ -248,7 +259,10 @@ fn serialize_folder(folder: &Folder) -> Result<String> {
             ("user_updated_time", folder.user_updated_time.to_string()),
             ("is_shared", folder.is_shared.to_string()),
             ("share_id", folder.share_id.clone().unwrap_or_default()),
-            ("master_key_id", folder.master_key_id.clone().unwrap_or_default()),
+            (
+                "master_key_id",
+                folder.master_key_id.clone().unwrap_or_default(),
+            ),
             ("encryption_applied", folder.encryption_applied.to_string()),
             (
                 "encryption_cipher_text",
@@ -383,7 +397,10 @@ fn parse_item(content: &str) -> Result<ParsedItem> {
         .parse::<i32>()
         .context("Invalid type_ in JEX item")?;
 
-    let title = prelude.first().map(|value| (*value).to_string()).unwrap_or_default();
+    let title = prelude
+        .first()
+        .map(|value| (*value).to_string())
+        .unwrap_or_default();
     let body = if type_ == ModelType::Note as i32 && prelude.len() > 2 {
         prelude[2..].join("\n")
     } else {

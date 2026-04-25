@@ -1,6 +1,7 @@
 // NeoJoplin Core - NeoJoplin-specific functionality
 // Joplin domain types are now provided by joplin-domain crate
 
+pub mod autosync;
 pub mod config;
 pub mod editor;
 pub mod jex;
@@ -86,6 +87,7 @@ pub enum ConfigError {
 }
 
 // Re-export config and editor types
+pub use autosync::AutoSyncScheduler;
 pub use config::{AdvancedConfig, Config, EditorConfig, SyncConfig, UiConfig};
 pub use editor::{Editor, EditorConfig as RuntimeEditorConfig};
 pub use jex::{export_jex, import_jex, JexSummary};
