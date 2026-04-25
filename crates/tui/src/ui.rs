@@ -744,6 +744,18 @@ fn settings_bottom_hints<'a>(state: &'a AppState, theme: &'a Theme) -> Line<'a> 
                     }
                 }
             }
+            SettingsTab::Help => {
+                // Help tab: basic navigation hints
+                for s in kh(theme, "j/k", "scroll") {
+                    spans.push(s);
+                }
+                for s in kh(theme, "/", "search") {
+                    spans.push(s);
+                }
+                for s in kh(theme, "q", "close") {
+                    spans.push(s);
+                }
+            }
         }
     }
 
