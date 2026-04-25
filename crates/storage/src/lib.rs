@@ -5,7 +5,8 @@ use std::path::{Path, PathBuf};
 use std::str::FromStr;
 
 use joplin_domain::{
-    now_ms, DatabaseError, DeletedItem, Folder, Note, NoteTag, Storage, SyncItem, Tag,
+    now_ms, DatabaseError, DeletedItem, Folder, ModelType, Note, NoteTag, Storage, SyncItem,
+    SyncTarget, Tag,
 };
 
 /// SQLite storage implementation
@@ -530,11 +531,30 @@ impl Storage for SqliteStorage {
     }
 
     async fn delete_note(&self, id: &str) -> Result<(), DatabaseError> {
+        let mut tx = self.pool.begin().await.map_err(|e| {
+            DatabaseError::QueryFailed(format!("Failed to start note delete transaction: {}", e))
+        })?;
+
         sqlx::query("DELETE FROM notes WHERE id = ?")
             .bind(id)
-            .execute(&self.pool)
+            .execute(&mut *tx)
             .await
             .map_err(|e| DatabaseError::QueryFailed(format!("Failed to delete note: {}", e)))?;
+
+        sqlx::query(
+            "INSERT INTO deleted_items (item_type, item_id, deleted_time, sync_target) VALUES (?, ?, ?, ?)",
+        )
+        .bind(ModelType::Note as i32)
+        .bind(id)
+        .bind(now_ms())
+        .bind(SyncTarget::WebDAV as i32)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| DatabaseError::QueryFailed(format!("Failed to track deleted note: {}", e)))?;
+
+        tx.commit().await.map_err(|e| {
+            DatabaseError::QueryFailed(format!("Failed to commit note deletion: {}", e))
+        })?;
 
         Ok(())
     }
@@ -660,11 +680,30 @@ impl Storage for SqliteStorage {
     }
 
     async fn delete_folder(&self, id: &str) -> Result<(), DatabaseError> {
+        let mut tx = self.pool.begin().await.map_err(|e| {
+            DatabaseError::QueryFailed(format!("Failed to start folder delete transaction: {}", e))
+        })?;
+
         sqlx::query("DELETE FROM folders WHERE id = ?")
             .bind(id)
-            .execute(&self.pool)
+            .execute(&mut *tx)
             .await
             .map_err(|e| DatabaseError::QueryFailed(format!("Failed to delete folder: {}", e)))?;
+
+        sqlx::query(
+            "INSERT INTO deleted_items (item_type, item_id, deleted_time, sync_target) VALUES (?, ?, ?, ?)",
+        )
+        .bind(ModelType::Folder as i32)
+        .bind(id)
+        .bind(now_ms())
+        .bind(SyncTarget::WebDAV as i32)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| DatabaseError::QueryFailed(format!("Failed to track deleted folder: {}", e)))?;
+
+        tx.commit().await.map_err(|e| {
+            DatabaseError::QueryFailed(format!("Failed to commit folder deletion: {}", e))
+        })?;
 
         Ok(())
     }
@@ -753,11 +792,30 @@ impl Storage for SqliteStorage {
     }
 
     async fn delete_tag(&self, id: &str) -> Result<(), DatabaseError> {
+        let mut tx = self.pool.begin().await.map_err(|e| {
+            DatabaseError::QueryFailed(format!("Failed to start tag delete transaction: {}", e))
+        })?;
+
         sqlx::query("DELETE FROM tags WHERE id = ?")
             .bind(id)
-            .execute(&self.pool)
+            .execute(&mut *tx)
             .await
             .map_err(|e| DatabaseError::QueryFailed(format!("Failed to delete tag: {}", e)))?;
+
+        sqlx::query(
+            "INSERT INTO deleted_items (item_type, item_id, deleted_time, sync_target) VALUES (?, ?, ?, ?)",
+        )
+        .bind(ModelType::Tag as i32)
+        .bind(id)
+        .bind(now_ms())
+        .bind(SyncTarget::WebDAV as i32)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| DatabaseError::QueryFailed(format!("Failed to track deleted tag: {}", e)))?;
+
+        tx.commit().await.map_err(|e| {
+            DatabaseError::QueryFailed(format!("Failed to commit tag deletion: {}", e))
+        })?;
 
         Ok(())
     }
@@ -1291,5 +1349,47 @@ mod tests {
         db.set_setting("test_key", "test_value").await.unwrap();
         let value = db.get_setting("test_key").await.unwrap().unwrap();
         assert_eq!(value, "test_value");
+    }
+
+    #[tokio::test]
+    async fn test_delete_note_tracks_webdav_deletion() {
+        let db = setup_test_db().await;
+
+        let note = Note {
+            title: "Tracked".to_string(),
+            ..Default::default()
+        };
+        db.create_note(&note).await.unwrap();
+
+        db.delete_note(&note.id).await.unwrap();
+
+        let deleted = db
+            .get_deleted_items(SyncTarget::WebDAV as i32)
+            .await
+            .unwrap();
+        assert_eq!(deleted.len(), 1);
+        assert_eq!(deleted[0].item_id, note.id);
+        assert_eq!(deleted[0].item_type, ModelType::Note as i32);
+    }
+
+    #[tokio::test]
+    async fn test_delete_folder_tracks_webdav_deletion() {
+        let db = setup_test_db().await;
+
+        let folder = Folder {
+            title: "Tracked Folder".to_string(),
+            ..Default::default()
+        };
+        db.create_folder(&folder).await.unwrap();
+
+        db.delete_folder(&folder.id).await.unwrap();
+
+        let deleted = db
+            .get_deleted_items(SyncTarget::WebDAV as i32)
+            .await
+            .unwrap();
+        assert_eq!(deleted.len(), 1);
+        assert_eq!(deleted[0].item_id, folder.id);
+        assert_eq!(deleted[0].item_type, ModelType::Folder as i32);
     }
 }

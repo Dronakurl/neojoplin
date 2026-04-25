@@ -4,8 +4,8 @@ use crate::e2ee::E2eeService;
 use crate::sync_info::SyncInfo;
 use futures::io::AsyncReadExt;
 use joplin_domain::{
-    now_ms, Folder, Note, NoteTag, Result, Storage, SyncError, SyncEvent, SyncPhase, Tag,
-    WebDavClient,
+    now_ms, Folder, Note, NoteTag, Result, Storage, SyncError, SyncEvent, SyncPhase, SyncTarget,
+    Tag, WebDavClient,
 };
 use serde_json;
 use std::sync::Arc;
@@ -426,7 +426,7 @@ impl SyncEngine {
 
         let deleted_items = self
             .storage
-            .get_deleted_items(2)
+            .get_deleted_items(SyncTarget::WebDAV as i32)
             .await
             .map_err(SyncError::Local)?;
 
@@ -1398,7 +1398,8 @@ impl SyncEngine {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use joplin_domain::{DeletedItem, SyncItem};
+    use joplin_domain::{DeletedItem, SyncItem, SyncTarget};
+    use std::sync::{Arc, Mutex};
 
     #[test]
     fn test_sync_context_default() {
@@ -1605,21 +1606,54 @@ mod tests {
         assert_eq!(back, ts);
     }
 
+    #[tokio::test]
+    async fn test_phase_delete_remote_uses_webdav_deleted_items() {
+        let (mut engine, storage) = make_test_engine_with_storage();
+        storage.deleted_items.lock().unwrap().push(DeletedItem {
+            id: 1,
+            item_type: 1,
+            item_id: "deleted-note".to_string(),
+            deleted_time: now_ms(),
+            sync_target: SyncTarget::WebDAV as i32,
+        });
+
+        engine.phase_delete_remote().await.unwrap();
+
+        assert_eq!(
+            storage.requested_sync_targets.lock().unwrap().as_slice(),
+            &[SyncTarget::WebDAV as i32]
+        );
+        assert_eq!(storage.cleared_limits.lock().unwrap().as_slice(), &[1]);
+    }
+
     /// Helper: create a test engine with minimal mocks
     fn make_test_engine() -> SyncEngine {
+        make_test_engine_with_storage().0
+    }
+
+    fn make_test_engine_with_storage() -> (SyncEngine, Arc<FakeStorage>) {
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-        SyncEngine {
-            storage: std::sync::Arc::new(FakeStorage),
-            webdav: std::sync::Arc::new(FakeWebDav),
-            context: SyncContext::default(),
-            sync_info: None,
-            e2ee_service: None,
-            event_tx: tx,
-        }
+        let storage = Arc::new(FakeStorage::default());
+        (
+            SyncEngine {
+                storage: storage.clone(),
+                webdav: std::sync::Arc::new(FakeWebDav),
+                context: SyncContext::default(),
+                sync_info: None,
+                e2ee_service: None,
+                event_tx: tx,
+            },
+            storage,
+        )
     }
 
     /// Fake storage for tests (not used, just needed for type)
-    struct FakeStorage;
+    #[derive(Default)]
+    struct FakeStorage {
+        deleted_items: Mutex<Vec<DeletedItem>>,
+        requested_sync_targets: Mutex<Vec<i32>>,
+        cleared_limits: Mutex<Vec<i64>>,
+    }
     #[async_trait::async_trait]
     impl joplin_domain::Storage for FakeStorage {
         async fn create_note(
@@ -1802,9 +1836,20 @@ mod tests {
         }
         async fn get_deleted_items(
             &self,
-            _: i32,
+            sync_target: i32,
         ) -> std::result::Result<Vec<DeletedItem>, joplin_domain::DatabaseError> {
-            Ok(vec![])
+            self.requested_sync_targets
+                .lock()
+                .unwrap()
+                .push(sync_target);
+            Ok(self
+                .deleted_items
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|item| item.sync_target == sync_target)
+                .cloned()
+                .collect())
         }
         async fn add_deleted_item(
             &self,
@@ -1820,9 +1865,13 @@ mod tests {
         }
         async fn clear_deleted_items(
             &self,
-            _: i64,
+            limit: i64,
         ) -> std::result::Result<usize, joplin_domain::DatabaseError> {
-            Ok(0)
+            self.cleared_limits.lock().unwrap().push(limit);
+            let mut items = self.deleted_items.lock().unwrap();
+            let removed = (limit.max(0) as usize).min(items.len());
+            items.drain(0..removed);
+            Ok(removed)
         }
         async fn get_version(&self) -> std::result::Result<i32, joplin_domain::DatabaseError> {
             Ok(41)
