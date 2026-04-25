@@ -12,6 +12,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use joplin_domain::{now_ms, Folder, Note, NoteTag, Storage, Tag};
+use neojoplin_core::AutoSyncScheduler;
 use neojoplin_storage::SqliteStorage;
 use std::path::Path;
 
@@ -33,6 +34,11 @@ pub struct App {
     help_search_active: bool,
     help_search_input: String,
     help_search_query: String,
+    pending_motion: Option<char>,
+    command_history: Vec<String>,
+    command_history_index: Option<usize>,
+    command_history_draft: String,
+    auto_sync_scheduler: AutoSyncScheduler,
 }
 
 impl App {
@@ -94,8 +100,9 @@ impl App {
 
         // Load all settings (encryption and sync)
         state.settings.load_all_settings(&data_dir).await?;
+        let auto_sync_scheduler = AutoSyncScheduler::new(state.settings.auto_sync.interval_seconds);
 
-        Ok(Self {
+        let mut app = Self {
             state,
             storage,
             show_help: false,
@@ -103,7 +110,14 @@ impl App {
             help_search_active: false,
             help_search_input: String::new(),
             help_search_query: String::new(),
-        })
+            pending_motion: None,
+            command_history: Vec::new(),
+            command_history_index: None,
+            command_history_draft: String::new(),
+            auto_sync_scheduler,
+        };
+        app.refresh_sync_status().await?;
+        Ok(app)
     }
 
     /// Run the application
@@ -138,6 +152,8 @@ impl App {
         terminal: &mut Terminal<B>,
     ) -> Result<()> {
         loop {
+            self.run_auto_sync_if_due().await?;
+
             // Render UI
             terminal.draw(|f| {
                 if self.show_help {
@@ -308,6 +324,24 @@ impl App {
             return self.handle_settings_key_event(key).await;
         }
 
+        if self.pending_motion == Some('g') {
+            match key.code {
+                KeyCode::Char('g') => {
+                    self.pending_motion = None;
+                    self.jump_to_list_boundary(true).await?;
+                    return Ok(false);
+                }
+                KeyCode::Char('e') => {
+                    self.pending_motion = None;
+                    self.jump_to_list_boundary(false).await?;
+                    return Ok(false);
+                }
+                _ => {
+                    self.pending_motion = None;
+                }
+            }
+        }
+
         // Handle vim-style navigation and actions
         match key.code {
             // Escape - clear active filters
@@ -331,7 +365,7 @@ impl App {
             }
 
             KeyCode::Char(':') => {
-                self.state.open_command_prompt(String::new());
+                self.open_command_prompt(String::new());
             }
 
             KeyCode::Char(',') => {
@@ -345,7 +379,7 @@ impl App {
 
             KeyCode::Char('f') => {
                 if matches!(self.state.focus, FocusPanel::Notebooks | FocusPanel::Notes) {
-                    self.state.open_filter_prompt();
+                    self.state.open_filter_prompt(false);
                 } else {
                     self.state
                         .set_status("Focus notebooks or notes to filter the current list");
@@ -353,10 +387,13 @@ impl App {
             }
 
             KeyCode::Char('F') => {
-                // F - full content filter for notes or notebooks
                 if matches!(self.state.focus, FocusPanel::Notebooks | FocusPanel::Notes) {
-                    self.state.open_filter_prompt();
-                    self.state.set_status("Full-text filter: enter query and press Enter");
+                    let notes_full_text = self.state.focus == FocusPanel::Notes;
+                    self.state.open_filter_prompt(notes_full_text);
+                    if notes_full_text {
+                        self.state
+                            .set_status("Full-text filter: enter query and press Enter");
+                    }
                 } else {
                     self.state
                         .set_status("Focus notebooks or notes to filter the current list");
@@ -371,7 +408,7 @@ impl App {
 
             // Settings
             KeyCode::Char('S') => {
-                // S - Settings
+                self.refresh_sync_status().await?;
                 self.state.toggle_settings();
             }
 
@@ -419,6 +456,14 @@ impl App {
                 }
             }
 
+            KeyCode::Char('g') => {
+                self.pending_motion = Some('g');
+            }
+
+            KeyCode::Char('G') => {
+                self.jump_to_list_boundary(false).await?;
+            }
+
             // Enter - edit selected note, or switch to notes panel from notebooks
             KeyCode::Enter => {
                 if self.state.focus == FocusPanel::Notes {
@@ -457,14 +502,26 @@ impl App {
             }
 
             // Move shortcut (m) - visible via ? help but not in ribbon
-            KeyCode::Char('m') => {
-                if self.state.selected_note().is_some() {
-                    self.state.open_command_prompt("move ".to_string());
-                } else {
+            KeyCode::Char('m') => match self.state.focus {
+                FocusPanel::Notes if self.state.selected_note().is_some() => {
+                    self.open_command_prompt("move ".to_string());
+                }
+                FocusPanel::Notebooks if self.state.selected_folder().is_some() => {
+                    self.open_command_prompt("move ".to_string());
+                }
+                FocusPanel::Notes => {
                     self.state
                         .set_status("Select a note before choosing a destination notebook");
                 }
-            }
+                FocusPanel::Notebooks => {
+                    self.state
+                        .set_status("Select a notebook before choosing its parent notebook");
+                }
+                FocusPanel::Content => {
+                    self.state
+                        .set_status("Focus notes or notebooks before using move");
+                }
+            },
 
             // Toggle todo completion (space bar, like most task managers)
             KeyCode::Char(' ') if self.state.focus == FocusPanel::Notes => {
@@ -509,7 +566,13 @@ impl App {
 
     /// Sync with WebDAV server
     async fn sync(&mut self) -> Result<()> {
-        self.state.set_status("Starting sync...");
+        self.sync_with_context(false).await
+    }
+
+    async fn sync_with_context(&mut self, automatic: bool) -> Result<()> {
+        if !automatic {
+            self.state.set_status("Starting sync...");
+        }
 
         let data_dir = neojoplin_core::Config::data_dir()?;
 
@@ -521,16 +584,22 @@ impl App {
         {
             Some(t) => t.clone(),
             None => {
-                self.state.set_status(
-                    "Sync not configured. Go to Settings (s) → Sync tab to add a WebDAV target.",
-                );
+                if !automatic {
+                    self.state.set_status(
+                        "Sync not configured. Go to Settings (s) → Sync tab to add a WebDAV target.",
+                    );
+                }
+                self.auto_sync_scheduler.reset();
                 return Ok(());
             }
         };
 
         if target.url.is_empty() {
-            self.state
-                .set_status("Sync URL is empty. Go to Settings (s) → Sync tab to configure.");
+            if !automatic {
+                self.state
+                    .set_status("Sync URL is empty. Go to Settings (s) → Sync tab to configure.");
+            }
+            self.auto_sync_scheduler.reset();
             return Ok(());
         }
 
@@ -538,8 +607,10 @@ impl App {
         // base_url (http://localhost:8080/webdav) + remote_path (/shared).
         let (base_url, remote_path) = split_webdav_url(&target.url);
 
-        self.state
-            .set_status(&format!("Syncing to {}{}...", base_url, remote_path));
+        if !automatic {
+            self.state
+                .set_status(&format!("Syncing to {}{}...", base_url, remote_path));
+        }
 
         use joplin_sync::{ReqwestWebDavClient, SyncEngine, WebDavConfig};
         use tokio::sync::mpsc;
@@ -558,6 +629,7 @@ impl App {
 
         // Load E2EE service from .env / encryption.json (same logic as CLI)
         let e2ee = load_e2ee_service(&data_dir).await?;
+        let encryption_enabled = e2ee.is_enabled();
         if e2ee.is_enabled() {
             sync_engine = sync_engine.with_e2ee(e2ee);
         }
@@ -567,19 +639,91 @@ impl App {
 
         match sync_engine.sync().await {
             Ok(_) => {
-                self.state.set_status("✓ Sync completed successfully");
+                self.state.settings.record_sync_result(
+                    target.name.clone(),
+                    true,
+                    None,
+                    encryption_enabled,
+                );
+                self.state.settings.save_sync_status(&data_dir).await?;
+                if automatic {
+                    self.state.set_status("✓ Auto-sync completed successfully");
+                } else {
+                    self.state.set_status("✓ Sync completed successfully");
+                }
                 let selected_folder_id = self.state.selected_folder_id().map(str::to_string);
                 let selected_note_id = self.state.selected_note_id().map(str::to_string);
                 let all_notebooks_mode = self.state.all_notebooks_mode;
                 self.refresh_lists(all_notebooks_mode, selected_folder_id, selected_note_id)
                     .await?;
+                self.refresh_sync_status().await?;
             }
             Err(e) => {
-                self.state.show_error(&format!("Sync failed: {}", e));
+                let error_message = e.to_string();
+                self.state.settings.record_sync_result(
+                    target.name.clone(),
+                    false,
+                    Some(error_message.clone()),
+                    encryption_enabled,
+                );
+                self.state.settings.save_sync_status(&data_dir).await?;
+                self.refresh_sync_status().await?;
+                if automatic {
+                    self.state
+                        .set_status(&format!("Auto-sync failed: {}", error_message));
+                } else {
+                    self.state
+                        .show_error(&format!("Sync failed: {}", error_message));
+                }
             }
         }
 
+        self.auto_sync_scheduler.reset();
+
         Ok(())
+    }
+
+    async fn refresh_sync_status(&mut self) -> Result<()> {
+        let data_dir = neojoplin_core::Config::data_dir()?;
+        self.state
+            .settings
+            .load_encryption_settings(&data_dir)
+            .await?;
+        self.state.settings.load_sync_status(&data_dir).await?;
+        let conflict_count = self
+            .storage
+            .list_notes(None)
+            .await?
+            .into_iter()
+            .filter(|note| note.is_conflict != 0)
+            .count();
+        self.state.settings.update_runtime_status(conflict_count);
+        Ok(())
+    }
+
+    async fn run_auto_sync_if_due(&mut self) -> Result<()> {
+        if !self.auto_sync_scheduler.is_due() || !self.can_auto_sync_now() {
+            return Ok(());
+        }
+
+        if self.auto_sync_scheduler.consume_due() {
+            self.sync_with_context(true).await?;
+        }
+
+        Ok(())
+    }
+
+    fn can_auto_sync_now(&self) -> bool {
+        self.auto_sync_scheduler.is_enabled()
+            && !self.show_help
+            && !self.state.show_settings
+            && !self.state.show_rename_prompt
+            && !self.state.show_filter_prompt
+            && !self.state.show_sort_popup
+            && !self.state.command_prompt.visible
+            && !self.state.show_error_dialog
+            && !self.state.show_quit_confirmation
+            && self.state.pending_delete.is_none()
     }
 
     /// Edit note in external editor
@@ -1069,6 +1213,7 @@ impl App {
                 {
                     let data_dir = neojoplin_core::Config::data_dir()?;
                     self.state.settings.disable_encryption(&data_dir).await?;
+                    self.refresh_sync_status().await?;
                     self.state.set_status("Encryption disabled");
                 } else if self.state.settings.current_tab == SettingsTab::Sync {
                     let sync = &mut self.state.settings.sync;
@@ -1076,6 +1221,26 @@ impl App {
                         sync.confirm_delete = true;
                     }
                 }
+            }
+
+            KeyCode::Up | KeyCode::Char('k')
+                if self.state.settings.current_tab == SettingsTab::AutoSync =>
+            {
+                self.state.settings.auto_sync.cycle(false);
+                self.auto_sync_scheduler
+                    .set_interval_seconds(self.state.settings.auto_sync.interval_seconds);
+                let data_dir = neojoplin_core::Config::data_dir()?;
+                self.state.settings.save_sync_settings(&data_dir).await?;
+            }
+
+            KeyCode::Down | KeyCode::Char('j')
+                if self.state.settings.current_tab == SettingsTab::AutoSync =>
+            {
+                self.state.settings.auto_sync.cycle(true);
+                self.auto_sync_scheduler
+                    .set_interval_seconds(self.state.settings.auto_sync.interval_seconds);
+                let data_dir = neojoplin_core::Config::data_dir()?;
+                self.state.settings.save_sync_settings(&data_dir).await?;
             }
 
             // Navigate target list
@@ -1108,6 +1273,11 @@ impl App {
                     let _ = self.state.settings.save_sync_settings(&data_dir).await;
                     self.state.set_status("Target saved as active");
                 }
+            }
+
+            KeyCode::Char('r') if self.state.settings.current_tab == SettingsTab::Status => {
+                self.refresh_sync_status().await?;
+                self.state.set_status("Sync status refreshed");
             }
 
             _ => {}
@@ -1464,6 +1634,7 @@ impl App {
                     .settings
                     .enable_encryption(&password, &data_dir)
                     .await?;
+                self.refresh_sync_status().await?;
             }
 
             KeyCode::Backspace => {
@@ -1561,9 +1732,12 @@ impl App {
         match key.code {
             KeyCode::Esc => {
                 self.state.close_command_prompt();
+                self.command_history_index = None;
+                self.command_history_draft.clear();
             }
             KeyCode::Backspace => {
                 self.state.command_prompt.pop_char();
+                self.command_history_index = None;
             }
             KeyCode::Tab => {
                 self.cycle_command_completion(false).await?;
@@ -1571,12 +1745,26 @@ impl App {
             KeyCode::BackTab => {
                 self.cycle_command_completion(true).await?;
             }
+            KeyCode::Up => {
+                self.navigate_command_history(true);
+            }
+            KeyCode::Down => {
+                self.navigate_command_history(false);
+            }
             KeyCode::Enter => {
                 let input = self.state.command_prompt.input.clone();
                 self.state.close_command_prompt();
+                self.command_history_index = None;
+                self.command_history_draft.clear();
 
                 match parse_command(&input) {
-                    Ok(action) => return self.execute_command(action).await,
+                    Ok(action) => {
+                        self.remember_command(&input);
+                        match self.execute_command(action).await {
+                            Ok(should_exit) => return Ok(should_exit),
+                            Err(error) => self.state.show_error(&error.to_string()),
+                        }
+                    }
                     Err(error) => self.state.show_error(&error),
                 }
             }
@@ -1585,11 +1773,104 @@ impl App {
                     && !key.modifiers.contains(KeyModifiers::ALT) =>
             {
                 self.state.command_prompt.push_char(c);
+                self.command_history_index = None;
             }
             _ => {}
         }
 
         Ok(false)
+    }
+
+    fn open_command_prompt(&mut self, initial_input: String) {
+        self.state.open_command_prompt(initial_input.clone());
+        self.command_history_index = None;
+        self.command_history_draft = initial_input;
+    }
+
+    fn navigate_command_history(&mut self, older: bool) {
+        if self.command_history.is_empty() {
+            return;
+        }
+
+        if older {
+            let next_index = match self.command_history_index {
+                Some(index) if index > 0 => index - 1,
+                Some(index) => index,
+                None => {
+                    self.command_history_draft = self.state.command_prompt.input.clone();
+                    self.command_history.len().saturating_sub(1)
+                }
+            };
+            self.command_history_index = Some(next_index);
+            self.state
+                .command_prompt
+                .set_input(self.command_history[next_index].clone());
+        } else if let Some(index) = self.command_history_index {
+            if index + 1 < self.command_history.len() {
+                let next_index = index + 1;
+                self.command_history_index = Some(next_index);
+                self.state
+                    .command_prompt
+                    .set_input(self.command_history[next_index].clone());
+            } else {
+                self.command_history_index = None;
+                self.state
+                    .command_prompt
+                    .set_input(self.command_history_draft.clone());
+            }
+        }
+    }
+
+    fn remember_command(&mut self, input: &str) {
+        let trimmed = input.trim();
+        if trimmed.is_empty() {
+            return;
+        }
+        if self
+            .command_history
+            .last()
+            .map(|last| last == trimmed)
+            .unwrap_or(false)
+        {
+            return;
+        }
+        self.command_history.push(trimmed.to_string());
+    }
+
+    async fn jump_to_list_boundary(&mut self, to_start: bool) -> Result<()> {
+        match self.state.focus {
+            FocusPanel::Notebooks => {
+                if to_start {
+                    self.state.set_folder(None);
+                } else if self.state.trash_note_count > 0 {
+                    self.state.set_trash_mode(true);
+                } else if self.state.orphan_note_count > 0 {
+                    self.state.set_orphan_mode(true);
+                } else if !self.state.folders.is_empty() {
+                    self.state.set_folder(Some(self.state.folders.len() - 1));
+                } else {
+                    self.state.set_folder(None);
+                }
+                self.reload_notes().await?;
+            }
+            FocusPanel::Notes => {
+                if self.state.notes.is_empty() {
+                    self.state.selected_note = None;
+                } else {
+                    self.state.selected_note = Some(if to_start {
+                        0
+                    } else {
+                        self.state.notes.len() - 1
+                    });
+                    self.state.load_note_content();
+                }
+            }
+            FocusPanel::Content => {
+                self.state.content_scroll_offset = if to_start { 0 } else { usize::MAX / 2 };
+            }
+        }
+
+        Ok(())
     }
 
     async fn cycle_command_completion(&mut self, backwards: bool) -> Result<()> {
@@ -1660,11 +1941,15 @@ impl App {
                 let folders = self.storage.list_folders().await?;
                 let display_names = build_folder_display_names(&folders);
                 let command_prefix = if command_name == "mv" { "mv" } else { "move" };
-                display_names
+                let mut items: Vec<String> = display_names
                     .values()
                     .filter(|name| starts_with_ignore_case(name, argument))
                     .map(|name| format!("{} {}", command_prefix, name))
-                    .collect()
+                    .collect();
+                if starts_with_ignore_case("root", argument) {
+                    items.push(format!("{} root", command_prefix));
+                }
+                items
             }
             "tag" => self
                 .storage
@@ -1688,7 +1973,18 @@ impl App {
     async fn execute_command(&mut self, action: CommandAction) -> Result<bool> {
         match action {
             CommandAction::Move(notebook_name) => {
-                self.move_selected_note_to_notebook(&notebook_name).await?;
+                match self.state.focus {
+                    FocusPanel::Notebooks => {
+                        self.move_selected_folder_to_notebook(&notebook_name)
+                            .await?;
+                    }
+                    FocusPanel::Notes => {
+                        self.move_selected_note_to_notebook(&notebook_name).await?;
+                    }
+                    FocusPanel::Content => {
+                        anyhow::bail!("Focus notes or notebooks before using :move");
+                    }
+                }
                 Ok(false)
             }
             CommandAction::DeleteOrphaned => {
@@ -2040,28 +2336,8 @@ impl App {
             .cloned()
             .ok_or_else(|| anyhow::anyhow!("Select a note before using :move"))?;
         let folders = self.storage.list_folders().await?;
-
-        // Build display name -> folder_id map for disambiguation
-        let display_names = build_folder_display_names(&folders);
-        let reverse_map: std::collections::HashMap<String, String> = display_names
-            .into_iter()
-            .map(|(id, name)| (name.to_lowercase(), id))
-            .collect();
-        let normalized = notebook_name.trim().to_lowercase();
-
-        let target_folder_id = if let Some(id) = reverse_map.get(&normalized) {
-            id.clone()
-        } else {
-            let folder = resolve_folder_by_title(&folders, notebook_name)?;
-            folder.id.clone()
-        };
-
-        let target_folder = folders
-            .iter()
-            .find(|f| f.id == target_folder_id)
-            .ok_or_else(|| anyhow::anyhow!("Notebook not found"))?;
-        let target_folder_id = target_folder.id.clone();
-        let target_folder_title = target_folder.title.clone();
+        let (target_folder_id, target_folder_title) =
+            resolve_folder_destination(&folders, notebook_name)?;
 
         if note.parent_id == target_folder_id {
             self.state.set_status(&format!(
@@ -2082,6 +2358,54 @@ impl App {
         self.state.set_status(&format!(
             "Moved {} to {}",
             updated_note.title, target_folder_title
+        ));
+        Ok(())
+    }
+
+    async fn move_selected_folder_to_notebook(&mut self, notebook_name: &str) -> Result<()> {
+        let folder = self
+            .state
+            .selected_folder()
+            .cloned()
+            .ok_or_else(|| anyhow::anyhow!("Select a notebook before using :move"))?;
+        let folders = self.storage.list_folders().await?;
+        let (target_folder_id, target_folder_title) =
+            resolve_folder_destination(&folders, notebook_name)?;
+
+        if folder.id == target_folder_id {
+            anyhow::bail!("A notebook cannot be moved into itself");
+        }
+
+        let mut ancestor_id = target_folder_id.as_str();
+        while !ancestor_id.is_empty() {
+            if ancestor_id == folder.id {
+                anyhow::bail!("A notebook cannot be moved into one of its subnotebooks");
+            }
+            ancestor_id = folders
+                .iter()
+                .find(|candidate| candidate.id == ancestor_id)
+                .map(|candidate| candidate.parent_id.as_str())
+                .unwrap_or("");
+        }
+
+        if folder.parent_id == target_folder_id {
+            self.state.set_status(&format!(
+                "{} is already inside {}",
+                folder.title, target_folder_title
+            ));
+            return Ok(());
+        }
+
+        let mut updated_folder = folder.clone();
+        updated_folder.parent_id = target_folder_id.clone();
+        updated_folder.updated_time = now_ms();
+        self.storage.update_folder(&updated_folder).await?;
+        self.refresh_lists(false, Some(updated_folder.id.clone()), None)
+            .await?;
+        self.state.focus = FocusPanel::Notebooks;
+        self.state.set_status(&format!(
+            "Moved notebook {} to {}",
+            updated_folder.title, target_folder_title
         ));
         Ok(())
     }
@@ -2358,6 +2682,28 @@ fn resolve_folder_by_title<'a>(folders: &'a [Folder], title: &str) -> Result<&'a
         )),
         _ => Err(anyhow::anyhow!("No notebook named {}", title.trim())),
     }
+}
+
+fn resolve_folder_destination(folders: &[Folder], title: &str) -> Result<(String, String)> {
+    let normalized = title.trim().to_lowercase();
+    if normalized.is_empty() {
+        anyhow::bail!("Usage: :move <notebook>");
+    }
+
+    if normalized == "root" {
+        return Ok((String::new(), "root".to_string()));
+    }
+
+    let display_names = build_folder_display_names(folders);
+    if let Some((folder_id, display_name)) = display_names
+        .iter()
+        .find(|(_, display_name)| display_name.to_lowercase() == normalized)
+    {
+        return Ok((folder_id.clone(), display_name.clone()));
+    }
+
+    let folder = resolve_folder_by_title(folders, title)?;
+    Ok((folder.id.clone(), folder.title.clone()))
 }
 
 fn resolve_tag_by_title<'a>(tags: &'a [Tag], title: &str) -> Option<&'a Tag> {

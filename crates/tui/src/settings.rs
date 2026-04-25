@@ -10,8 +10,9 @@ use std::path::{Path, PathBuf};
 pub enum SettingsTab {
     #[default]
     Sync,
+    AutoSync,
+    Status,
     Encryption,
-    Help,
 }
 
 /// Active field in the encryption password prompt
@@ -71,6 +72,15 @@ struct StoredSyncTargets {
     targets: Vec<SyncTarget>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct StoredSyncStatus {
+    last_sync_time: Option<i64>,
+    last_sync_success: bool,
+    last_sync_error: Option<String>,
+    last_sync_target_name: Option<String>,
+    last_sync_encryption_enabled: bool,
+}
+
 /// Sync settings state
 #[derive(Debug, Clone, Default)]
 pub struct SyncSettings {
@@ -94,6 +104,67 @@ pub struct SyncSettings {
 
     // Delete confirmation
     pub confirm_delete: bool,
+}
+
+pub const AUTO_SYNC_INTERVAL_OPTIONS: &[u64] = &[0, 300, 600, 1800, 3600, 43200, 86400];
+
+#[derive(Debug, Clone)]
+pub struct AutoSyncSettings {
+    pub interval_seconds: u64,
+}
+
+impl Default for AutoSyncSettings {
+    fn default() -> Self {
+        Self {
+            interval_seconds: 300,
+        }
+    }
+}
+
+impl AutoSyncSettings {
+    pub fn option_index(&self) -> usize {
+        AUTO_SYNC_INTERVAL_OPTIONS
+            .iter()
+            .position(|value| *value == self.interval_seconds)
+            .unwrap_or(0)
+    }
+
+    pub fn cycle(&mut self, forward: bool) {
+        let current_index = self.option_index();
+        let next_index = if forward {
+            (current_index + 1) % AUTO_SYNC_INTERVAL_OPTIONS.len()
+        } else if current_index == 0 {
+            AUTO_SYNC_INTERVAL_OPTIONS.len() - 1
+        } else {
+            current_index - 1
+        };
+        self.interval_seconds = AUTO_SYNC_INTERVAL_OPTIONS[next_index];
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct SyncStatusSettings {
+    pub last_sync_time: Option<i64>,
+    pub last_sync_success: bool,
+    pub last_sync_error: Option<String>,
+    pub last_sync_target_name: Option<String>,
+    pub last_sync_encryption_enabled: bool,
+    pub current_conflict_count: usize,
+    pub current_encryption_enabled: bool,
+}
+
+impl Default for SyncStatusSettings {
+    fn default() -> Self {
+        Self {
+            last_sync_time: None,
+            last_sync_success: false,
+            last_sync_error: None,
+            last_sync_target_name: None,
+            last_sync_encryption_enabled: false,
+            current_conflict_count: 0,
+            current_encryption_enabled: false,
+        }
+    }
 }
 
 impl SyncSettings {
@@ -227,6 +298,8 @@ impl Default for EncryptionSettings {
 pub struct Settings {
     pub current_tab: SettingsTab,
     pub sync: SyncSettings,
+    pub auto_sync: AutoSyncSettings,
+    pub status: SyncStatusSettings,
     pub encryption: EncryptionSettings,
 }
 
@@ -235,6 +308,8 @@ impl Default for Settings {
         Self {
             current_tab: SettingsTab::Sync,
             sync: SyncSettings::default(),
+            auto_sync: AutoSyncSettings::default(),
+            status: SyncStatusSettings::default(),
             encryption: EncryptionSettings::default(),
         }
     }
@@ -249,18 +324,20 @@ impl Settings {
     /// Cycle to next settings tab
     pub fn cycle_tab_forward(&mut self) {
         self.current_tab = match self.current_tab {
-            SettingsTab::Sync => SettingsTab::Encryption,
-            SettingsTab::Encryption => SettingsTab::Help,
-            SettingsTab::Help => SettingsTab::Sync,
+            SettingsTab::Sync => SettingsTab::AutoSync,
+            SettingsTab::AutoSync => SettingsTab::Status,
+            SettingsTab::Status => SettingsTab::Encryption,
+            SettingsTab::Encryption => SettingsTab::Sync,
         };
     }
 
     /// Cycle to previous settings tab
     pub fn cycle_tab_backward(&mut self) {
         self.current_tab = match self.current_tab {
-            SettingsTab::Sync => SettingsTab::Help,
-            SettingsTab::Encryption => SettingsTab::Sync,
-            SettingsTab::Help => SettingsTab::Encryption,
+            SettingsTab::Sync => SettingsTab::Encryption,
+            SettingsTab::AutoSync => SettingsTab::Sync,
+            SettingsTab::Status => SettingsTab::AutoSync,
+            SettingsTab::Encryption => SettingsTab::Status,
         };
     }
 
@@ -268,6 +345,7 @@ impl Settings {
     pub async fn load_all_settings(&mut self, data_dir: &Path) -> Result<()> {
         self.load_encryption_settings(data_dir).await?;
         self.load_sync_settings(data_dir).await?;
+        self.load_sync_status(data_dir).await?;
         Ok(())
     }
 
@@ -275,6 +353,7 @@ impl Settings {
     pub async fn load_sync_settings(&mut self, data_dir: &Path) -> Result<()> {
         self.sync.targets.clear();
         self.sync.current_target_index = None;
+        self.auto_sync = AutoSyncSettings::default();
 
         let targets_path = sync_targets_path(data_dir);
         if targets_path.exists() {
@@ -291,19 +370,26 @@ impl Settings {
             if self.sync.current_target_index.is_none() && !self.sync.targets.is_empty() {
                 self.sync.current_target_index = Some(0);
             }
-
-            return Ok(());
         }
 
         let config_path = data_dir.join("settings.json");
 
-        if !config_path.exists() {
+        if !config_path.exists() && self.sync.targets.is_empty() {
             // Try to load from old sync-config.json format
             return self.migrate_old_sync_config(data_dir).await;
         }
 
-        let content = tokio::fs::read_to_string(&config_path).await?;
-        let config: serde_json::Value = serde_json::from_str(&content)?;
+        let config = if config_path.exists() {
+            let content = tokio::fs::read_to_string(&config_path).await?;
+            serde_json::from_str::<serde_json::Value>(&content)?
+        } else {
+            serde_json::json!({})
+        };
+
+        self.auto_sync.interval_seconds = config
+            .get("sync.interval")
+            .and_then(|value| value.as_u64())
+            .unwrap_or(self.auto_sync.interval_seconds);
 
         // Parse active target ID
         let active_id = config
@@ -312,7 +398,7 @@ impl Settings {
             .unwrap_or(0) as u32;
 
         // Load WebDAV target (ID 6)
-        if active_id == 6 {
+        if active_id == 6 && self.sync.targets.is_empty() {
             let url = config
                 .get("sync.6.path")
                 .and_then(|v| v.as_str())
@@ -377,10 +463,16 @@ impl Settings {
             0
         };
 
-        let mut config = serde_json::json!({
-            "$schema": "https://joplinapp.org/schema/settings.json",
-            "sync.target": target_id,
-        });
+        let mut config = if config_path.exists() {
+            let content = tokio::fs::read_to_string(&config_path).await?;
+            serde_json::from_str::<serde_json::Value>(&content)?
+        } else {
+            serde_json::json!({
+                "$schema": "https://joplinapp.org/schema/settings.json",
+            })
+        };
+        config["sync.target"] = serde_json::json!(target_id);
+        config["sync.interval"] = serde_json::json!(self.auto_sync.interval_seconds);
 
         // Save current WebDAV target
         if let Some(idx) = self.sync.current_target_index {
@@ -391,6 +483,10 @@ impl Settings {
                     config["sync.6.password"] = serde_json::json!(target.password);
                 }
             }
+        } else {
+            config["sync.6.path"] = serde_json::json!("");
+            config["sync.6.username"] = serde_json::json!("");
+            config["sync.6.password"] = serde_json::json!("");
         }
 
         let content = serde_json::to_string_pretty(&config)?;
@@ -459,6 +555,7 @@ impl Settings {
         }
 
         self.update_encryption_status();
+        self.status.current_encryption_enabled = self.encryption.enabled;
         Ok(())
     }
 
@@ -536,7 +633,60 @@ impl Settings {
         self.encryption.password_success = true;
 
         self.update_encryption_status();
+        self.status.current_encryption_enabled = self.encryption.enabled;
         Ok(())
+    }
+
+    pub async fn load_sync_status(&mut self, data_dir: &Path) -> Result<()> {
+        let status_path = sync_status_path(data_dir);
+        if !status_path.exists() {
+            return Ok(());
+        }
+
+        let content = tokio::fs::read_to_string(&status_path).await?;
+        let stored: StoredSyncStatus = serde_json::from_str(&content)?;
+        self.status.last_sync_time = stored.last_sync_time;
+        self.status.last_sync_success = stored.last_sync_success;
+        self.status.last_sync_error = stored.last_sync_error;
+        self.status.last_sync_target_name = stored.last_sync_target_name;
+        self.status.last_sync_encryption_enabled = stored.last_sync_encryption_enabled;
+        Ok(())
+    }
+
+    pub async fn save_sync_status(&self, data_dir: &Path) -> Result<()> {
+        let stored = StoredSyncStatus {
+            last_sync_time: self.status.last_sync_time,
+            last_sync_success: self.status.last_sync_success,
+            last_sync_error: self.status.last_sync_error.clone(),
+            last_sync_target_name: self.status.last_sync_target_name.clone(),
+            last_sync_encryption_enabled: self.status.last_sync_encryption_enabled,
+        };
+        tokio::fs::write(
+            sync_status_path(data_dir),
+            serde_json::to_string_pretty(&stored)?,
+        )
+        .await?;
+        Ok(())
+    }
+
+    pub fn record_sync_result(
+        &mut self,
+        target_name: String,
+        success: bool,
+        error: Option<String>,
+        encryption_enabled: bool,
+    ) {
+        self.status.last_sync_time = Some(joplin_domain::now_ms());
+        self.status.last_sync_success = success;
+        self.status.last_sync_error = error;
+        self.status.last_sync_target_name = Some(target_name);
+        self.status.last_sync_encryption_enabled = encryption_enabled;
+        self.status.current_encryption_enabled = self.encryption.enabled;
+    }
+
+    pub fn update_runtime_status(&mut self, conflict_count: usize) {
+        self.status.current_conflict_count = conflict_count;
+        self.status.current_encryption_enabled = self.encryption.enabled;
     }
 
     /// Disable encryption
@@ -562,6 +712,7 @@ impl Settings {
         self.encryption.password_success = true;
 
         self.update_encryption_status();
+        self.status.current_encryption_enabled = self.encryption.enabled;
         Ok(())
     }
 
@@ -671,6 +822,10 @@ fn sync_targets_path(data_dir: &Path) -> PathBuf {
     data_dir.join("sync-targets.json")
 }
 
+fn sync_status_path(data_dir: &Path) -> PathBuf {
+    data_dir.join("sync-status.json")
+}
+
 fn split_sync_url(full_url: &str) -> (String, String) {
     let trimmed = full_url.trim_end_matches('/');
     let scheme_end = trimmed.find("://").map(|i| i + 3).unwrap_or(0);
@@ -702,9 +857,11 @@ mod tests {
         let mut settings = Settings::new();
         assert_eq!(settings.current_tab, SettingsTab::Sync);
         settings.cycle_tab_forward();
-        assert_eq!(settings.current_tab, SettingsTab::Encryption);
+        assert_eq!(settings.current_tab, SettingsTab::AutoSync);
         settings.cycle_tab_forward();
-        assert_eq!(settings.current_tab, SettingsTab::Help);
+        assert_eq!(settings.current_tab, SettingsTab::Status);
+        settings.cycle_tab_forward();
+        assert_eq!(settings.current_tab, SettingsTab::Encryption);
         settings.cycle_tab_forward();
         assert_eq!(settings.current_tab, SettingsTab::Sync);
     }

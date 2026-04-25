@@ -28,7 +28,7 @@ pub const COMMANDS: &[CommandDescriptor] = &[
     CommandDescriptor {
         name: "move",
         usage: ":move <notebook>",
-        description: "Move the selected note to a notebook",
+        description: "Move the selected note or notebook to a notebook",
         hidden_from_completion: false,
     },
     CommandDescriptor {

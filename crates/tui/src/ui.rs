@@ -1,5 +1,6 @@
 // UI rendering for NeoJoplin TUI
 
+use neojoplin_core::timestamp_to_datetime;
 use ratatui::{
     layout::{Alignment, Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style, Stylize},
@@ -12,13 +13,15 @@ use crate::settings::{ConnectionResult, EncryptionField, FormField};
 use crate::theme::Theme;
 
 use crate::settings::SettingsTab;
-use crate::state::{AppState, FocusPanel};
+use crate::state::{AppState, FocusPanel, NoteFilterMode};
 
 const HELP_LINES: &[&str] = &[
     "Navigation",
     "  Tab / Shift-Tab    Switch panels (Notebooks -> Notes -> Content)",
     "  h / l / <- ->      Switch panels left / right",
     "  j / k / Up Down    Move selection or scroll content",
+    "  gg                 Jump to the top of the focused list or preview",
+    "  ge / G             Jump to the end of the focused list or preview",
     "  Enter              Open notebook (in Notebooks panel)",
     "",
     "Notes & Notebooks",
@@ -26,14 +29,19 @@ const HELP_LINES: &[&str] = &[
     "  N      New notebook",
     "  t      New to-do in current notebook",
     "  T      Convert selected note <-> to-do",
-    "  m      Move the selected note to another notebook",
+    "  m      Move the selected note or notebook to another notebook",
     "  r      Rename selected note or notebook",
-    "  f      Filter the focused list (notes also support #tag filters)",
+    "  f      Filter the focused list (notes: title only, #tag still works)",
     "  F      Full-text filter across note contents",
     "  ,      Open sort help for the focused list",
     "  d      Delete selected note or notebook (with confirmation)",
     "  D      Delete selected note immediately",
     "  R      Restore selected trashed note",
+    "",
+    "Filtering",
+    "  f / F              Filter the focused list (F searches note contents too)",
+    "  =text              Disable fuzzy matching and use a literal substring search",
+    "  #=tag              Match a tag literally instead of fuzzily",
     "",
     "Commands",
     "  :move <notebook>       Move the selected note to a notebook",
@@ -151,6 +159,7 @@ fn render_notebooks_panel(f: &mut Frame, state: &AppState, area: Rect) {
         }
     } else {
         let mut all_items = vec![];
+        let folder_depths = build_folder_depths(state);
 
         // Add "All Notebooks" option at the top
         let is_all_selected = state.all_notebooks_mode && !state.orphan_mode && !state.trash_mode;
@@ -160,16 +169,6 @@ fn render_notebooks_panel(f: &mut Frame, state: &AppState, area: Rect) {
             theme.text()
         };
         all_items.push(ListItem::new("📚 All Notes").style(all_style));
-
-        let orphan_style = if state.orphan_mode {
-            theme.selection()
-        } else {
-            theme.text()
-        };
-        all_items.push(ListItem::new(Line::from(vec![
-            Span::styled("🔎 Orphaned", orphan_style),
-            Span::styled(format!(" ({})", state.orphan_note_count), theme.dim()),
-        ])));
 
         // Add individual notebooks
         for (i, folder) in state.folders.iter().enumerate() {
@@ -190,6 +189,7 @@ fn render_notebooks_panel(f: &mut Frame, state: &AppState, area: Rect) {
                 .get(&folder.id)
                 .map(String::as_str)
                 .unwrap_or(&folder.title);
+            let indent = "  ".repeat(*folder_depths.get(folder.id.as_str()).unwrap_or(&0));
             let base_name: &str;
             let suffix: Option<&str>;
             if let Some(paren_pos) = display_name.rfind(" (") {
@@ -202,15 +202,25 @@ fn render_notebooks_panel(f: &mut Frame, state: &AppState, area: Rect) {
 
             let label = if let Some(suf) = suffix {
                 Line::from(vec![
-                    Span::raw(format!("{}{}", emoji, base_name)),
+                    Span::raw(format!("{}{}{}", indent, emoji, base_name)),
                     Span::styled(suf.to_string(), theme.dim()),
                 ])
             } else {
-                Line::from(format!("{}{}", emoji, base_name))
+                Line::from(format!("{}{}{}", indent, emoji, base_name))
             };
 
             all_items.push(ListItem::new(label).style(style));
         }
+
+        let orphan_style = if state.orphan_mode {
+            theme.selection()
+        } else {
+            theme.text()
+        };
+        all_items.push(ListItem::new(Line::from(vec![
+            Span::styled("🔎 Orphaned", orphan_style),
+            Span::styled(format!(" ({})", state.orphan_note_count), theme.dim()),
+        ])));
 
         // Add Trash entry at the bottom
         let trash_style = if state.trash_mode && !state.all_notebooks_mode {
@@ -224,7 +234,9 @@ fn render_notebooks_panel(f: &mut Frame, state: &AppState, area: Rect) {
             Span::styled(format!(" ({})", state.trash_note_count), theme.dim()),
         ])));
 
-        all_items
+        let selected_row = selected_notebook_row(state);
+        let visible_rows = area.height.saturating_sub(2) as usize;
+        slice_visible_items(all_items, selected_row, visible_rows)
     };
 
     let list = List::new(items)
@@ -290,7 +302,7 @@ fn render_notes_panel(f: &mut Frame, state: &AppState, area: Rect) {
             ]
         }
     } else {
-        state
+        let all_items: Vec<ListItem> = state
             .notes
             .iter()
             .enumerate()
@@ -314,7 +326,12 @@ fn render_notes_panel(f: &mut Frame, state: &AppState, area: Rect) {
 
                 ListItem::new(format!("{} {}", icon, display_title(&note.title))).style(style)
             })
-            .collect()
+            .collect();
+        slice_visible_items(
+            all_items,
+            state.selected_note.unwrap_or(0),
+            area.height.saturating_sub(2) as usize,
+        )
     };
 
     let list = List::new(items)
@@ -341,6 +358,8 @@ fn render_content_panel(f: &mut Frame, state: &AppState, area: Rect) {
         "Content".to_string()
     };
     let theme = &state.theme;
+    let notebook_name = current_notebook_label(state);
+    let tag_summary = current_tag_summary(state, area.width.saturating_sub(18) as usize);
 
     // Get note content as markdown. If the title starts with "# ", prepend it so
     // the heading is visible in the rendered preview (the title is stored separately
@@ -413,7 +432,18 @@ fn render_content_panel(f: &mut Frame, state: &AppState, area: Rect) {
         .block(
             Block::default()
                 .title(title)
+                .title_alignment(Alignment::Left)
+                .title(
+                    Line::from(notebook_name)
+                        .alignment(Alignment::Right)
+                        .style(theme.muted()),
+                )
                 .title_bottom(Line::from(bottom_indicator).style(theme.muted()))
+                .title_bottom(
+                    Line::from(tag_summary)
+                        .alignment(Alignment::Right)
+                        .style(theme.dim()),
+                )
                 .borders(Borders::ALL)
                 .border_style(if state.focus == FocusPanel::Content {
                     theme.border_focused()
@@ -530,34 +560,44 @@ fn render_keybinding_ribbon(f: &mut Frame, state: &AppState, area: Rect) {
     let arrow = ""; // Powerline separator
 
     // Build dynamic list of bindings based on state and availability
-    let mut bindings: Vec<(String, String)> = Vec::new();
+    let mut bindings: Vec<(String, String, bool)> = Vec::new();
+    let filters_active = state.has_active_filter(FocusPanel::Notebooks)
+        || state.has_active_filter(FocusPanel::Notes);
 
     // Always available
-    bindings.push(("q".to_string(), "QUIT".to_string()));
-    bindings.push(("hjkl".to_string(), "NAV".to_string()));
+    bindings.push(("q".to_string(), "QUIT".to_string(), false));
+    bindings.push(("hjkl".to_string(), "NAV".to_string(), false));
 
     // Contextual bindings
     if state.trash_mode {
-        bindings.push(("R".to_string(), "RESTORE".to_string()));
-        bindings.push(("d".to_string(), "DELETE".to_string()));
+        bindings.push(("R".to_string(), "RESTORE".to_string(), false));
+        bindings.push(("d".to_string(), "DELETE".to_string(), false));
     } else {
         // Only show New when in notebooks/notes
-        if matches!(state.focus, crate::state::FocusPanel::Notebooks | crate::state::FocusPanel::Notes) {
-            bindings.push(("n".to_string(), "NEW".to_string()));
+        if matches!(
+            state.focus,
+            crate::state::FocusPanel::Notebooks | crate::state::FocusPanel::Notes
+        ) {
+            bindings.push(("n".to_string(), "NEW".to_string(), false));
         }
-        bindings.push(("d".to_string(), "DELETE".to_string()));
-        bindings.push(("t".to_string(), "TODO".to_string()));
-        bindings.push((",".to_string(), "SORT".to_string()));
-        bindings.push(("s".to_string(), "SYNC".to_string()));
+        bindings.push(("d".to_string(), "DELETE".to_string(), false));
+        bindings.push(("t".to_string(), "TODO".to_string(), false));
+        bindings.push((",".to_string(), "SORT".to_string(), false));
+        bindings.push(("s".to_string(), "SYNC".to_string(), false));
     }
 
     // Filter available when focus is list-based
-    if matches!(state.focus, crate::state::FocusPanel::Notebooks | crate::state::FocusPanel::Notes) || state.trash_mode {
-        bindings.push(("f".to_string(), "FILTER".to_string()));
+    if matches!(
+        state.focus,
+        crate::state::FocusPanel::Notebooks | crate::state::FocusPanel::Notes
+    ) || state.trash_mode
+    {
+        bindings.push(("f".to_string(), "FILTER".to_string(), filters_active));
     }
 
     // Settings always available
-    bindings.push(("S".to_string(), "SETTINGS".to_string()));
+    bindings.push(("S".to_string(), "SETTINGS".to_string(), false));
+    bindings.push(("?".to_string(), "HELP".to_string(), false));
 
     // Hidden bindings (not in ribbon) are not included here
 
@@ -565,7 +605,7 @@ fn render_keybinding_ribbon(f: &mut Frame, state: &AppState, area: Rect) {
     let mut total_width = 0;
     let available_width = area.width as usize;
 
-    for (key, action) in bindings.iter() {
+    for (key, action, highlighted) in bindings.iter() {
         let key_width = key.chars().count();
         let action_width = action.chars().count();
         let arrow_width = arrow.chars().count();
@@ -574,7 +614,11 @@ fn render_keybinding_ribbon(f: &mut Frame, state: &AppState, area: Rect) {
             break;
         }
 
-        let action_bg = theme.primary;
+        let action_bg = if *highlighted {
+            theme.warning
+        } else {
+            theme.primary
+        };
         let surface_color = theme.surface;
         let key_color = theme.text;
         let action_fg_color = Color::Black;
@@ -626,13 +670,16 @@ fn render_status_line(f: &mut Frame, state: &AppState, area: Rect) {
     let status_text = if state.show_filter_prompt {
         let target = match state.filter_target {
             FocusPanel::Notebooks => "Filter notebooks: ",
-            FocusPanel::Notes | FocusPanel::Content => "Filter notes (#tag): ",
+            FocusPanel::Notes | FocusPanel::Content => match state.note_filter_mode {
+                NoteFilterMode::TitleOnly => "Filter note titles (#tag): ",
+                NoteFilterMode::FullText => "Full-text filter (#tag): ",
+            },
         };
         Line::from(vec![
             Span::styled(target, theme.muted()),
             Span::styled(&state.filter_input, theme.primary()),
             Span::styled("█", theme.muted()),
-            Span::styled("  [Enter confirm] [Esc cancel]", theme.muted()),
+            Span::styled("  [= literal] [Enter confirm] [Esc cancel]", theme.muted()),
         ])
     } else if state.command_prompt.visible {
         let mut spans = vec![
@@ -655,7 +702,7 @@ fn render_status_line(f: &mut Frame, state: &AppState, area: Rect) {
             }
         } else {
             spans.push(Span::styled(
-                "  [Tab complete] [Enter run] [Esc cancel]",
+                "  [Tab complete] [Up/Down history] [Enter run] [Esc cancel]",
                 theme.muted(),
             ));
         }
@@ -702,11 +749,12 @@ pub fn render_settings(f: &mut Frame, state: &AppState) {
         .split(inner);
 
     // Tab bar
-    let tab_names = ["Sync", "Encryption", "Help"];
+    let tab_names = ["Sync", "Auto-sync", "Status", "Encryption"];
     let current_tab_idx = match state.settings.current_tab {
         SettingsTab::Sync => 0,
-        SettingsTab::Encryption => 1,
-        SettingsTab::Help => 2,
+        SettingsTab::AutoSync => 1,
+        SettingsTab::Status => 2,
+        SettingsTab::Encryption => 3,
     };
     let tabs = Tabs::new(tab_names)
         .select(current_tab_idx)
@@ -717,8 +765,9 @@ pub fn render_settings(f: &mut Frame, state: &AppState) {
     // Content area for the active tab
     match state.settings.current_tab {
         SettingsTab::Sync => render_sync_settings_content(f, state, layout[1]),
+        SettingsTab::AutoSync => render_auto_sync_settings(f, state, layout[1]),
+        SettingsTab::Status => render_sync_status_settings(f, state, layout[1]),
         SettingsTab::Encryption => render_encryption_settings(f, state, layout[1]),
-        SettingsTab::Help => render_help_tab(f, state, layout[1]),
     }
 
     // Delete confirmation overlay
@@ -800,6 +849,16 @@ fn settings_bottom_hints<'a>(state: &'a AppState, theme: &'a Theme) -> Line<'a> 
                     }
                 }
             }
+            SettingsTab::AutoSync => {
+                for s in kh(theme, "j/k", "change interval") {
+                    spans.push(s);
+                }
+            }
+            SettingsTab::Status => {
+                for s in kh(theme, "r", "refresh") {
+                    spans.push(s);
+                }
+            }
             SettingsTab::Encryption => {
                 if enc.enabled {
                     for s in kh(theme, "d", "disable") {
@@ -809,18 +868,6 @@ fn settings_bottom_hints<'a>(state: &'a AppState, theme: &'a Theme) -> Line<'a> 
                     for s in kh(theme, "e", "enable") {
                         spans.push(s);
                     }
-                }
-            }
-            SettingsTab::Help => {
-                // Help tab: basic navigation hints
-                for s in kh(theme, "j/k", "scroll") {
-                    spans.push(s);
-                }
-                for s in kh(theme, "/", "search") {
-                    spans.push(s);
-                }
-                for s in kh(theme, "q", "close") {
-                    spans.push(s);
                 }
             }
         }
@@ -846,7 +893,7 @@ fn render_delete_confirm_overlay(f: &mut Frame, target_name: &str, parent: Rect,
     ])
     .block(
         Block::default()
-            .title(" Confirm Delete ")
+            .title("")
             .borders(Borders::ALL)
             .border_style(theme.error())
             .title_bottom(hints),
@@ -1344,7 +1391,9 @@ pub fn render_help(
         ),
     ]);
 
-    let search_query = search_query.filter(|query| !query.is_empty()).map(|q| q.to_lowercase());
+    let search_query = search_query
+        .filter(|query| !query.is_empty())
+        .map(|q| q.to_lowercase());
     let text = Text::from(
         HELP_LINES
             .iter()
@@ -1391,22 +1440,163 @@ pub fn render_help(
     f.render_widget(paragraph, area);
 }
 
-/// Render the help tab content for settings
-pub fn render_help_tab(f: &mut Frame, state: &AppState, area: Rect) {
+fn render_auto_sync_settings(f: &mut Frame, state: &AppState, area: Rect) {
     let theme = &state.theme;
-    // Reuse render_help content inside the provided area: small help summary
+    let settings = &state.settings.auto_sync;
+    let options: Vec<ListItem> = crate::settings::AUTO_SYNC_INTERVAL_OPTIONS
+        .iter()
+        .map(|interval| {
+            let is_selected = *interval == settings.interval_seconds;
+            let style = if is_selected {
+                theme.selection()
+            } else {
+                theme.text()
+            };
+            ListItem::new(format_auto_sync_interval(*interval)).style(style)
+        })
+        .collect();
+
+    let chunks = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Percentage(40), Constraint::Percentage(60)])
+        .margin(1)
+        .split(area);
+
+    let list = List::new(options).block(
+        Block::default()
+            .title(" Interval ")
+            .borders(Borders::ALL)
+            .border_style(theme.border_normal()),
+    );
+    f.render_widget(list, chunks[0]);
+
+    let details = Paragraph::new(vec![
+        Line::from(vec![
+            Span::styled("Current: ", theme.muted()),
+            Span::styled(
+                format_auto_sync_interval(settings.interval_seconds),
+                theme.primary(),
+            ),
+        ]),
+        Line::from(""),
+        Line::from("NeoJoplin will automatically run a background sync on this interval."),
+        Line::from("The timer is reset after each sync attempt."),
+    ])
+    .block(
+        Block::default()
+            .title(" Auto-sync ")
+            .borders(Borders::ALL)
+            .border_style(theme.border_normal()),
+    )
+    .wrap(Wrap { trim: false });
+    f.render_widget(details, chunks[1]);
+}
+
+fn render_sync_status_settings(f: &mut Frame, state: &AppState, area: Rect) {
+    let theme = &state.theme;
+    let status = &state.settings.status;
+
+    let last_sync = status
+        .last_sync_time
+        .map(|value| {
+            timestamp_to_datetime(value)
+                .format("%Y-%m-%d %H:%M:%S")
+                .to_string()
+        })
+        .unwrap_or_else(|| "Never".to_string());
+    let result_style = if status.last_sync_success {
+        theme.success()
+    } else {
+        theme.error()
+    };
+    let result_text = if status.last_sync_time.is_none() {
+        "No sync has completed yet".to_string()
+    } else if status.last_sync_success {
+        "Success".to_string()
+    } else {
+        status
+            .last_sync_error
+            .clone()
+            .unwrap_or_else(|| "Failed".to_string())
+    };
+
     let lines = vec![
-        Line::from("NeoJoplin Help").style(theme.primary()),
-        Line::from("").style(theme.text()),
-        Line::from("Press q to close help, / to search, j/k to scroll").style(theme.muted()),
-        Line::from("").style(theme.text()),
-        Line::from("Commands and keybindings are shown in the main help popup (press ?)").style(theme.text()),
+        Line::from(vec![
+            Span::styled("Last sync: ", theme.muted()),
+            Span::styled(last_sync, theme.text()),
+        ]),
+        Line::from(vec![
+            Span::styled("Last target: ", theme.muted()),
+            Span::styled(
+                status
+                    .last_sync_target_name
+                    .clone()
+                    .unwrap_or_else(|| "(none)".to_string()),
+                theme.text(),
+            ),
+        ]),
+        Line::from(vec![
+            Span::styled("Last result: ", theme.muted()),
+            Span::styled(result_text, result_style),
+        ]),
+        Line::from(vec![
+            Span::styled("Conflicts: ", theme.muted()),
+            Span::styled(status.current_conflict_count.to_string(), theme.text()),
+        ]),
+        Line::from(vec![
+            Span::styled("Encryption now: ", theme.muted()),
+            Span::styled(
+                if status.current_encryption_enabled {
+                    "Enabled"
+                } else {
+                    "Disabled"
+                },
+                if status.current_encryption_enabled {
+                    theme.success()
+                } else {
+                    theme.warning()
+                },
+            ),
+        ]),
+        Line::from(vec![
+            Span::styled("Encryption on last sync: ", theme.muted()),
+            Span::styled(
+                if status.last_sync_encryption_enabled {
+                    "Enabled"
+                } else {
+                    "Disabled"
+                },
+                if status.last_sync_encryption_enabled {
+                    theme.success()
+                } else {
+                    theme.warning()
+                },
+            ),
+        ]),
     ];
+
     let paragraph = Paragraph::new(lines)
-        .block(Block::default().title(" Help ").borders(Borders::ALL).border_style(theme.border_normal()))
-        .wrap(Wrap { trim: true })
-        .alignment(Alignment::Left);
+        .block(
+            Block::default()
+                .title(" Sync Status ")
+                .borders(Borders::ALL)
+                .border_style(theme.border_normal()),
+        )
+        .wrap(Wrap { trim: false });
     f.render_widget(paragraph, area);
+}
+
+fn format_auto_sync_interval(interval_seconds: u64) -> String {
+    match interval_seconds {
+        0 => "Disabled".to_string(),
+        300 => "Every 5 minutes".to_string(),
+        600 => "Every 10 minutes".to_string(),
+        1800 => "Every 30 minutes".to_string(),
+        3600 => "Every hour".to_string(),
+        43200 => "Every 12 hours".to_string(),
+        86400 => "Every 24 hours".to_string(),
+        value => format!("Every {} seconds", value),
+    }
 }
 
 /// Render quit confirmation popup
@@ -1450,10 +1640,10 @@ pub fn render_quit_confirmation(f: &mut Frame, state: &AppState) {
 }
 
 pub fn render_delete_confirmation(f: &mut Frame, state: &AppState) {
-    let area = centered_rect_with_min_width(42, 18, 52, f.area());
+    let area = centered_rect_with_min_width(42, 22, 52, f.area());
     let theme = &state.theme;
 
-    let (title, item_label) = match state.pending_delete.as_ref() {
+    let (question, item_label) = match state.pending_delete.as_ref() {
         Some(crate::state::PendingDelete::Note {
             title,
             permanent: true,
@@ -1497,7 +1687,10 @@ pub fn render_delete_confirmation(f: &mut Frame, state: &AppState) {
 
     let mut text_lines = vec![
         Line::from(""),
+        Line::from(question).style(theme.error()),
+        Line::from(""),
         Line::from(item_label).style(theme.primary()),
+        Line::from(""),
     ];
     if let Some(crate::state::PendingDelete::Notebook { note_count, .. }) =
         state.pending_delete.as_ref()
@@ -1515,7 +1708,7 @@ pub fn render_delete_confirmation(f: &mut Frame, state: &AppState) {
     let paragraph = Paragraph::new(text)
         .block(
             Block::default()
-                .title(title)
+                .title("")
                 .title_bottom(bottom_title)
                 .borders(Borders::ALL)
                 .border_style(theme.error()),
@@ -1524,6 +1717,106 @@ pub fn render_delete_confirmation(f: &mut Frame, state: &AppState) {
         .alignment(Alignment::Center);
 
     f.render_widget(paragraph, area);
+}
+
+fn build_folder_depths(state: &AppState) -> std::collections::HashMap<&str, usize> {
+    let parent_by_id: std::collections::HashMap<&str, &str> = state
+        .folders
+        .iter()
+        .map(|folder| (folder.id.as_str(), folder.parent_id.as_str()))
+        .collect();
+
+    state
+        .folders
+        .iter()
+        .map(|folder| {
+            let mut depth = 0usize;
+            let mut parent_id = folder.parent_id.as_str();
+            while !parent_id.is_empty() {
+                depth += 1;
+                parent_id = parent_by_id.get(parent_id).copied().unwrap_or("");
+            }
+            (folder.id.as_str(), depth)
+        })
+        .collect()
+}
+
+fn selected_notebook_row(state: &AppState) -> usize {
+    if state.trash_mode {
+        state.folders.len() + 2
+    } else if state.orphan_mode {
+        state.folders.len() + 1
+    } else if state.all_notebooks_mode {
+        0
+    } else {
+        state.selected_folder.map(|index| index + 1).unwrap_or(0)
+    }
+}
+
+fn slice_visible_items(
+    items: Vec<ListItem>,
+    selected: usize,
+    visible_rows: usize,
+) -> Vec<ListItem> {
+    if visible_rows == 0 || items.len() <= visible_rows {
+        return items;
+    }
+
+    let selected = selected.min(items.len() - 1);
+    let start = if selected >= visible_rows {
+        selected + 1 - visible_rows
+    } else {
+        0
+    };
+    items.into_iter().skip(start).take(visible_rows).collect()
+}
+
+fn current_notebook_label(state: &AppState) -> String {
+    let Some(note) = state.selected_note() else {
+        return String::new();
+    };
+
+    if let Some(folder) = state
+        .folders
+        .iter()
+        .find(|folder| folder.id == note.parent_id)
+    {
+        state
+            .folder_display_names
+            .get(&folder.id)
+            .cloned()
+            .unwrap_or_else(|| folder.title.clone())
+    } else if note.deleted_time > 0 {
+        "Trash".to_string()
+    } else {
+        "Orphaned".to_string()
+    }
+}
+
+fn current_tag_summary(state: &AppState, max_width: usize) -> String {
+    let Some(note) = state.selected_note() else {
+        return String::new();
+    };
+    let Some(tags) = state.note_tags.get(&note.id) else {
+        return String::new();
+    };
+    if tags.is_empty() {
+        return String::new();
+    }
+
+    truncate_text(&format!("tags: {}", tags.join(", ")), max_width)
+}
+
+fn truncate_text(text: &str, max_width: usize) -> String {
+    if max_width == 0 || text.chars().count() <= max_width {
+        return text.to_string();
+    }
+    if max_width <= 1 {
+        return "…".to_string();
+    }
+    let mut truncated: String = text.chars().take(max_width - 1).collect();
+    truncated.push('…');
+    truncated
 }
 
 /// Render error dialog popup

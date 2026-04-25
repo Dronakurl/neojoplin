@@ -1,7 +1,7 @@
 // Application state management
 
 use std::cmp::Ordering;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use crate::command_line::CommandPromptState;
 use crate::settings::Settings;
@@ -68,6 +68,21 @@ impl NotebookSortMode {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NoteFilterMode {
+    TitleOnly,
+    FullText,
+}
+
+impl NoteFilterMode {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::TitleOnly => "title",
+            Self::FullText => "full text",
+        }
+    }
+}
+
 /// Application state
 #[derive(Debug, Clone)]
 pub struct AppState {
@@ -113,6 +128,8 @@ pub struct AppState {
     pub notebook_filter_query: String,
     /// Active note filter query
     pub note_filter_query: String,
+    /// Whether note filtering searches titles only or full text
+    pub note_filter_mode: NoteFilterMode,
     /// Newly created note kept at end of the list until renamed
     pub new_note_id: Option<String>,
     /// Newly created notebook kept at end of the list until renamed
@@ -171,6 +188,7 @@ impl Default for AppState {
             filter_original_input: String::new(),
             notebook_filter_query: String::new(),
             note_filter_query: String::new(),
+            note_filter_mode: NoteFilterMode::TitleOnly,
             new_note_id: None,
             new_folder_id: None,
             pending_delete: None,
@@ -264,12 +282,14 @@ impl AppState {
                 if self.trash_mode {
                     if delta < 0 {
                         self.trash_mode = false;
-                        if len > 0 {
+                        if self.orphan_note_count > 0 {
+                            self.orphan_mode = true;
+                            self.selected_folder = None;
+                            self.all_notebooks_mode = false;
+                        } else if len > 0 {
                             self.selected_folder = Some(len - 1);
                             self.all_notebooks_mode = false;
                             self.orphan_mode = false;
-                        } else if self.orphan_note_count > 0 {
-                            self.orphan_mode = true;
                         } else {
                             self.all_notebooks_mode = true;
                         }
@@ -278,29 +298,33 @@ impl AppState {
                 } else if self.orphan_mode {
                     if delta < 0 {
                         self.orphan_mode = false;
-                        self.all_notebooks_mode = true;
-                        self.selected_folder = None;
+                        if len > 0 {
+                            self.selected_folder = Some(len - 1);
+                            self.all_notebooks_mode = false;
+                        } else {
+                            self.all_notebooks_mode = true;
+                            self.selected_folder = None;
+                        }
                         folder_changed = true;
                     } else if delta > 0 {
                         self.orphan_mode = false;
-                        if len > 0 {
-                            self.selected_folder = Some(0);
-                            self.all_notebooks_mode = false;
-                        } else if self.trash_note_count > 0 {
+                        self.selected_folder = None;
+                        self.all_notebooks_mode = false;
+                        if self.trash_note_count > 0 {
                             self.trash_mode = true;
-                            self.selected_folder = None;
-                            self.all_notebooks_mode = false;
+                        } else if len == 0 {
+                            self.all_notebooks_mode = true;
                         }
                         folder_changed = true;
                     }
                 } else if self.all_notebooks_mode {
                     if delta > 0 {
                         self.all_notebooks_mode = false;
-                        if self.orphan_note_count > 0 {
+                        if len > 0 {
+                            self.selected_folder = Some(0);
+                        } else if self.orphan_note_count > 0 {
                             self.orphan_mode = true;
                             self.selected_folder = None;
-                        } else if len > 0 {
-                            self.selected_folder = Some(0);
                         } else if self.trash_note_count > 0 {
                             self.trash_mode = true;
                         }
@@ -311,15 +335,19 @@ impl AppState {
                         let old_idx = *idx;
 
                         if delta < 0 && *idx == 0 {
-                            self.orphan_mode = true;
                             self.selected_folder = None;
-                            self.all_notebooks_mode = false;
+                            self.all_notebooks_mode = true;
                             folder_changed = true;
                         } else if delta > 0 && *idx == len - 1 {
-                            self.trash_mode = true;
-                            self.orphan_mode = false;
                             self.selected_folder = None;
                             self.all_notebooks_mode = false;
+                            if self.orphan_note_count > 0 {
+                                self.orphan_mode = true;
+                            } else if self.trash_note_count > 0 {
+                                self.trash_mode = true;
+                            } else {
+                                self.all_notebooks_mode = true;
+                            }
                             folder_changed = true;
                         } else {
                             let new_idx_raw =
@@ -442,31 +470,82 @@ impl AppState {
     /// Sort notebooks for the current sort mode
     pub fn sort_folders(&self, folders: &mut [Folder], notes: &[Note]) {
         let recent_note_times = folder_recent_note_times(notes);
+        let existing_ids: HashSet<String> =
+            folders.iter().map(|folder| folder.id.clone()).collect();
+        let mut grouped: HashMap<String, Vec<Folder>> = HashMap::new();
+        let mut roots = Vec::new();
 
-        folders.sort_by(|left, right| match self.notebook_sort {
-            NotebookSortMode::TimeAsc => compare_folder_time(left, right),
-            NotebookSortMode::TimeDesc => compare_folder_time(right, left),
-            NotebookSortMode::NameAsc => {
-                compare_folder_name(left, right).then_with(|| compare_folder_time(left, right))
+        for folder in folders.iter().cloned() {
+            if folder.parent_id.is_empty() || !existing_ids.contains(&folder.parent_id) {
+                roots.push(folder);
+            } else {
+                grouped
+                    .entry(folder.parent_id.clone())
+                    .or_default()
+                    .push(folder);
             }
-            NotebookSortMode::RecentNote => {
-                compare_folder_recent_note(left, right, &recent_note_times)
-            }
-        });
-        move_folder_to_end(folders, self.new_folder_id.as_deref());
+        }
+
+        sort_folder_group(&mut roots, self.notebook_sort, &recent_note_times);
+
+        let mut ordered = Vec::with_capacity(folders.len());
+        flatten_folder_group(
+            &roots,
+            &mut grouped,
+            &mut ordered,
+            self.notebook_sort,
+            &recent_note_times,
+        );
+
+        move_folder_vec_to_end(&mut ordered, self.new_folder_id.as_deref());
+        for (target, source) in folders.iter_mut().zip(ordered.into_iter()) {
+            *target = source;
+        }
     }
 
     /// Apply the active notebook filter query to a list of folders.
     pub fn filter_folders(&self, folders: Vec<Folder>) -> Vec<Folder> {
-        fuzzy_filter_by_query(folders, &self.notebook_filter_query, |folder| {
-            folder.title.clone()
-        })
+        let query = self.notebook_filter_query.trim();
+        if query.is_empty() {
+            return folders;
+        }
+
+        let matched_ids: HashSet<String> =
+            fuzzy_filter_by_query(folders.clone(), query, |folder| folder.title.clone())
+                .into_iter()
+                .map(|folder| folder.id)
+                .collect();
+
+        if matched_ids.is_empty() {
+            return Vec::new();
+        }
+
+        let parent_by_id: HashMap<&str, &str> = folders
+            .iter()
+            .map(|folder| (folder.id.as_str(), folder.parent_id.as_str()))
+            .collect();
+
+        let mut visible_ids = matched_ids.clone();
+        for matched_id in matched_ids {
+            let mut current = matched_id.as_str();
+            while let Some(parent_id) = parent_by_id.get(current).copied() {
+                if parent_id.is_empty() || !visible_ids.insert(parent_id.to_string()) {
+                    break;
+                }
+                current = parent_id;
+            }
+        }
+
+        folders
+            .into_iter()
+            .filter(|folder| visible_ids.contains(&folder.id))
+            .collect()
     }
 
     /// Apply the active note filter query to a list of notes.
     pub fn filter_notes(&self, notes: Vec<Note>) -> Vec<Note> {
         let (text_query, tag_terms) = split_note_filter_query(&self.note_filter_query);
-        if text_query.is_empty() && tag_terms.is_empty() {
+        if text_query.text.is_empty() && tag_terms.is_empty() {
             return notes;
         }
 
@@ -480,16 +559,30 @@ impl AppState {
                     return None;
                 }
 
-                let searchable_text = if tags.is_empty() {
-                    format!("{} {}", note.title, note.body)
-                } else {
-                    format!("{} {} {}", note.title, note.body, tags.join(" "))
+                let searchable_text = match self.note_filter_mode {
+                    NoteFilterMode::TitleOnly => note.title.clone(),
+                    NoteFilterMode::FullText => {
+                        if tags.is_empty() {
+                            format!("{} {}", note.title, note.body)
+                        } else {
+                            format!("{} {} {}", note.title, note.body, tags.join(" "))
+                        }
+                    }
                 };
 
-                let score = if text_query.is_empty() {
+                let score = if text_query.text.is_empty() {
                     0
+                } else if text_query.exact {
+                    if searchable_text
+                        .to_lowercase()
+                        .contains(&text_query.text.to_lowercase())
+                    {
+                        1
+                    } else {
+                        return None;
+                    }
                 } else {
-                    matcher.fuzzy_match(&searchable_text, &text_query)?
+                    matcher.fuzzy_match(&searchable_text, &text_query.text)?
                 };
 
                 Some((idx, score, note.clone()))
@@ -565,12 +658,19 @@ impl AppState {
     }
 
     /// Open the filter prompt for the active list panel.
-    pub fn open_filter_prompt(&mut self) {
+    pub fn open_filter_prompt(&mut self, full_text: bool) {
         self.filter_target = if self.focus == FocusPanel::Notebooks {
             FocusPanel::Notebooks
         } else {
             FocusPanel::Notes
         };
+        if self.filter_target == FocusPanel::Notes {
+            self.note_filter_mode = if full_text {
+                NoteFilterMode::FullText
+            } else {
+                NoteFilterMode::TitleOnly
+            };
+        }
         self.filter_input = self.current_filter_query().to_string();
         self.filter_original_input = self.filter_input.clone();
         self.show_filter_prompt = true;
@@ -780,15 +880,23 @@ where
         return items;
     }
 
+    let (query, exact) = parse_exact_query(query);
+
     let matcher = SkimMatcherV2::default().smart_case();
     let mut matches: Vec<(usize, i64, T)> = items
         .iter()
         .enumerate()
         .filter_map(|(idx, item)| {
             let text = text_fn(item);
-            matcher
-                .fuzzy_match(&text, query)
-                .map(|score| (idx, score, item.clone()))
+            if exact {
+                text.to_lowercase()
+                    .contains(&query.to_lowercase())
+                    .then_some((idx, 1, item.clone()))
+            } else {
+                matcher
+                    .fuzzy_match(&text, query)
+                    .map(|score| (idx, score, item.clone()))
+            }
         })
         .collect();
 
@@ -797,36 +905,85 @@ where
     matches.into_iter().map(|(_, _, item)| item).collect()
 }
 
-fn split_note_filter_query(query: &str) -> (String, Vec<String>) {
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct TextQuery {
+    text: String,
+    exact: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct TagQuery {
+    text: String,
+    exact: bool,
+}
+
+fn split_note_filter_query(query: &str) -> (TextQuery, Vec<TagQuery>) {
     let mut text_terms = Vec::new();
     let mut tag_terms = Vec::new();
+    let trimmed = query.trim();
+    let exact_text = trimmed.starts_with('=');
 
-    for token in query.split_whitespace() {
-        if let Some(tag) = token.strip_prefix('#') {
+    for token in trimmed.trim_start_matches('=').split_whitespace() {
+        if let Some(tag) = token.strip_prefix("#=") {
             if !tag.is_empty() {
-                tag_terms.push(tag.to_string());
+                tag_terms.push(TagQuery {
+                    text: tag.to_string(),
+                    exact: true,
+                });
+            }
+        } else if let Some(tag) = token.strip_prefix('#') {
+            if !tag.is_empty() {
+                tag_terms.push(TagQuery {
+                    text: tag.to_string(),
+                    exact: false,
+                });
+            }
+        } else if let Some(tag) = token.strip_prefix("tag:=") {
+            if !tag.is_empty() {
+                tag_terms.push(TagQuery {
+                    text: tag.to_string(),
+                    exact: true,
+                });
             }
         } else if let Some(tag) = token.strip_prefix("tag:") {
             if !tag.is_empty() {
-                tag_terms.push(tag.to_string());
+                tag_terms.push(TagQuery {
+                    text: tag.to_string(),
+                    exact: false,
+                });
             }
         } else {
             text_terms.push(token.to_string());
         }
     }
 
-    (text_terms.join(" "), tag_terms)
+    (
+        TextQuery {
+            text: text_terms.join(" "),
+            exact: exact_text,
+        },
+        tag_terms,
+    )
 }
 
-fn note_matches_tag_terms(matcher: &SkimMatcherV2, tags: &[String], tag_terms: &[String]) -> bool {
+fn note_matches_tag_terms(
+    matcher: &SkimMatcherV2,
+    tags: &[String],
+    tag_terms: &[TagQuery],
+) -> bool {
     if tag_terms.is_empty() {
         return true;
     }
 
     tag_terms.iter().all(|term| {
         tags.iter().any(|tag| {
-            tag.to_lowercase().contains(&term.to_lowercase())
-                || matcher.fuzzy_match(tag, term).is_some()
+            if term.exact {
+                tag.eq_ignore_ascii_case(&term.text)
+                    || tag.to_lowercase().contains(&term.text.to_lowercase())
+            } else {
+                tag.to_lowercase().contains(&term.text.to_lowercase())
+                    || matcher.fuzzy_match(tag, &term.text).is_some()
+            }
         })
     })
 }
@@ -839,11 +996,51 @@ fn move_note_to_end(notes: &mut [Note], note_id: Option<&str>) {
     }
 }
 
-fn move_folder_to_end(folders: &mut [Folder], folder_id: Option<&str>) {
+fn move_folder_vec_to_end(folders: &mut Vec<Folder>, folder_id: Option<&str>) {
     if let Some(folder_id) = folder_id {
         if let Some(idx) = folders.iter().position(|folder| folder.id == folder_id) {
-            folders[idx..].rotate_left(1);
+            let folder = folders.remove(idx);
+            folders.push(folder);
         }
+    }
+}
+
+fn sort_folder_group(
+    folders: &mut [Folder],
+    mode: NotebookSortMode,
+    recent_note_times: &HashMap<&str, i64>,
+) {
+    folders.sort_by(|left, right| match mode {
+        NotebookSortMode::TimeAsc => compare_folder_time(left, right),
+        NotebookSortMode::TimeDesc => compare_folder_time(right, left),
+        NotebookSortMode::NameAsc => {
+            compare_folder_name(left, right).then_with(|| compare_folder_time(left, right))
+        }
+        NotebookSortMode::RecentNote => compare_folder_recent_note(left, right, recent_note_times),
+    });
+}
+
+fn flatten_folder_group(
+    folders: &[Folder],
+    grouped: &mut HashMap<String, Vec<Folder>>,
+    ordered: &mut Vec<Folder>,
+    mode: NotebookSortMode,
+    recent_note_times: &HashMap<&str, i64>,
+) {
+    for folder in folders {
+        ordered.push(folder.clone());
+        if let Some(mut children) = grouped.remove(&folder.id) {
+            sort_folder_group(&mut children, mode, recent_note_times);
+            flatten_folder_group(&children, grouped, ordered, mode, recent_note_times);
+        }
+    }
+}
+
+fn parse_exact_query(query: &str) -> (&str, bool) {
+    if let Some(rest) = query.strip_prefix('=') {
+        (rest.trim(), true)
+    } else {
+        (query, false)
     }
 }
 
@@ -1008,13 +1205,12 @@ mod tests {
 
         let folder_changed = state.move_selection(-1);
         assert!(folder_changed);
-        assert!(state.orphan_mode);
-        assert_eq!(state.selected_folder, None);
-
-        let folder_changed = state.move_selection(-1);
-        assert!(folder_changed);
         assert!(state.all_notebooks_mode);
         assert_eq!(state.selected_folder, None);
+
+        let folder_changed = state.move_selection(1);
+        assert!(folder_changed);
+        assert_eq!(state.selected_folder, Some(0));
     }
 
     #[test]
