@@ -91,13 +91,33 @@ impl SqliteStorage {
                 .await;
 
         if let Ok(Some(version)) = version_result {
-            if version >= 41 {
+            if version == 41 {
+                tracing::info!("Migrating database from v41 to v42");
+                sqlx::query("ALTER TABLE notes ADD COLUMN deleted_time INTEGER DEFAULT 0")
+                    .execute(&self.pool)
+                    .await
+                    .map_err(|e| {
+                        DatabaseError::MigrationFailed(format!(
+                            "Failed to add deleted_time column: {}",
+                            e
+                        ))
+                    })?;
+                sqlx::query("UPDATE version SET version = 42")
+                    .execute(&self.pool)
+                    .await
+                    .map_err(|e| {
+                        DatabaseError::MigrationFailed(format!("Failed to update version: {}", e))
+                    })?;
+                tracing::info!("Database migrated to v42");
+                return Ok(());
+            }
+            if version >= 42 {
                 tracing::info!("Database already initialized at version {}", version);
                 return Ok(());
             }
         }
 
-        tracing::info!("Initializing database schema v41");
+        tracing::info!("Initializing database schema v42");
         self.create_schema().await
     }
 
@@ -154,7 +174,8 @@ impl SqliteStorage {
                 encryption_blob_encrypted INTEGER DEFAULT 0,
                 master_key_id TEXT,
                 share_id TEXT,
-                conflict_original_id TEXT
+                conflict_original_id TEXT,
+                deleted_time INTEGER DEFAULT 0
             )
             "#,
         )
@@ -330,7 +351,7 @@ impl SqliteStorage {
         })?;
 
         // Set database version
-        sqlx::query("INSERT INTO version (version) VALUES (41)")
+        sqlx::query("INSERT INTO version (version) VALUES (42)")
             .execute(&mut *tx)
             .await
             .map_err(|e| DatabaseError::MigrationFailed(format!("Failed to set version: {}", e)))?;
@@ -384,8 +405,8 @@ impl Storage for SqliteStorage {
                 altitude, author, source_url, is_shared, application_data,
                 markup_language, encryption_cipher_text, encryption_applied,
                 encryption_blob_encrypted, master_key_id, share_id,
-                conflict_original_id
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                conflict_original_id, deleted_time
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             "#
         )
         .bind(&note.id)
@@ -417,6 +438,7 @@ impl Storage for SqliteStorage {
         .bind(&note.master_key_id)
         .bind(&note.share_id)
         .bind(&note.conflict_original_id)
+        .bind(note.deleted_time)
         .execute(&self.pool)
         .await
         .map_err(|e| DatabaseError::QueryFailed(format!("Failed to create note: {}", e)))?;
@@ -438,7 +460,7 @@ impl Storage for SqliteStorage {
                 altitude, author, source_url, is_shared, application_data,
                 markup_language, encryption_cipher_text, encryption_applied,
                 encryption_blob_encrypted, master_key_id, share_id,
-                conflict_original_id
+                conflict_original_id, deleted_time
             FROM notes WHERE id = ?
             "#,
         )
@@ -464,7 +486,8 @@ impl Storage for SqliteStorage {
                 markup_language = ?, encryption_cipher_text = ?,
                 encryption_applied = ?, encryption_blob_encrypted = ?,
                 master_key_id = ?, share_id = ?,
-                conflict_original_id = ?
+                conflict_original_id = ?,
+                deleted_time = ?
             WHERE id = ?
             "#,
         )
@@ -494,6 +517,7 @@ impl Storage for SqliteStorage {
         .bind(&note.master_key_id)
         .bind(&note.share_id)
         .bind(&note.conflict_original_id)
+        .bind(note.deleted_time)
         .bind(&note.id)
         .execute(&self.pool)
         .await
@@ -527,9 +551,9 @@ impl Storage for SqliteStorage {
                     altitude, author, source_url, is_shared, application_data,
                     markup_language, encryption_cipher_text, encryption_applied,
                     encryption_blob_encrypted, master_key_id, share_id,
-                    conflict_original_id
+                    conflict_original_id, deleted_time
                 FROM notes
-                WHERE parent_id = ?
+                WHERE parent_id = ? AND COALESCE(deleted_time, 0) = 0
                 ORDER BY "order" ASC, title ASC
                 "#,
             )
@@ -548,8 +572,9 @@ impl Storage for SqliteStorage {
                     altitude, author, source_url, is_shared, application_data,
                     markup_language, encryption_cipher_text, encryption_applied,
                     encryption_blob_encrypted, master_key_id, share_id,
-                    conflict_original_id
+                    conflict_original_id, deleted_time
                 FROM notes
+                WHERE COALESCE(deleted_time, 0) = 0
                 ORDER BY "order" ASC, title ASC
                 "#,
             )
@@ -1010,7 +1035,7 @@ impl Storage for SqliteStorage {
 
     async fn get_notes_updated_since(&self, timestamp: i64) -> Result<Vec<Note>, DatabaseError> {
         let notes = sqlx::query_as::<_, Note>(
-            "SELECT * FROM notes WHERE updated_time > ? ORDER BY updated_time ASC",
+            "SELECT * FROM notes WHERE updated_time > ? AND COALESCE(deleted_time, 0) = 0 ORDER BY updated_time ASC",
         )
         .bind(timestamp)
         .fetch_all(&self.pool)
@@ -1161,6 +1186,48 @@ impl Storage for SqliteStorage {
             })?;
         Ok(())
     }
+
+    async fn trash_note(&self, id: &str) -> Result<(), DatabaseError> {
+        sqlx::query("UPDATE notes SET deleted_time = ? WHERE id = ?")
+            .bind(now_ms())
+            .bind(id)
+            .execute(&self.pool)
+            .await
+            .map_err(|e| DatabaseError::QueryFailed(format!("Failed to trash note: {}", e)))?;
+        Ok(())
+    }
+
+    async fn restore_note(&self, id: &str) -> Result<(), DatabaseError> {
+        sqlx::query("UPDATE notes SET deleted_time = 0 WHERE id = ?")
+            .bind(id)
+            .execute(&self.pool)
+            .await
+            .map_err(|e| DatabaseError::QueryFailed(format!("Failed to restore note: {}", e)))?;
+        Ok(())
+    }
+
+    async fn list_deleted_notes(&self) -> Result<Vec<Note>, DatabaseError> {
+        let notes = sqlx::query_as::<_, Note>(
+            r#"
+            SELECT
+                id, title, body, created_time, updated_time,
+                user_created_time, user_updated_time, parent_id,
+                is_conflict, is_todo, todo_completed, todo_due,
+                source, source_application, "order", latitude, longitude,
+                altitude, author, source_url, is_shared, application_data,
+                markup_language, encryption_cipher_text, encryption_applied,
+                encryption_blob_encrypted, master_key_id, share_id,
+                conflict_original_id, deleted_time
+            FROM notes
+            WHERE COALESCE(deleted_time, 0) > 0
+            ORDER BY deleted_time DESC
+            "#,
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| DatabaseError::QueryFailed(format!("Failed to list deleted notes: {}", e)))?;
+        Ok(notes)
+    }
 }
 
 // FromRow implementations for Note, Folder, Tag, etc. are now in the core crate
@@ -1181,7 +1248,7 @@ mod tests {
     async fn test_database_creation() {
         let db = setup_test_db().await;
         let version = db.get_version().await.unwrap();
-        assert_eq!(version, 41);
+        assert_eq!(version, 42);
     }
 
     #[tokio::test]

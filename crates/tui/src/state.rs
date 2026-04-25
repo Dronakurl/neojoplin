@@ -20,7 +20,11 @@ pub enum FocusPanel {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PendingDelete {
-    Note { id: String, title: String },
+    Note {
+        id: String,
+        title: String,
+        permanent: bool,
+    },
     Notebook {
         id: String,
         title: String,
@@ -115,6 +119,10 @@ pub struct AppState {
     pub new_folder_id: Option<String>,
     /// Pending note or notebook deletion
     pub pending_delete: Option<PendingDelete>,
+    /// Whether "Trash" mode is active
+    pub trash_mode: bool,
+    /// Display names for folders (with disambiguation suffixes)
+    pub folder_display_names: HashMap<String, String>,
     /// Whether sort help is active
     pub show_sort_popup: bool,
     /// Current note sort mode
@@ -160,6 +168,8 @@ impl Default for AppState {
             new_note_id: None,
             new_folder_id: None,
             pending_delete: None,
+            trash_mode: false,
+            folder_display_names: HashMap::new(),
             show_sort_popup: false,
             note_sort: NoteSortMode::TimeAsc,
             notebook_sort: NotebookSortMode::TimeAsc,
@@ -181,6 +191,7 @@ impl AppState {
     /// Set folders list
     pub fn set_folders(&mut self, folders: Vec<Folder>) {
         self.folders = folders;
+        self.rebuild_folder_display_names();
 
         if self.folders.is_empty() {
             self.selected_folder = None;
@@ -240,7 +251,16 @@ impl AppState {
             FocusPanel::Notebooks => {
                 let len = self.folders.len();
                 if len > 0 {
-                    if self.all_notebooks_mode {
+                    if self.trash_mode {
+                        if delta < 0 {
+                            // Moving UP from trash: go to last folder
+                            self.trash_mode = false;
+                            self.all_notebooks_mode = false;
+                            self.selected_folder = Some(len - 1);
+                            folder_changed = true;
+                        }
+                        // Moving DOWN in trash: do nothing
+                    } else if self.all_notebooks_mode {
                         if delta > 0 {
                             self.all_notebooks_mode = false;
                             self.selected_folder = Some(0);
@@ -248,13 +268,18 @@ impl AppState {
                         }
                     } else if let Some(ref mut idx) = self.selected_folder {
                         let old_idx = *idx;
-                        let new_idx_raw = (*idx as isize + delta).rem_euclid(len as isize) as usize;
 
                         if delta < 0 && *idx == 0 {
                             self.all_notebooks_mode = true;
                             self.selected_folder = None;
                             folder_changed = true;
+                        } else if delta > 0 && *idx == len - 1 {
+                            // Moving DOWN past the last folder: activate trash mode
+                            self.trash_mode = true;
+                            folder_changed = true;
                         } else {
+                            let new_idx_raw =
+                                (*idx as isize + delta).rem_euclid(len as isize) as usize;
                             *idx = new_idx_raw;
                             folder_changed = old_idx != new_idx_raw;
                         }
@@ -403,11 +428,7 @@ impl AppState {
             .iter()
             .enumerate()
             .filter_map(|(idx, note)| {
-                let tags = self
-                    .note_tags
-                    .get(&note.id)
-                    .cloned()
-                    .unwrap_or_default();
+                let tags = self.note_tags.get(&note.id).cloned().unwrap_or_default();
                 if !note_matches_tag_terms(&matcher, &tags, &tag_terms) {
                     return None;
                 }
@@ -613,6 +634,22 @@ impl AppState {
     pub fn close_command_prompt(&mut self) {
         self.command_prompt.close();
     }
+
+    pub fn rebuild_folder_display_names(&mut self) {
+        self.folder_display_names = build_folder_display_names(&self.folders);
+    }
+
+    pub fn set_trash_mode(&mut self, enabled: bool) {
+        self.trash_mode = enabled;
+        if enabled {
+            self.all_notebooks_mode = false;
+            self.selected_folder = None;
+        }
+    }
+
+    pub fn is_trash_mode(&self) -> bool {
+        self.trash_mode
+    }
 }
 
 fn compare_note_time(left: &Note, right: &Note) -> Ordering {
@@ -724,11 +761,7 @@ fn split_note_filter_query(query: &str) -> (String, Vec<String>) {
     (text_terms.join(" "), tag_terms)
 }
 
-fn note_matches_tag_terms(
-    matcher: &SkimMatcherV2,
-    tags: &[String],
-    tag_terms: &[String],
-) -> bool {
+fn note_matches_tag_terms(matcher: &SkimMatcherV2, tags: &[String], tag_terms: &[String]) -> bool {
     if tag_terms.is_empty() {
         return true;
     }
@@ -755,6 +788,35 @@ fn move_folder_to_end(folders: &mut [Folder], folder_id: Option<&str>) {
             folders[idx..].rotate_left(1);
         }
     }
+}
+
+/// Build a map of `folder_id -> display_name`.
+/// Duplicate folder titles get a grey `(N)` suffix (N = 1, 2, …).
+/// Non-duplicate folders use their plain title.
+pub fn build_folder_display_names(folders: &[Folder]) -> HashMap<String, String> {
+    // Count occurrences of each title
+    let mut title_count: HashMap<&str, usize> = HashMap::new();
+    for f in folders {
+        *title_count.entry(f.title.as_str()).or_insert(0) += 1;
+    }
+
+    // Sort by created_time so duplicate disambiguation is stable
+    let mut sorted: Vec<&Folder> = folders.iter().collect();
+    sorted.sort_by_key(|f| f.created_time);
+
+    let mut seen: HashMap<&str, usize> = HashMap::new();
+    let mut result = HashMap::new();
+    for f in sorted {
+        let display = if *title_count.get(f.title.as_str()).unwrap_or(&0) > 1 {
+            let n = seen.entry(f.title.as_str()).or_insert(0);
+            *n += 1;
+            format!("{} ({})", f.title, n)
+        } else {
+            f.title.clone()
+        };
+        result.insert(f.id.clone(), display);
+    }
+    result
 }
 
 #[cfg(test)]

@@ -76,6 +76,7 @@ pub struct Note {
     pub markup_language: i32,
     pub encryption_blob_encrypted: i32,
     pub conflict_original_id: String,
+    pub deleted_time: i64,
 }
 
 impl Default for Note {
@@ -110,6 +111,7 @@ impl Default for Note {
             markup_language: 1, // Default to Markdown
             encryption_blob_encrypted: 0,
             conflict_original_id: String::new(),
+            deleted_time: 0,
         }
     }
 }
@@ -369,6 +371,7 @@ impl sqlx::FromRow<'_, sqlx::sqlite::SqliteRow> for Note {
             markup_language: row.try_get("markup_language")?,
             encryption_blob_encrypted: row.try_get("encryption_blob_encrypted")?,
             conflict_original_id: row.try_get("conflict_original_id")?,
+            deleted_time: row.try_get("deleted_time").unwrap_or(0),
         })
     }
 }

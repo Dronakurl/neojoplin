@@ -9,6 +9,9 @@ pub enum CommandAction {
     Import(Option<String>),
     Read(String),
     Tag(String),
+    MkNote(String),
+    MkTodo(String),
+    MkBook(String),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -16,6 +19,7 @@ pub struct CommandDescriptor {
     pub name: &'static str,
     pub usage: &'static str,
     pub description: &'static str,
+    pub hidden_from_completion: bool,
 }
 
 pub const COMMANDS: &[CommandDescriptor] = &[
@@ -23,41 +27,73 @@ pub const COMMANDS: &[CommandDescriptor] = &[
         name: "move",
         usage: ":move <notebook>",
         description: "Move the selected note to a notebook",
+        hidden_from_completion: false,
     },
     CommandDescriptor {
         name: "delete-orphaned",
         usage: ":delete-orphaned",
         description: "Delete notes that are no longer connected to a notebook",
+        hidden_from_completion: false,
     },
     CommandDescriptor {
         name: "quit",
         usage: ":quit",
         description: "Quit NeoJoplin",
+        hidden_from_completion: false,
     },
     CommandDescriptor {
         name: "q",
         usage: ":q",
         description: "Alias for :quit",
+        hidden_from_completion: true,
     },
     CommandDescriptor {
         name: "import-desktop",
         usage: ":import-desktop",
         description: "Import notes, notebooks, and tags from Joplin Desktop",
+        hidden_from_completion: false,
     },
     CommandDescriptor {
         name: "import",
         usage: ":import [database.sqlite]",
         description: "Import from the Joplin CLI database or an explicit SQLite file",
+        hidden_from_completion: false,
     },
     CommandDescriptor {
         name: "read",
         usage: ":read <file>",
         description: "Create a note from a file",
+        hidden_from_completion: false,
     },
     CommandDescriptor {
         name: "tag",
         usage: ":tag <tag-name>",
         description: "Attach a tag to the selected note, creating it if needed",
+        hidden_from_completion: false,
+    },
+    CommandDescriptor {
+        name: "mknote",
+        usage: ":mknote <title>",
+        description: "Create a new note with the given title",
+        hidden_from_completion: false,
+    },
+    CommandDescriptor {
+        name: "mktodo",
+        usage: ":mktodo <title>",
+        description: "Create a new to-do with the given title",
+        hidden_from_completion: false,
+    },
+    CommandDescriptor {
+        name: "mkbook",
+        usage: ":mkbook <title>",
+        description: "Create a new notebook with the given title",
+        hidden_from_completion: false,
+    },
+    CommandDescriptor {
+        name: "mv",
+        usage: ":mv <notebook>",
+        description: "Alias for :move",
+        hidden_from_completion: false,
     },
 ];
 
@@ -133,13 +169,16 @@ pub fn parse_command(input: &str) -> Result<CommandAction, String> {
 
     let (name, arg) = split_command(trimmed);
     match name {
-        "move" => required_arg(arg, "move <notebook>").map(CommandAction::Move),
+        "move" | "mv" => required_arg(arg, "move <notebook>").map(CommandAction::Move),
         "delete-orphaned" => no_arg(arg, "delete-orphaned").map(|_| CommandAction::DeleteOrphaned),
         "quit" | "q" => no_arg(arg, name).map(|_| CommandAction::Quit),
         "import-desktop" => no_arg(arg, "import-desktop").map(|_| CommandAction::ImportDesktop),
         "import" => Ok(CommandAction::Import(optional_arg(arg))),
         "read" => required_arg(arg, "read <file>").map(CommandAction::Read),
         "tag" => required_arg(arg, "tag <tag-name>").map(CommandAction::Tag),
+        "mknote" => required_arg(arg, "mknote <title>").map(CommandAction::MkNote),
+        "mktodo" => required_arg(arg, "mktodo <title>").map(CommandAction::MkTodo),
+        "mkbook" => required_arg(arg, "mkbook <title>").map(CommandAction::MkBook),
         _ => Err(format!("Unknown command: {}", name)),
     }
 }
@@ -285,7 +324,10 @@ mod tests {
 
     #[test]
     fn parse_import_accepts_optional_path() {
-        assert_eq!(parse_command("import").unwrap(), CommandAction::Import(None));
+        assert_eq!(
+            parse_command("import").unwrap(),
+            CommandAction::Import(None)
+        );
         assert_eq!(
             parse_command("import /tmp/joplin.sqlite").unwrap(),
             CommandAction::Import(Some("/tmp/joplin.sqlite".to_string()))

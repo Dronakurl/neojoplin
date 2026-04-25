@@ -69,6 +69,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         markup_language: 1,
         encryption_blob_encrypted: 0,
         conflict_original_id: String::new(),
+        deleted_time: 0,
     };
     storage.create_note(&note).await?;
 

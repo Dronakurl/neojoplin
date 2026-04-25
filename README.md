@@ -62,8 +62,8 @@ neojoplin --tui
 neojoplin init
 
 # Create a folder and note
-neojoplin mk-book "Development"
-neojoplin mk-note "Rust Tips" --body "Use cargo for everything!"
+neojoplin mkbook "Development"
+neojoplin mknote "Rust Tips" --body "Use cargo for everything!"
 
 # List notes
 neojoplin ls
@@ -185,7 +185,7 @@ just fmt      # format
 
 ### Available Features ✅
 
-- **CLI**: `init`, `mk-note`, `mk-book`, `ls`, `cat`, `edit`, `sync`, `rm-note`, `rm-book`
+- **CLI**: `init`, `mknote`, `mkbook`, `mktodo`, `ls`, `cat`, `edit`, `sync`, `import`, `import-desktop`, `rm-note`, `rm-book`
 - **TUI**: Three-panel layout, vim navigation, interactive editing
 - **Sync**: Three-phase protocol, configurable remote path, WebDAV support
 - **Editor**: External editor integration with terminal handling
@@ -198,4 +198,3 @@ Contributions are welcome!
 ## License
 
 MIT License - see [LICENSE](LICENSE) for details.
-

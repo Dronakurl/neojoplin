@@ -487,18 +487,28 @@ impl Settings {
             return Ok(());
         }
 
-        // Create E2EE service and generate master key
+        let reusable_key = find_reusable_master_key(data_dir, password).await?;
+
+        // Create E2EE service and reuse or generate a master key
         let mut e2ee = E2eeService::new();
         e2ee.set_master_password(password.to_string());
 
-        let (key_id, master_key) = e2ee.generate_master_key(password)?;
+        let (key_id, master_key, reused_existing_key) =
+            if let Some((key_id, master_key)) = reusable_key {
+                (key_id, master_key, true)
+            } else {
+                let (key_id, master_key) = e2ee.generate_master_key(password)?;
+                (key_id, master_key, false)
+            };
 
         // Save master key to file
         let keys_dir = data_dir.join("keys");
         tokio::fs::create_dir_all(&keys_dir).await?;
         let key_path = keys_dir.join(format!("{}.json", key_id));
-        let master_key_json = serde_json::to_string_pretty(&master_key)?;
-        tokio::fs::write(&key_path, master_key_json).await?;
+        if !reused_existing_key || !key_path.exists() {
+            let master_key_json = serde_json::to_string_pretty(&master_key)?;
+            tokio::fs::write(&key_path, master_key_json).await?;
+        }
 
         // Save active key ID and master password to config
         let config_path = data_dir.join("encryption.json");
@@ -512,7 +522,9 @@ impl Settings {
         // Update state
         self.encryption.enabled = true;
         self.encryption.active_master_key_id = Some(key_id.clone());
-        self.encryption.master_key_count += 1;
+        if !reused_existing_key || self.encryption.master_key_count == 0 {
+            self.encryption.master_key_count += 1;
+        }
         self.encryption.show_password_prompt = false;
         self.encryption.show_new_key_prompt = false;
         self.encryption.password_input.clear();
@@ -528,12 +540,22 @@ impl Settings {
     pub async fn disable_encryption(&mut self, data_dir: &Path) -> Result<()> {
         let config_path = data_dir.join("encryption.json");
 
-        if config_path.exists() {
-            tokio::fs::remove_file(&config_path).await.ok();
+        let existing_config = if config_path.exists() {
+            let content = tokio::fs::read_to_string(&config_path).await?;
+            serde_json::from_str::<serde_json::Value>(&content)?
+        } else {
+            serde_json::json!({})
+        };
+        let mut config = existing_config;
+        config["enabled"] = serde_json::json!(false);
+        if config.get("active_master_key_id").is_none() {
+            if let Some(key_id) = &self.encryption.active_master_key_id {
+                config["active_master_key_id"] = serde_json::json!(key_id);
+            }
         }
+        tokio::fs::write(&config_path, serde_json::to_string_pretty(&config)?).await?;
 
         self.encryption.enabled = false;
-        self.encryption.active_master_key_id = None;
         self.encryption.password_success = true;
 
         self.update_encryption_status();
@@ -587,6 +609,59 @@ impl Settings {
         self.encryption.active_field = EncryptionField::Password;
         self.clear_passwords();
     }
+}
+
+async fn find_reusable_master_key(
+    data_dir: &Path,
+    password: &str,
+) -> Result<Option<(String, joplin_sync::MasterKey)>> {
+    let config_path = data_dir.join("encryption.json");
+    let preferred_key_id = if config_path.exists() {
+        let content = tokio::fs::read_to_string(&config_path).await?;
+        serde_json::from_str::<serde_json::Value>(&content)
+            .ok()
+            .and_then(|config| {
+                config
+                    .get("active_master_key_id")
+                    .and_then(|value| value.as_str())
+                    .map(|value| value.to_string())
+            })
+    } else {
+        None
+    };
+
+    let keys_dir = data_dir.join("keys");
+    if !keys_dir.exists() {
+        return Ok(None);
+    }
+
+    let mut candidate_paths = Vec::new();
+    if let Some(key_id) = preferred_key_id {
+        let preferred_path = keys_dir.join(format!("{}.json", key_id));
+        if preferred_path.exists() {
+            candidate_paths.push(preferred_path);
+        }
+    }
+
+    let mut entries = tokio::fs::read_dir(&keys_dir).await?;
+    while let Some(entry) = entries.next_entry().await? {
+        let path = entry.path();
+        if path.extension().is_some_and(|ext| ext == "json") && !candidate_paths.contains(&path) {
+            candidate_paths.push(path);
+        }
+    }
+
+    for path in candidate_paths {
+        let content = tokio::fs::read_to_string(&path).await?;
+        let master_key: joplin_sync::MasterKey = serde_json::from_str(&content)?;
+        let mut e2ee = E2eeService::new();
+        e2ee.set_master_password(password.to_string());
+        if e2ee.load_master_key(&master_key).is_ok() {
+            return Ok(Some((master_key.id.clone(), master_key)));
+        }
+    }
+
+    Ok(None)
 }
 
 fn sync_targets_path(data_dir: &Path) -> PathBuf {

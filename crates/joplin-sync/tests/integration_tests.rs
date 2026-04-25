@@ -291,6 +291,18 @@ impl Storage for MockStorage {
     async fn rollback_transaction(&self) -> Result<(), DatabaseError> {
         Ok(())
     }
+
+    async fn trash_note(&self, _id: &str) -> Result<(), DatabaseError> {
+        Ok(())
+    }
+
+    async fn restore_note(&self, _id: &str) -> Result<(), DatabaseError> {
+        Ok(())
+    }
+
+    async fn list_deleted_notes(&self) -> Result<Vec<Note>, DatabaseError> {
+        Ok(Vec::new())
+    }
 }
 
 async fn setup_test_environment(
@@ -370,6 +382,7 @@ async fn integration_basic_sync() {
         markup_language: 1,
         encryption_blob_encrypted: 0,
         conflict_original_id: String::new(),
+        deleted_time: 0,
     };
 
     storage.create_note(&note).await.unwrap();

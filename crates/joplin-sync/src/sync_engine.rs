@@ -1157,7 +1157,7 @@ impl SyncEngine {
             note.master_key_id.as_deref().unwrap_or("")
         ));
         content.push_str("user_data: \n");
-        content.push_str("deleted_time: 0\n");
+        content.push_str(&format!("deleted_time: {}\n", note.deleted_time));
         content.push_str("type_: 1");
 
         Ok(content)
@@ -1235,6 +1235,7 @@ impl SyncEngine {
                         }
                     }
                     "conflict_original_id" => note.conflict_original_id = value.to_string(),
+                    "deleted_time" => note.deleted_time = value.parse().unwrap_or(0),
                     "master_key_id" => {
                         note.master_key_id = if !value.is_empty() {
                             Some(value.to_string())
@@ -1823,6 +1824,23 @@ mod tests {
             &self,
         ) -> std::result::Result<(), joplin_domain::DatabaseError> {
             Ok(())
+        }
+        async fn trash_note(
+            &self,
+            _: &str,
+        ) -> std::result::Result<(), joplin_domain::DatabaseError> {
+            Ok(())
+        }
+        async fn restore_note(
+            &self,
+            _: &str,
+        ) -> std::result::Result<(), joplin_domain::DatabaseError> {
+            Ok(())
+        }
+        async fn list_deleted_notes(
+            &self,
+        ) -> std::result::Result<Vec<Note>, joplin_domain::DatabaseError> {
+            Ok(vec![])
         }
     }
 

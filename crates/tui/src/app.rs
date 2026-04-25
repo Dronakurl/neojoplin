@@ -19,7 +19,9 @@ use crate::command_line::{complete_path_input, parse_command, CommandAction, Com
 use crate::importer::{
     default_cli_database_path, default_desktop_database_path, import_database, resolve_import_path,
 };
-use crate::state::{AppState, FocusPanel, NoteSortMode, NotebookSortMode, PendingDelete};
+use crate::state::{
+    build_folder_display_names, AppState, FocusPanel, NoteSortMode, NotebookSortMode, PendingDelete,
+};
 use crate::ui;
 
 /// Main TUI application
@@ -369,19 +371,18 @@ impl App {
             }
 
             // New item (context-aware: notebook or note based on focus)
-            KeyCode::Char('n') => {
-                match self.state.focus {
-                    FocusPanel::Notebooks => {
-                        self.create_notebook().await?;
-                    }
-                    FocusPanel::Notes => {
-                        self.create_note().await?;
-                    }
-                    FocusPanel::Content => {
-                        self.state.set_status("Focus notebooks or notes panel to create new items");
-                    }
+            KeyCode::Char('n') => match self.state.focus {
+                FocusPanel::Notebooks => {
+                    self.create_notebook().await?;
                 }
-            }
+                FocusPanel::Notes => {
+                    self.create_note().await?;
+                }
+                FocusPanel::Content => {
+                    self.state
+                        .set_status("Focus notebooks or notes panel to create new items");
+                }
+            },
 
             // Delete
             KeyCode::Char('d') => {
@@ -408,14 +409,14 @@ impl App {
                 self.toggle_todo().await?;
             }
 
-            // Toggle todo completion (t key)
+            // Create todo
             KeyCode::Char('t') => {
-                self.toggle_todo().await?;
+                self.create_todo().await?;
             }
 
-            // Create todo
+            // Convert note type
             KeyCode::Char('T') => {
-                self.create_todo().await?;
+                self.convert_note_type().await?;
             }
 
             // Rename
@@ -431,6 +432,11 @@ impl App {
                         self.state.show_rename_prompt();
                     }
                 }
+            }
+
+            // Restore from trash (R key)
+            KeyCode::Char('R') => {
+                self.restore_selected_note().await?;
             }
 
             _ => {}
@@ -489,10 +495,9 @@ impl App {
             .with_remote_path(remote_path.clone());
 
         // Load E2EE service from .env / encryption.json (same logic as CLI)
-        if let Ok(e2ee) = load_e2ee_service(&data_dir).await {
-            if e2ee.is_enabled() {
-                sync_engine = sync_engine.with_e2ee(e2ee);
-            }
+        let e2ee = load_e2ee_service(&data_dir).await?;
+        if e2ee.is_enabled() {
+            sync_engine = sync_engine.with_e2ee(e2ee);
         }
 
         // Consume sync events without printing (avoids TUI rendering issues)
@@ -668,6 +673,7 @@ impl App {
             markup_language: 1,
             encryption_blob_encrypted: 0,
             conflict_original_id: String::new(),
+            deleted_time: 0,
         };
 
         self.storage.create_note(&note).await?;
@@ -738,6 +744,7 @@ impl App {
             markup_language: 1,
             encryption_blob_encrypted: 0,
             conflict_original_id: String::new(),
+            deleted_time: 0,
         };
 
         self.storage.create_note(&note).await?;
@@ -831,9 +838,11 @@ impl App {
         match self.state.focus {
             FocusPanel::Notes => {
                 if let Some(note) = self.state.selected_note() {
+                    let permanent = self.state.trash_mode;
                     self.state.confirm_delete(PendingDelete::Note {
                         id: note.id.clone(),
                         title: note.title.clone(),
+                        permanent,
                     });
                 }
             }
@@ -857,6 +866,11 @@ impl App {
 
     /// Reload notes for currently selected notebook
     async fn reload_notes(&mut self) -> Result<()> {
+        if self.state.trash_mode {
+            return self
+                .refresh_trash_list(self.state.selected_note_id().map(str::to_string))
+                .await;
+        }
         self.refresh_lists(
             self.state.all_notebooks_mode,
             self.state.selected_folder_id().map(str::to_string),
@@ -1114,6 +1128,17 @@ impl App {
         selected_folder_id: Option<String>,
         selected_note_id: Option<String>,
     ) -> Result<()> {
+        // If in trash mode, load deleted notes instead
+        if self.state.trash_mode {
+            let mut notes = self.storage.list_deleted_notes().await?;
+            self.state.sort_notes(&mut notes);
+            self.state.set_notes(notes);
+            if let Some(note_id) = selected_note_id.as_deref() {
+                self.state.select_note_by_id(note_id);
+            }
+            return Ok(());
+        }
+
         let all_notes = self.storage.list_notes(None).await?;
         let mut folders = self.storage.list_folders().await?;
         self.state.sort_folders(&mut folders, &all_notes);
@@ -1147,6 +1172,162 @@ impl App {
             self.state.select_note_by_id(note_id);
         }
 
+        Ok(())
+    }
+
+    /// Reload the trash (deleted notes) list.
+    async fn refresh_trash_list(&mut self, selected_note_id: Option<String>) -> Result<()> {
+        let mut notes = self.storage.list_deleted_notes().await?;
+        let note_tags = self.load_note_tag_titles(&notes).await?;
+        self.state.set_note_tags(note_tags);
+        self.state.sort_notes(&mut notes);
+        self.state.set_notes(notes);
+        if let Some(note_id) = selected_note_id.as_deref() {
+            self.state.select_note_by_id(note_id);
+        }
+        Ok(())
+    }
+
+    /// Restore the selected note from the Trash.
+    async fn restore_selected_note(&mut self) -> Result<()> {
+        if !self.state.trash_mode {
+            self.state
+                .set_status("R restores notes only from the Trash panel");
+            return Ok(());
+        }
+        if let Some(note) = self.state.selected_note() {
+            let note_id = note.id.clone();
+            let note_title = note.title.clone();
+            self.storage.restore_note(&note_id).await?;
+            self.refresh_trash_list(None).await?;
+            self.state.set_status(&format!("Restored: {}", note_title));
+        } else {
+            self.state
+                .set_status("Select a note in the Trash to restore it");
+        }
+        Ok(())
+    }
+
+    /// Convert the selected note between note and to-do.
+    async fn convert_note_type(&mut self) -> Result<()> {
+        if self.state.focus != FocusPanel::Notes {
+            self.state
+                .set_status("Select a note in the notes panel first");
+            return Ok(());
+        }
+        if let Some(note) = self.state.selected_note().cloned() {
+            let mut updated = note.clone();
+            updated.is_todo = if note.is_todo == 1 { 0 } else { 1 };
+            if updated.is_todo == 0 {
+                updated.todo_completed = 0;
+            }
+            updated.updated_time = now_ms();
+            self.storage.update_note(&updated).await?;
+            let kind = if updated.is_todo == 1 {
+                "to-do"
+            } else {
+                "note"
+            };
+            let all_notebooks_mode = self.state.all_notebooks_mode;
+            let selected_folder_id = self.state.selected_folder_id().map(str::to_string);
+            let selected_note_id = Some(updated.id.clone());
+            self.refresh_lists(all_notebooks_mode, selected_folder_id, selected_note_id)
+                .await?;
+            self.state
+                .set_status(&format!("Converted to {}: {}", kind, updated.title));
+        } else {
+            self.state
+                .set_status("Select a note or to-do to convert it");
+        }
+        Ok(())
+    }
+
+    /// Create a new note with a given title.
+    async fn create_note_with_title(&mut self, title: &str) -> Result<()> {
+        let parent_id = self.default_parent_folder_id().await?;
+        let note = Note {
+            id: joplin_domain::joplin_id(),
+            title: title.to_string(),
+            body: String::new(),
+            parent_id,
+            created_time: now_ms(),
+            updated_time: now_ms(),
+            is_todo: 0,
+            deleted_time: 0,
+            ..Default::default()
+        };
+        self.storage.create_note(&note).await?;
+        self.state.mark_new_note(note.id.clone());
+        self.state.focus = FocusPanel::Notes;
+        self.refresh_lists(
+            self.state.all_notebooks_mode,
+            self.state.selected_folder_id().map(str::to_string),
+            Some(note.id.clone()),
+        )
+        .await?;
+        self.state
+            .set_status(&format!("Created note: {} - press r to rename it", title));
+        Ok(())
+    }
+
+    /// Create a new to-do with a given title.
+    async fn create_todo_with_title(&mut self, title: &str) -> Result<()> {
+        let parent_id = self.default_parent_folder_id().await?;
+        let note = Note {
+            id: joplin_domain::joplin_id(),
+            title: title.to_string(),
+            body: String::new(),
+            parent_id,
+            created_time: now_ms(),
+            updated_time: now_ms(),
+            is_todo: 1,
+            deleted_time: 0,
+            ..Default::default()
+        };
+        self.storage.create_note(&note).await?;
+        self.state.mark_new_note(note.id.clone());
+        self.state.focus = FocusPanel::Notes;
+        self.refresh_lists(
+            self.state.all_notebooks_mode,
+            self.state.selected_folder_id().map(str::to_string),
+            Some(note.id.clone()),
+        )
+        .await?;
+        self.state
+            .set_status(&format!("Created to-do: {} - press r to rename it", title));
+        Ok(())
+    }
+
+    /// Create a new notebook with a given title.
+    async fn create_notebook_with_title(&mut self, title: &str) -> Result<()> {
+        let folder = Folder {
+            id: joplin_domain::joplin_id(),
+            title: title.to_string(),
+            parent_id: String::new(),
+            created_time: now_ms(),
+            updated_time: now_ms(),
+            user_created_time: 0,
+            user_updated_time: 0,
+            is_shared: 0,
+            share_id: None,
+            master_key_id: None,
+            encryption_applied: 0,
+            encryption_cipher_text: None,
+            icon: String::new(),
+        };
+        self.storage.create_folder(&folder).await?;
+        self.state.mark_new_folder(folder.id.clone());
+        self.state.focus = FocusPanel::Notebooks;
+        self.refresh_lists(
+            false,
+            Some(folder.id.clone()),
+            self.state.selected_note_id().map(str::to_string),
+        )
+        .await?;
+        self.state.set_status(&format!(
+            "Created notebook: {} - press r to rename it",
+            title
+        ));
         Ok(())
     }
 
@@ -1354,10 +1535,7 @@ impl App {
             return Ok(());
         }
 
-        let mut completion = CompletionState {
-            items,
-            index: 0,
-        };
+        let mut completion = CompletionState { items, index: 0 };
         if backwards {
             completion.index = completion.items.len() - 1;
         }
@@ -1373,6 +1551,7 @@ impl App {
         if trimmed.is_empty() {
             return Ok(crate::command_line::COMMANDS
                 .iter()
+                .filter(|command| !command.hidden_from_completion)
                 .map(|command| command.name.to_string())
                 .collect());
         }
@@ -1381,7 +1560,10 @@ impl App {
         if !has_argument_context {
             let mut items: Vec<String> = crate::command_line::COMMANDS
                 .iter()
-                .filter(|command| starts_with_ignore_case(command.name, command_name))
+                .filter(|command| {
+                    !command.hidden_from_completion
+                        && starts_with_ignore_case(command.name, command_name)
+                })
                 .map(|command| command.name.to_string())
                 .collect();
             items.sort_by_key(|item| item.to_lowercase());
@@ -1391,14 +1573,16 @@ impl App {
 
         let argument = arg.trim_start();
         let mut items = match command_name {
-            "move" => self
-                .storage
-                .list_folders()
-                .await?
-                .into_iter()
-                .filter(|folder| starts_with_ignore_case(&folder.title, argument))
-                .map(|folder| format!("move {}", folder.title))
-                .collect(),
+            "move" | "mv" => {
+                let folders = self.storage.list_folders().await?;
+                let display_names = build_folder_display_names(&folders);
+                let command_prefix = if command_name == "mv" { "mv" } else { "move" };
+                display_names
+                    .values()
+                    .filter(|name| starts_with_ignore_case(name, argument))
+                    .map(|name| format!("{} {}", command_prefix, name))
+                    .collect()
+            }
             "tag" => self
                 .storage
                 .list_tags()
@@ -1428,7 +1612,8 @@ impl App {
             }
             CommandAction::Quit => Ok(true),
             CommandAction::ImportDesktop => {
-                self.import_from_database(&default_desktop_database_path()).await?;
+                self.import_from_database(&default_desktop_database_path())
+                    .await?;
                 Ok(false)
             }
             CommandAction::Import(path) => {
@@ -1439,11 +1624,24 @@ impl App {
                 Ok(false)
             }
             CommandAction::Read(path) => {
-                self.create_note_from_file(&resolve_import_path(&path)).await?;
+                self.create_note_from_file(&resolve_import_path(&path))
+                    .await?;
                 Ok(false)
             }
             CommandAction::Tag(tag_name) => {
                 self.tag_selected_note(&tag_name).await?;
+                Ok(false)
+            }
+            CommandAction::MkNote(title) => {
+                self.create_note_with_title(&title).await?;
+                Ok(false)
+            }
+            CommandAction::MkTodo(title) => {
+                self.create_todo_with_title(&title).await?;
+                Ok(false)
+            }
+            CommandAction::MkBook(title) => {
+                self.create_notebook_with_title(&title).await?;
                 Ok(false)
             }
         }
@@ -1658,17 +1856,31 @@ impl App {
         self.state.clear_pending_delete();
 
         match pending {
-            Some(PendingDelete::Note { id, title }) => {
-                self.state.set_status(&format!("Deleting note: {}", title));
-                self.storage.delete_note(&id).await?;
-                self.state.clear_new_note_marker_if(&id);
-                self.refresh_lists(
-                    self.state.all_notebooks_mode,
-                    self.state.selected_folder_id().map(str::to_string),
-                    None,
-                )
-                .await?;
-                self.state.set_status("Note deleted");
+            Some(PendingDelete::Note {
+                id,
+                title,
+                permanent,
+            }) => {
+                if permanent {
+                    self.state
+                        .set_status(&format!("Permanently deleting note: {}", title));
+                    self.storage.delete_note(&id).await?;
+                    self.state.clear_new_note_marker_if(&id);
+                    self.refresh_trash_list(None).await?;
+                    self.state.set_status("Note permanently deleted");
+                } else {
+                    self.state
+                        .set_status(&format!("Moving to trash: {}", title));
+                    self.storage.trash_note(&id).await?;
+                    self.state.clear_new_note_marker_if(&id);
+                    self.refresh_lists(
+                        self.state.all_notebooks_mode,
+                        self.state.selected_folder_id().map(str::to_string),
+                        None,
+                    )
+                    .await?;
+                    self.state.set_status("Note moved to trash");
+                }
             }
             Some(PendingDelete::Notebook { id, title, .. }) => {
                 self.state
@@ -1696,24 +1908,33 @@ impl App {
 
     async fn delete_selected_note_immediately(&mut self) -> Result<()> {
         if self.state.focus != FocusPanel::Notes {
-            self.state
-                .set_status("D deletes notes immediately only from the notes panel");
+            self.state.set_status("D only works from the notes panel");
             return Ok(());
         }
 
         if let Some(note) = self.state.selected_note() {
             let note_id = note.id.clone();
-            self.state
-                .set_status(&format!("Deleting note immediately: {}", note.title));
-            self.storage.delete_note(&note_id).await?;
-            self.state.clear_new_note_marker_if(&note_id);
-            self.refresh_lists(
-                self.state.all_notebooks_mode,
-                self.state.selected_folder_id().map(str::to_string),
-                None,
-            )
-            .await?;
-            self.state.set_status("Note deleted");
+            let note_title = note.title.clone();
+            if self.state.trash_mode {
+                self.state
+                    .set_status(&format!("Permanently deleting: {}", note_title));
+                self.storage.delete_note(&note_id).await?;
+                self.state.clear_new_note_marker_if(&note_id);
+                self.refresh_trash_list(None).await?;
+                self.state.set_status("Note permanently deleted");
+            } else {
+                self.state
+                    .set_status(&format!("Moving to trash: {}", note_title));
+                self.storage.trash_note(&note_id).await?;
+                self.state.clear_new_note_marker_if(&note_id);
+                self.refresh_lists(
+                    self.state.all_notebooks_mode,
+                    self.state.selected_folder_id().map(str::to_string),
+                    None,
+                )
+                .await?;
+                self.state.set_status("Note moved to trash");
+            }
         }
 
         Ok(())
@@ -1726,13 +1947,34 @@ impl App {
             .cloned()
             .ok_or_else(|| anyhow::anyhow!("Select a note before using :move"))?;
         let folders = self.storage.list_folders().await?;
-        let target_folder = resolve_folder_by_title(&folders, notebook_name)?;
+
+        // Build display name -> folder_id map for disambiguation
+        let display_names = build_folder_display_names(&folders);
+        let reverse_map: std::collections::HashMap<String, String> = display_names
+            .into_iter()
+            .map(|(id, name)| (name.to_lowercase(), id))
+            .collect();
+        let normalized = notebook_name.trim().to_lowercase();
+
+        let target_folder_id = if let Some(id) = reverse_map.get(&normalized) {
+            id.clone()
+        } else {
+            let folder = resolve_folder_by_title(&folders, notebook_name)?;
+            folder.id.clone()
+        };
+
+        let target_folder = folders
+            .iter()
+            .find(|f| f.id == target_folder_id)
+            .ok_or_else(|| anyhow::anyhow!("Notebook not found"))?;
         let target_folder_id = target_folder.id.clone();
         let target_folder_title = target_folder.title.clone();
 
         if note.parent_id == target_folder_id {
-            self.state
-                .set_status(&format!("{} is already in {}", note.title, target_folder_title));
+            self.state.set_status(&format!(
+                "{} is already in {}",
+                note.title, target_folder_title
+            ));
             return Ok(());
         }
 
@@ -1741,12 +1983,8 @@ impl App {
         updated_note.updated_time = now_ms();
         self.storage.update_note(&updated_note).await?;
 
-        self.refresh_lists(
-            false,
-            Some(target_folder_id),
-            Some(updated_note.id.clone()),
-        )
-        .await?;
+        self.refresh_lists(false, Some(target_folder_id), Some(updated_note.id.clone()))
+            .await?;
         self.state.focus = FocusPanel::Notes;
         self.state.set_status(&format!(
             "Moved {} to {}",
@@ -1792,21 +2030,10 @@ impl App {
     async fn import_from_database(&mut self, source_path: &Path) -> Result<()> {
         self.state
             .set_status(&format!("Importing from {}...", source_path.display()));
-        self.storage.begin_transaction().await?;
-
-        let result = import_database(self.storage.as_ref(), source_path).await;
-        match result {
-            Ok(summary) => {
-                self.storage.commit_transaction().await?;
-                self.refresh_current_lists().await?;
-                self.state.set_status(&summary.describe());
-                Ok(())
-            }
-            Err(error) => {
-                self.storage.rollback_transaction().await?;
-                Err(error)
-            }
-        }
+        let summary = import_database(self.storage.as_ref(), source_path).await?;
+        self.refresh_current_lists().await?;
+        self.state.set_status(&summary.describe());
+        Ok(())
     }
 
     async fn create_note_from_file(&mut self, file_path: &Path) -> Result<()> {
@@ -1850,6 +2077,7 @@ impl App {
             markup_language: 1,
             encryption_blob_encrypted: 0,
             conflict_original_id: String::new(),
+            deleted_time: 0,
         };
 
         self.storage.create_note(&note).await?;

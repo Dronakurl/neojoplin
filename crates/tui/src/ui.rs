@@ -104,7 +104,8 @@ fn render_notebooks_panel(f: &mut Frame, state: &AppState, area: Rect) {
 
         // Add individual notebooks
         for (i, folder) in state.folders.iter().enumerate() {
-            let is_selected = state.selected_folder == Some(i) && !state.all_notebooks_mode;
+            let is_selected =
+                state.selected_folder == Some(i) && !state.all_notebooks_mode && !state.trash_mode;
             let style = if is_selected {
                 theme.selection()
             } else {
@@ -114,8 +115,41 @@ fn render_notebooks_panel(f: &mut Frame, state: &AppState, area: Rect) {
             // Extract emoji from folder icon, or use default
             let emoji = extract_folder_emoji(&folder.icon).unwrap_or_else(|| "📁 ".to_string());
 
-            all_items.push(ListItem::new(format!("{}{}", emoji, folder.title)).style(style));
+            // Use disambiguated display name (with grey suffix for duplicates)
+            let display_name = state
+                .folder_display_names
+                .get(&folder.id)
+                .map(String::as_str)
+                .unwrap_or(&folder.title);
+            let base_name: &str;
+            let suffix: Option<&str>;
+            if let Some(paren_pos) = display_name.rfind(" (") {
+                base_name = &display_name[..paren_pos];
+                suffix = Some(&display_name[paren_pos..]);
+            } else {
+                base_name = display_name;
+                suffix = None;
+            }
+
+            let label = if let Some(suf) = suffix {
+                Line::from(vec![
+                    Span::raw(format!("{}{}", emoji, base_name)),
+                    Span::styled(suf.to_string(), theme.dim()),
+                ])
+            } else {
+                Line::from(format!("{}{}", emoji, base_name))
+            };
+
+            all_items.push(ListItem::new(label).style(style));
         }
+
+        // Add Trash entry at the bottom
+        let trash_style = if state.trash_mode && !state.all_notebooks_mode {
+            theme.selection()
+        } else {
+            theme.dim()
+        };
+        all_items.push(ListItem::new("🗑 Trash").style(trash_style));
 
         all_items
     };
@@ -138,7 +172,12 @@ fn render_notebooks_panel(f: &mut Frame, state: &AppState, area: Rect) {
 
 /// Render notes panel
 fn render_notes_panel(f: &mut Frame, state: &AppState, area: Rect) {
-    let title = if state.all_notebooks_mode {
+    let title = if state.trash_mode {
+        format_with_filter(
+            format!("🗑 Trash [{}]", state.note_sort.label()),
+            &state.note_filter_query,
+        )
+    } else if state.all_notebooks_mode {
         format_with_filter(
             format!("Notes - All Notebooks [{}]", state.note_sort.label()),
             &state.note_filter_query,
@@ -159,6 +198,8 @@ fn render_notes_panel(f: &mut Frame, state: &AppState, area: Rect) {
     let items: Vec<ListItem> = if state.notes.is_empty() {
         if state.has_active_filter(FocusPanel::Notes) {
             vec![ListItem::new("No matching notes").style(theme.dim())]
+        } else if state.trash_mode {
+            vec![ListItem::new("Trash is empty").style(theme.dim())]
         } else if state.all_notebooks_mode || state.selected_folder().is_some() {
             vec![
                 ListItem::new("No notes in this notebook").style(theme.dim()),
@@ -411,23 +452,28 @@ fn render_keybinding_ribbon(f: &mut Frame, state: &AppState, area: Rect) {
     let arrow = ""; // Powerline separator
 
     // Define keybindings: (key, action)
-    // All actions use the same primary color
-    let bindings = &[
-        ("q", "QUIT"),
-        // ("?", "HELP"),
-        // ("Tab", "PANEL"),
-        ("hjkl", "NAV"),
-        // ("Ent", "EDIT"),
-        ("n", "NOTE"),
-        ("T", "TODO"),
-        // ("t", "TOGGLE"),
-        ("N", "NOTEBOOK"),
-        ("f", "FILTER"),
-        (",", "SORT"),
-        ("d", "DELETE"),
-        ("s", "SYNC"),
-        ("S", "SETTINGS"),
-    ];
+    let bindings: &[(&str, &str)] = if state.trash_mode {
+        &[
+            ("q", "QUIT"),
+            ("hjkl", "NAV"),
+            ("R", "RESTORE"),
+            ("d", "DELETE"),
+            ("f", "FILTER"),
+            ("S", "SETTINGS"),
+        ]
+    } else {
+        &[
+            ("q", "QUIT"),
+            ("hjkl", "NAV"),
+            ("n", "NEW"),
+            ("d", "DELETE"),
+            ("t", "TODO"),
+            ("f", "FILTER"),
+            (",", "SORT"),
+            ("s", "SYNC"),
+            ("S", "SETTINGS"),
+        ]
+    };
 
     let mut spans = vec![];
     let mut total_width = 0;
@@ -1200,29 +1246,37 @@ pub fn render_help(f: &mut Frame, scroll: u16, state: &AppState) {
         Line::from("Notes & Notebooks").style(theme.primary()),
         Line::from("  n      New note in current notebook"),
         Line::from("  N      New notebook"),
+        Line::from("  t      New to-do in current notebook"),
+        Line::from("  T      Convert selected note ↔ to-do"),
         Line::from("  M      Move the selected note to another notebook"),
         Line::from("  r      Rename selected note or notebook"),
         Line::from("  f      Filter the focused list (notes also support #tag filters)"),
         Line::from("  ,      Open sort help for the focused list"),
         Line::from("  d      Delete selected note or notebook (with confirmation)"),
         Line::from("  D      Delete selected note immediately"),
+        Line::from("  R      Restore selected trashed note"),
         Line::from(""),
         Line::from("Commands").style(theme.primary()),
         Line::from("  :move <notebook>       Move the selected note to a notebook"),
+        Line::from("  :mv <notebook>         Alias for :move"),
         Line::from("  :delete-orphaned       Delete notes whose notebook no longer exists"),
         Line::from("  :read <file>           Create a note from a file"),
         Line::from("  :tag <tag-name>        Add a tag to the selected note"),
         Line::from("  :import                Import from ~/.config/joplin/database.sqlite"),
         Line::from("  :import <db>           Import from an explicit Joplin SQLite file"),
         Line::from("  :import-desktop        Import from ~/.config/joplin-desktop/database.sqlite"),
+        Line::from("  :mknote <title>        Create a new note"),
+        Line::from("  :mktodo <title>        Create a new to-do"),
+        Line::from("  :mkbook <title>        Create a new notebook"),
         Line::from("  :quit / :q             Quit immediately"),
         Line::from("  Tab                    Complete commands, notebooks, tags, and file paths"),
         Line::from(""),
-        Line::from("Todos").style(theme.primary()),
-        Line::from("  T        Create new todo"),
+        Line::from("Todos & Trash").style(theme.primary()),
         Line::from("  Space    Toggle todo completed / unchecked"),
+        Line::from("  Trash    Select the Trash notebook entry to browse deleted notes"),
         Line::from(""),
         Line::from("Other").style(theme.primary()),
+        Line::from("  :          Open the command line"),
         Line::from("  Enter      Edit selected note in $EDITOR"),
         Line::from("  s          Sync with WebDAV"),
         Line::from("  S          Open settings"),
@@ -1289,7 +1343,14 @@ pub fn render_delete_confirmation(f: &mut Frame, state: &AppState) {
     let theme = &state.theme;
 
     let (title, item_label) = match state.pending_delete.as_ref() {
-        Some(crate::state::PendingDelete::Note { title, .. }) => ("Delete note?", title.as_str()),
+        Some(crate::state::PendingDelete::Note {
+            title,
+            permanent: true,
+            ..
+        }) => ("Permanently delete note?", title.as_str()),
+        Some(crate::state::PendingDelete::Note { title, .. }) => {
+            ("Move note to trash?", title.as_str())
+        }
         Some(crate::state::PendingDelete::Notebook { title, .. }) => {
             ("Delete notebook?", title.as_str())
         }
@@ -1323,8 +1384,12 @@ pub fn render_delete_confirmation(f: &mut Frame, state: &AppState) {
         ]),
     };
 
-    let mut text_lines = vec![Line::from(""), Line::from(item_label).style(theme.primary())];
-    if let Some(crate::state::PendingDelete::Notebook { note_count, .. }) = state.pending_delete.as_ref()
+    let mut text_lines = vec![
+        Line::from(""),
+        Line::from(item_label).style(theme.primary()),
+    ];
+    if let Some(crate::state::PendingDelete::Notebook { note_count, .. }) =
+        state.pending_delete.as_ref()
     {
         text_lines.push(Line::from(""));
         text_lines.push(Line::from(format!(
@@ -1564,6 +1629,22 @@ fn extract_folder_emoji(icon: &str) -> Option<String> {
         return None; // Don't show non-emoji strings
     }
 
+    None
+}
+
+#[allow(dead_code)]
+fn strip_disambiguation_suffix(name: &str) -> Option<&str> {
+    if let Some(pos) = name.rfind(" (") {
+        let suffix = &name[pos..];
+        if suffix.ends_with(')')
+            && suffix[2..suffix.len() - 1]
+                .chars()
+                .all(|c| c.is_ascii_digit())
+            && !suffix[2..suffix.len() - 1].is_empty()
+        {
+            return Some(&name[..pos]);
+        }
+    }
     None
 }
 

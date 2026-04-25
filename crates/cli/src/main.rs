@@ -1,11 +1,15 @@
 // NeoJoplin - Main entry point (CLI + TUI)
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use joplin_domain::{now_ms, Folder, Note, Storage};
-use joplin_sync::E2eeService;
+use joplin_sync::{E2eeService, MasterKey};
 use neojoplin_core::Editor;
 use neojoplin_storage::SqliteStorage;
+use neojoplin_tui::importer::{
+    default_cli_database_path, default_desktop_database_path, import_database, resolve_import_path,
+};
+use neojoplin_tui::settings::{Settings, SyncTarget};
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -28,6 +32,7 @@ enum Commands {
     Init,
 
     /// Create a new note
+    #[command(name = "mknote", visible_alias = "mk-note")]
     MkNote {
         /// Note title
         title: String,
@@ -46,6 +51,7 @@ enum Commands {
     },
 
     /// Create a new folder/notebook
+    #[command(name = "mkbook", visible_alias = "mk-book")]
     MkBook {
         /// Folder title
         title: String,
@@ -74,24 +80,25 @@ enum Commands {
 
     /// Synchronize with WebDAV server
     Sync {
-        /// WebDAV URL
+        /// WebDAV base URL (uses the configured target if omitted)
         #[arg(long)]
         url: Option<String>,
-        /// WebDAV username
+        /// WebDAV username (uses the configured target if omitted)
         #[arg(short = 'U', long)]
         username: Option<String>,
-        /// WebDAV password
+        /// WebDAV password (uses the configured target if omitted)
         #[arg(short = 'P', long)]
         password: Option<String>,
-        /// Remote path
-        #[arg(short = 'r', long, default_value = "/neojoplin")]
-        remote: String,
+        /// Remote path (uses the configured target if omitted)
+        #[arg(short = 'r', long)]
+        remote: Option<String>,
         /// E2EE master password (overrides E2EE_PASSWORD env var and .env file)
         #[arg(long)]
         e2ee_password: Option<String>,
     },
 
     /// Create a new todo
+    #[command(name = "mktodo", visible_alias = "mk-todo")]
     MkTodo {
         /// Todo title
         title: String,
@@ -111,6 +118,15 @@ enum Commands {
         /// Todo ID or title
         todo: String,
     },
+
+    /// Import notes, notebooks, and tags from the Joplin CLI database
+    Import {
+        /// SQLite database path (defaults to the Joplin CLI database)
+        path: Option<String>,
+    },
+
+    /// Import notes, notebooks, and tags from the Joplin Desktop database
+    ImportDesktop,
 
     /// List all folders
     ListBooks,
@@ -147,6 +163,9 @@ enum E2eeCommands {
         /// Master password (not recommended - will prompt if not provided)
         #[arg(short, long)]
         password: Option<String>,
+        /// Force generating a new master key instead of reusing an existing compatible one
+        #[arg(long)]
+        new_key: bool,
     },
 
     /// Disable encryption
@@ -174,14 +193,25 @@ async fn load_e2ee_service(password_override: Option<String>) -> Result<E2eeServ
     let data_dir = Config::data_dir()?;
     let encryption_config_path = data_dir.join("encryption.json");
 
-    // Priority: CLI arg > env var > .env file > stored in encryption.json
-    let master_password = if let Some(p) = password_override {
-        Some(p)
-    } else if let Ok(p) = std::env::var("E2EE_PASSWORD") {
-        Some(p)
+    let stored_password = if encryption_config_path.exists() {
+        if let Ok(content) = tokio::fs::read_to_string(&encryption_config_path).await {
+            if let Ok(config) = serde_json::from_str::<serde_json::Value>(&content) {
+                config
+                    .get("master_password")
+                    .and_then(|v| v.as_str())
+                    .filter(|s| !s.is_empty())
+                    .map(|s| s.to_string())
+            } else {
+                None
+            }
+        } else {
+            None
+        }
     } else {
-        // Try .env file
-        let mut from_env = None;
+        None
+    };
+
+    let env_password = std::env::var("E2EE_PASSWORD").ok().or_else(|| {
         if let Ok(env_path) = std::env::current_dir() {
             let env_file = env_path.join(".env");
             if env_file.exists() {
@@ -189,29 +219,22 @@ async fn load_e2ee_service(password_override: Option<String>) -> Result<E2eeServ
                     for line in content.lines() {
                         if let Some((key, value)) = line.split_once('=') {
                             if key.trim() == "E2EE_PASSWORD" {
-                                from_env = Some(value.trim().to_string());
-                                break;
+                                return Some(value.trim().to_string());
                             }
                         }
                     }
                 }
             }
         }
-        // Fall back to stored password in encryption.json
-        if from_env.is_none() && encryption_config_path.exists() {
-            if let Ok(content) = tokio::fs::read_to_string(&encryption_config_path).await {
-                if let Ok(config) = serde_json::from_str::<serde_json::Value>(&content) {
-                    from_env = config
-                        .get("master_password")
-                        .and_then(|v| v.as_str())
-                        .filter(|s| !s.is_empty())
-                        .map(|s| s.to_string());
-                }
-            }
-        }
-        from_env
-    }
-    .unwrap_or_default();
+        None
+    });
+
+    // Priority: CLI arg > stored password > environment
+    let master_password = password_override
+        .clone()
+        .or(stored_password)
+        .or(env_password)
+        .unwrap_or_default();
 
     // Create E2EE service
     let mut e2ee = E2eeService::new();
@@ -233,14 +256,14 @@ async fn load_e2ee_service(password_override: Option<String>) -> Result<E2eeServ
             return Ok(e2ee);
         }
 
-        // If a new password was provided, save it
-        if !master_password.is_empty() {
+        // If a CLI password override was provided, save it for subsequent syncs.
+        if let Some(ref password_override) = password_override {
             let stored = config
                 .get("master_password")
                 .and_then(|v| v.as_str())
                 .unwrap_or("");
-            if stored != master_password {
-                config["master_password"] = serde_json::json!(master_password);
+            if stored != password_override {
+                config["master_password"] = serde_json::json!(password_override);
                 tokio::fs::write(
                     &encryption_config_path,
                     serde_json::to_string_pretty(&config)?,
@@ -372,6 +395,7 @@ async fn main() -> Result<()> {
                 markup_language: 1,
                 encryption_blob_encrypted: 0,
                 conflict_original_id: String::new(),
+                deleted_time: 0,
             };
 
             storage.create_note(&note).await?;
@@ -427,6 +451,7 @@ async fn main() -> Result<()> {
                 markup_language: 1,
                 encryption_blob_encrypted: 0,
                 conflict_original_id: String::new(),
+                deleted_time: 0,
             };
 
             storage.create_note(&note).await?;
@@ -461,6 +486,22 @@ async fn main() -> Result<()> {
             }
             updated.updated_time = now_ms();
             storage.update_note(&updated).await?;
+            Ok(())
+        }
+
+        Commands::Import { path } => {
+            let import_path = path
+                .map(|value| resolve_import_path(&value))
+                .unwrap_or_else(default_cli_database_path);
+            let summary = import_database(storage.as_ref(), &import_path).await?;
+            println!("{}", summary.describe());
+            Ok(())
+        }
+
+        Commands::ImportDesktop => {
+            let summary =
+                import_database(storage.as_ref(), &default_desktop_database_path()).await?;
+            println!("{}", summary.describe());
             Ok(())
         }
 
@@ -593,26 +634,22 @@ async fn main() -> Result<()> {
             use joplin_sync::{ReqwestWebDavClient, SyncEngine, WebDavConfig};
             use tokio::sync::mpsc;
 
-            let url = url.ok_or_else(|| anyhow::anyhow!("WebDAV URL is required"))?;
-
-            // For testing with local WebDAV servers, allow empty credentials
-            let username = username.unwrap_or_else(|| "".to_string());
-            let password = password.unwrap_or_else(|| "".to_string());
+            let configured_target = load_configured_sync_target().await?;
+            let (url, username, password, remote) =
+                resolve_sync_target(url, username, password, remote, configured_target)?;
 
             let config = WebDavConfig::new(url, username, password);
             let webdav = Arc::new(ReqwestWebDavClient::new(config)?);
 
             let (event_tx, mut event_rx) = mpsc::unbounded_channel();
 
-            // Load E2EE service if encryption is enabled
-            let e2ee_service = load_e2ee_service(e2ee_password).await.ok();
-
             let mut sync_engine =
                 SyncEngine::new(storage.clone(), webdav, event_tx).with_remote_path(remote);
 
             // Add E2EE service if available
-            if let Some(e2ee) = e2ee_service {
-                sync_engine = sync_engine.with_e2ee(e2ee);
+            let e2ee_service = load_e2ee_service(e2ee_password).await?;
+            if e2ee_service.is_enabled() {
+                sync_engine = sync_engine.with_e2ee(e2ee_service);
             }
 
             // Handle progress events — track download/upload counts
@@ -733,7 +770,7 @@ async fn main() -> Result<()> {
             let keys_dir = data_dir.join("keys");
 
             match command {
-                E2eeCommands::Enable { password } => {
+                E2eeCommands::Enable { password, new_key } => {
                     // Prompt for password if not provided
                     let password = match password {
                         Some(pwd) => pwd,
@@ -755,11 +792,23 @@ async fn main() -> Result<()> {
                         return Err(anyhow::anyhow!("Password cannot be empty"));
                     }
 
-                    // Create E2EE service and generate master key
+                    let reusable_key = if new_key {
+                        None
+                    } else {
+                        find_reusable_master_key(&data_dir, &password).await?
+                    };
+
+                    // Create E2EE service and reuse or generate a master key
                     let mut e2ee_service = E2eeService::new();
                     e2ee_service.set_master_password(password.clone());
-
-                    let (key_id, master_key) = e2ee_service.generate_master_key(&password)?;
+                    let (key_id, master_key, reused_existing_key) =
+                        if let Some((key_id, master_key)) = reusable_key {
+                            (key_id, master_key, true)
+                        } else {
+                            let (key_id, master_key) =
+                                e2ee_service.generate_master_key(&password)?;
+                            (key_id, master_key, false)
+                        };
 
                     // Load the master key into the service
                     e2ee_service.load_master_key(&master_key)?;
@@ -768,19 +817,26 @@ async fn main() -> Result<()> {
                     // Save master key to file
                     tokio::fs::create_dir_all(&keys_dir).await?;
                     let key_path = keys_dir.join(format!("{}.json", key_id));
-                    let key_json = serde_json::to_string_pretty(&master_key)?;
-                    tokio::fs::write(&key_path, key_json).await?;
+                    if !reused_existing_key || !key_path.exists() {
+                        let key_json = serde_json::to_string_pretty(&master_key)?;
+                        tokio::fs::write(&key_path, key_json).await?;
+                    }
 
                     // Save active key ID to config
                     let config_path = data_dir.join("encryption.json");
                     let config = serde_json::json!({
                         "enabled": true,
-                        "active_master_key_id": key_id
+                        "active_master_key_id": key_id,
+                        "master_password": password
                     });
-                    tokio::fs::write(&config_path, config.to_string()).await?;
+                    tokio::fs::write(&config_path, serde_json::to_string_pretty(&config)?).await?;
 
                     println!("✓ Encryption enabled successfully");
-                    println!("✓ Master key generated and encrypted");
+                    if reused_existing_key {
+                        println!("✓ Reused existing master key");
+                    } else {
+                        println!("✓ Master key generated and encrypted");
+                    }
                     println!("✓ Master key ID: {}", key_id);
                     println!();
                     println!("Important: Store your master password in a secure location.");
@@ -799,7 +855,9 @@ async fn main() -> Result<()> {
 
                     if !force {
                         let confirmed = Confirm::new()
-                            .with_prompt("Are you sure you want to disable encryption? This will not decrypt your existing notes.")
+                            .with_prompt(
+                                "Disable encryption? The next sync will re-upload items decrypted.",
+                            )
                             .default(false)
                             .interact()?;
 
@@ -809,11 +867,19 @@ async fn main() -> Result<()> {
                         }
                     }
 
-                    // Remove encryption config
-                    tokio::fs::remove_file(&config_path).await.ok();
+                    let existing_config = tokio::fs::read_to_string(&config_path)
+                        .await
+                        .ok()
+                        .and_then(|content| {
+                            serde_json::from_str::<serde_json::Value>(&content).ok()
+                        })
+                        .unwrap_or_else(|| serde_json::json!({}));
+                    let mut config = existing_config;
+                    config["enabled"] = serde_json::json!(false);
+                    tokio::fs::write(&config_path, serde_json::to_string_pretty(&config)?).await?;
 
                     println!("✓ Encryption disabled");
-                    println!("Note: Existing encrypted notes remain encrypted");
+                    println!("Note: The next sync will re-upload items without encryption");
 
                     Ok(())
                 }
@@ -909,4 +975,114 @@ async fn main() -> Result<()> {
 fn get_db_path() -> Result<PathBuf> {
     use neojoplin_core::Config;
     Ok(Config::data_dir()?.join("joplin.db"))
+}
+
+async fn find_reusable_master_key(
+    data_dir: &std::path::Path,
+    password: &str,
+) -> Result<Option<(String, MasterKey)>> {
+    let config_path = data_dir.join("encryption.json");
+    let preferred_key_id = if config_path.exists() {
+        let content = tokio::fs::read_to_string(&config_path).await?;
+        serde_json::from_str::<serde_json::Value>(&content)
+            .ok()
+            .and_then(|config| {
+                config
+                    .get("active_master_key_id")
+                    .and_then(|value| value.as_str())
+                    .map(|value| value.to_string())
+            })
+    } else {
+        None
+    };
+
+    let keys_dir = data_dir.join("keys");
+    if !keys_dir.exists() {
+        return Ok(None);
+    }
+
+    let mut candidate_paths = Vec::new();
+    if let Some(key_id) = preferred_key_id {
+        let preferred_path = keys_dir.join(format!("{}.json", key_id));
+        if preferred_path.exists() {
+            candidate_paths.push(preferred_path);
+        }
+    }
+
+    let mut entries = tokio::fs::read_dir(&keys_dir).await?;
+    while let Some(entry) = entries.next_entry().await? {
+        let path = entry.path();
+        if path.extension().is_some_and(|ext| ext == "json") && !candidate_paths.contains(&path) {
+            candidate_paths.push(path);
+        }
+    }
+
+    for path in candidate_paths {
+        let content = tokio::fs::read_to_string(&path).await?;
+        let master_key: MasterKey = serde_json::from_str(&content)
+            .with_context(|| format!("Failed to parse master key {}", path.display()))?;
+        let mut e2ee = E2eeService::new();
+        e2ee.set_master_password(password.to_string());
+        if e2ee.load_master_key(&master_key).is_ok() {
+            return Ok(Some((master_key.id.clone(), master_key)));
+        }
+    }
+
+    Ok(None)
+}
+
+async fn load_configured_sync_target() -> Result<Option<SyncTarget>> {
+    let data_dir = neojoplin_core::Config::data_dir()?;
+    let mut settings = Settings::default();
+    settings.load_all_settings(&data_dir).await?;
+    Ok(settings
+        .sync
+        .current_target_index
+        .and_then(|index| settings.sync.targets.get(index).cloned()))
+}
+
+fn resolve_sync_target(
+    url: Option<String>,
+    username: Option<String>,
+    password: Option<String>,
+    remote: Option<String>,
+    configured_target: Option<SyncTarget>,
+) -> Result<(String, String, String, String)> {
+    if let Some(url) = url {
+        return Ok((
+            url,
+            username.unwrap_or_default(),
+            password.unwrap_or_default(),
+            remote.unwrap_or_else(|| "/neojoplin".to_string()),
+        ));
+    }
+
+    let configured_target = configured_target.ok_or_else(|| {
+        anyhow::anyhow!(
+            "WebDAV URL is required or configure a sync target in the TUI settings first"
+        )
+    })?;
+
+    let (base_url, configured_remote) = split_webdav_url(&configured_target.url);
+    Ok((
+        base_url,
+        username.unwrap_or(configured_target.username),
+        password.unwrap_or(configured_target.password),
+        remote.unwrap_or(configured_remote),
+    ))
+}
+
+fn split_webdav_url(full_url: &str) -> (String, String) {
+    let trimmed = full_url.trim_end_matches('/');
+    let scheme_end = trimmed.find("://").map(|i| i + 3).unwrap_or(0);
+    if let Some(slash_pos) = trimmed[scheme_end..].rfind('/') {
+        let abs_pos = scheme_end + slash_pos;
+        let base = &trimmed[..abs_pos];
+        let path = &trimmed[abs_pos..];
+        if !path.is_empty() && path != "/" {
+            return (base.to_string(), path.to_string());
+        }
+    }
+
+    (trimmed.to_string(), "/neojoplin".to_string())
 }
