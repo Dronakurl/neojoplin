@@ -704,6 +704,8 @@ mod tests {
         settings.cycle_tab_forward();
         assert_eq!(settings.current_tab, SettingsTab::Encryption);
         settings.cycle_tab_forward();
+        assert_eq!(settings.current_tab, SettingsTab::Help);
+        settings.cycle_tab_forward();
         assert_eq!(settings.current_tab, SettingsTab::Sync);
     }
 
