@@ -250,15 +250,17 @@ impl Settings {
     pub fn cycle_tab_forward(&mut self) {
         self.current_tab = match self.current_tab {
             SettingsTab::Sync => SettingsTab::Encryption,
-            SettingsTab::Encryption => SettingsTab::Sync,
+            SettingsTab::Encryption => SettingsTab::Help,
+            SettingsTab::Help => SettingsTab::Sync,
         };
     }
 
     /// Cycle to previous settings tab
     pub fn cycle_tab_backward(&mut self) {
         self.current_tab = match self.current_tab {
-            SettingsTab::Sync => SettingsTab::Encryption,
+            SettingsTab::Sync => SettingsTab::Help,
             SettingsTab::Encryption => SettingsTab::Sync,
+            SettingsTab::Help => SettingsTab::Encryption,
         };
     }
 

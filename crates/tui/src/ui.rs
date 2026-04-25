@@ -1317,6 +1317,24 @@ pub fn render_help(f: &mut Frame, scroll: u16, state: &AppState) {
     f.render_widget(paragraph, area);
 }
 
+/// Render the help tab content for settings
+pub fn render_help_tab(f: &mut Frame, state: &AppState, area: Rect) {
+    let theme = &state.theme;
+    // Reuse render_help content inside the provided area: small help summary
+    let lines = vec![
+        Line::from("NeoJoplin Help").style(theme.primary()),
+        Line::from("").style(theme.text()),
+        Line::from("Press q to close help, / to search, j/k to scroll").style(theme.muted()),
+        Line::from("").style(theme.text()),
+        Line::from("Commands and keybindings are shown in the main help popup (press ?)").style(theme.text()),
+    ];
+    let paragraph = Paragraph::new(lines)
+        .block(Block::default().title(" Help ").borders(Borders::ALL).border_style(theme.border_normal()))
+        .wrap(Wrap { trim: true })
+        .alignment(Alignment::Left);
+    f.render_widget(paragraph, area);
+}
+
 /// Render quit confirmation popup
 pub fn render_quit_confirmation(f: &mut Frame, state: &AppState) {
     let area = centered_rect(35, 15, f.area()); // Smaller: 35% width, 15% height
