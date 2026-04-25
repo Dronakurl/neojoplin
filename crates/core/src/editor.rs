@@ -112,7 +112,7 @@ impl Editor {
         let original_mtime = self.get_mtime(&temp_file)?;
 
         // Launch editor
-        self.launch_editor(&temp_file).await?;
+        let editor_result = self.launch_editor(&temp_file).await;
 
         // Read modified content
         let modified_content = self.read_temp_file(&temp_file)?;
@@ -123,6 +123,10 @@ impl Editor {
 
         // Cleanup temp file
         let _ = std::fs::remove_file(&temp_file);
+
+        if editor_result.is_err() && !was_modified {
+            return editor_result.map(|_| content.to_string());
+        }
 
         if was_modified {
             Ok(modified_content)

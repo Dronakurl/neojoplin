@@ -128,6 +128,18 @@ enum Commands {
     /// Import notes, notebooks, and tags from the Joplin Desktop database
     ImportDesktop,
 
+    /// Import notes, notebooks, and tags from a JEX archive
+    ImportJex {
+        /// Path to the .jex archive
+        path: String,
+    },
+
+    /// Export notes, notebooks, and tags to a JEX archive
+    ExportJex {
+        /// Destination path for the .jex archive
+        path: String,
+    },
+
     /// List all folders
     ListBooks,
 
@@ -502,6 +514,20 @@ async fn main() -> Result<()> {
             let summary =
                 import_database(storage.as_ref(), &default_desktop_database_path()).await?;
             println!("{}", summary.describe());
+            Ok(())
+        }
+
+        Commands::ImportJex { path } => {
+            let import_path = resolve_import_path(&path);
+            let summary = neojoplin_core::import_jex(storage.as_ref(), &import_path).await?;
+            println!("{}", summary.describe_import(&import_path));
+            Ok(())
+        }
+
+        Commands::ExportJex { path } => {
+            let export_path = resolve_import_path(&path);
+            let summary = neojoplin_core::export_jex(storage.as_ref(), &export_path).await?;
+            println!("{}", summary.describe_export(&export_path));
             Ok(())
         }
 

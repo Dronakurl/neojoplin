@@ -14,6 +14,62 @@ use crate::theme::Theme;
 use crate::settings::SettingsTab;
 use crate::state::{AppState, FocusPanel};
 
+const HELP_LINES: &[&str] = &[
+    "Navigation",
+    "  Tab / Shift-Tab    Switch panels (Notebooks -> Notes -> Content)",
+    "  h / l / <- ->      Switch panels left / right",
+    "  j / k / Up Down    Move selection or scroll content",
+    "  Enter              Open notebook (in Notebooks panel)",
+    "",
+    "Notes & Notebooks",
+    "  n      New note in current notebook",
+    "  N      New notebook",
+    "  t      New to-do in current notebook",
+    "  T      Convert selected note <-> to-do",
+    "  m      Move the selected note to another notebook",
+    "  r      Rename selected note or notebook",
+    "  f      Filter the focused list (notes also support #tag filters)",
+    "  F      Full-text filter across note contents",
+    "  ,      Open sort help for the focused list",
+    "  d      Delete selected note or notebook (with confirmation)",
+    "  D      Delete selected note immediately",
+    "  R      Restore selected trashed note",
+    "",
+    "Commands",
+    "  :move <notebook>       Move the selected note to a notebook",
+    "  :mv <notebook>         Alias for :move",
+    "  :delete-orphaned       Delete notes whose notebook no longer exists",
+    "  :read <file>           Create a note from a file",
+    "  :tag <tag-name>        Add a tag to the selected note",
+    "  :import                Import from ~/.config/joplin/database.sqlite",
+    "  :import <db>           Import from an explicit Joplin SQLite file",
+    "  :import-desktop        Import from ~/.config/joplin-desktop/database.sqlite",
+    "  :import-jex <file>     Import a JEX archive",
+    "  :export-jex <file>     Export notes to a JEX archive",
+    "  :mknote <title>        Create a new note",
+    "  :mktodo <title>        Create a new to-do",
+    "  :mkbook <title>        Create a new notebook",
+    "  :quit / :q             Quit immediately",
+    "  Tab                    Complete commands, notebooks, tags, and file paths",
+    "",
+    "Todos & Trash",
+    "  Space    Toggle todo completed / unchecked",
+    "  Trash    Select the Trash notebook entry to browse deleted notes",
+    "  Orphaned Select the Orphaned notebook entry to browse notes without a notebook",
+    "",
+    "Other",
+    "  /          Search inside help",
+    "  :          Open the command line",
+    "  Enter      Edit selected note in $EDITOR",
+    "  s          Sync with WebDAV",
+    "  S          Open settings",
+    "  q          Quit",
+];
+
+pub fn help_search_lines() -> &'static [&'static str] {
+    HELP_LINES
+}
+
 /// Strip a leading Markdown H1 prefix ("# ") from a title for display in lists/borders.
 /// The full title (including "# ") is preserved in the data model and shown in the preview.
 fn display_title(title: &str) -> &str {
@@ -81,7 +137,10 @@ fn render_notebooks_panel(f: &mut Frame, state: &AppState, area: Rect) {
     };
     let theme = &state.theme;
 
-    let items: Vec<ListItem> = if state.folders.is_empty() {
+    let items: Vec<ListItem> = if state.folders.is_empty()
+        && state.orphan_note_count == 0
+        && state.trash_note_count == 0
+    {
         if state.has_active_filter(FocusPanel::Notebooks) {
             vec![ListItem::new("No matching notebooks").style(theme.dim())]
         } else {
@@ -94,7 +153,7 @@ fn render_notebooks_panel(f: &mut Frame, state: &AppState, area: Rect) {
         let mut all_items = vec![];
 
         // Add "All Notebooks" option at the top
-        let is_all_selected = state.all_notebooks_mode;
+        let is_all_selected = state.all_notebooks_mode && !state.orphan_mode && !state.trash_mode;
         let all_style = if is_all_selected {
             theme.selection()
         } else {
@@ -102,13 +161,15 @@ fn render_notebooks_panel(f: &mut Frame, state: &AppState, area: Rect) {
         };
         all_items.push(ListItem::new("📚 All Notes").style(all_style));
 
-        // Orphaned notes entry (non-destructive visual entry)
-        let orphan_style = if state.focus == FocusPanel::Notebooks && state.notebook_filter_query.is_empty() {
-            theme.text()
+        let orphan_style = if state.orphan_mode {
+            theme.selection()
         } else {
-            theme.dim()
+            theme.text()
         };
-        all_items.push(ListItem::new("🔎 Orphaned").style(orphan_style));
+        all_items.push(ListItem::new(Line::from(vec![
+            Span::styled("🔎 Orphaned", orphan_style),
+            Span::styled(format!(" ({})", state.orphan_note_count), theme.dim()),
+        ])));
 
         // Add individual notebooks
         for (i, folder) in state.folders.iter().enumerate() {
@@ -158,7 +219,10 @@ fn render_notebooks_panel(f: &mut Frame, state: &AppState, area: Rect) {
             // Use a more visible error color for trash entries
             theme.error()
         };
-        all_items.push(ListItem::new("🗑 Trash").style(trash_style));
+        all_items.push(ListItem::new(Line::from(vec![
+            Span::styled("🗑 Trash", trash_style),
+            Span::styled(format!(" ({})", state.trash_note_count), theme.dim()),
+        ])));
 
         all_items
     };
@@ -184,6 +248,11 @@ fn render_notes_panel(f: &mut Frame, state: &AppState, area: Rect) {
     let title = if state.trash_mode {
         format_with_filter(
             format!("🗑 Trash [{}]", state.note_sort.label()),
+            &state.note_filter_query,
+        )
+    } else if state.orphan_mode {
+        format_with_filter(
+            format!("Notes - Orphaned [{}]", state.note_sort.label()),
             &state.note_filter_query,
         )
     } else if state.all_notebooks_mode {
@@ -457,7 +526,6 @@ fn termimad_to_ratatui_lines(text: &str, width: usize) -> Vec<Line<'static>> {
 
 /// Render keybinding ribbon (show available keybindings) - Zellij-style arrow separators
 fn render_keybinding_ribbon(f: &mut Frame, state: &AppState, area: Rect) {
-    use std::fmt::Write as FmtWrite;
     let theme = &state.theme;
     let arrow = ""; // Powerline separator
 
@@ -466,7 +534,7 @@ fn render_keybinding_ribbon(f: &mut Frame, state: &AppState, area: Rect) {
 
     // Always available
     bindings.push(("q".to_string(), "QUIT".to_string()));
-    bindings.push(("←→/hjkl".to_string(), "NAV".to_string()));
+    bindings.push(("hjkl".to_string(), "NAV".to_string()));
 
     // Contextual bindings
     if state.trash_mode {
@@ -486,7 +554,6 @@ fn render_keybinding_ribbon(f: &mut Frame, state: &AppState, area: Rect) {
     // Filter available when focus is list-based
     if matches!(state.focus, crate::state::FocusPanel::Notebooks | crate::state::FocusPanel::Notes) || state.trash_mode {
         bindings.push(("f".to_string(), "FILTER".to_string()));
-        bindings.push(("F".to_string(), "FULL-FILTER".to_string()));
     }
 
     // Settings always available
@@ -1242,7 +1309,13 @@ fn render_form_field_password(
 }
 
 /// Render help popup
-pub fn render_help(f: &mut Frame, scroll: u16, state: &AppState) {
+pub fn render_help(
+    f: &mut Frame,
+    scroll: u16,
+    state: &AppState,
+    search_query: Option<&str>,
+    search_input: Option<&str>,
+) {
     let area = centered_rect(80, 80, f.area());
     let theme = &state.theme;
 
@@ -1255,54 +1328,43 @@ pub fn render_help(f: &mut Frame, scroll: u16, state: &AppState) {
         Span::styled("j/k", theme.accent()),
         Span::styled("]", theme.muted()),
         Span::raw(" scroll ").style(theme.text()),
+        Span::styled("[", theme.muted()),
+        Span::styled("/", theme.accent()),
+        Span::styled("]", theme.muted()),
+        Span::raw(" search ").style(theme.text()),
+        Span::styled(
+            match search_input {
+                Some(input) => format!(" /{}", input),
+                None => search_query
+                    .filter(|query| !query.is_empty())
+                    .map(|query| format!(" query: {}", query))
+                    .unwrap_or_default(),
+            },
+            theme.muted(),
+        ),
     ]);
 
-    let text = Text::from(vec![
-        Line::from("Navigation").style(theme.primary()),
-        Line::from("  Tab / Shift-Tab    Switch panels (Notebooks → Notes → Content)"),
-        Line::from("  h / l / ←→         Switch panels left / right"),
-        Line::from("  j / k / ↑↓        Move selection or scroll content"),
-        Line::from("  Enter              Open notebook (in Notebooks panel)"),
-        Line::from(""),
-        Line::from("Notes & Notebooks").style(theme.primary()),
-        Line::from("  n      New note in current notebook"),
-        Line::from("  N      New notebook"),
-        Line::from("  t      New to-do in current notebook"),
-        Line::from("  T      Convert selected note ↔ to-do"),
-        Line::from("  m      Move the selected note to another notebook"),
-        Line::from("  r      Rename selected note or notebook"),
-        Line::from("  f      Filter the focused list (notes also support #tag filters)"),
-        Line::from("  ,      Open sort help for the focused list"),
-        Line::from("  d      Delete selected note or notebook (with confirmation)"),
-        Line::from("  D      Delete selected note immediately"),
-        Line::from("  R      Restore selected trashed note"),
-        Line::from(""),
-        Line::from("Commands").style(theme.primary()),
-        Line::from("  :move <notebook>       Move the selected note to a notebook"),
-        Line::from("  :mv <notebook>         Alias for :move"),
-        Line::from("  :delete-orphaned       Delete notes whose notebook no longer exists"),
-        Line::from("  :read <file>           Create a note from a file"),
-        Line::from("  :tag <tag-name>        Add a tag to the selected note"),
-        Line::from("  :import                Import from ~/.config/joplin/database.sqlite"),
-        Line::from("  :import <db>           Import from an explicit Joplin SQLite file"),
-        Line::from("  :import-desktop        Import from ~/.config/joplin-desktop/database.sqlite"),
-        Line::from("  :mknote <title>        Create a new note"),
-        Line::from("  :mktodo <title>        Create a new to-do"),
-        Line::from("  :mkbook <title>        Create a new notebook"),
-        Line::from("  :quit / :q             Quit immediately"),
-        Line::from("  Tab                    Complete commands, notebooks, tags, and file paths"),
-        Line::from(""),
-        Line::from("Todos & Trash").style(theme.primary()),
-        Line::from("  Space    Toggle todo completed / unchecked"),
-        Line::from("  Trash    Select the Trash notebook entry to browse deleted notes"),
-        Line::from(""),
-        Line::from("Other").style(theme.primary()),
-        Line::from("  :          Open the command line"),
-        Line::from("  Enter      Edit selected note in $EDITOR"),
-        Line::from("  s          Sync with WebDAV"),
-        Line::from("  S          Open settings"),
-        Line::from("  q          Quit"),
-    ]);
+    let search_query = search_query.filter(|query| !query.is_empty()).map(|q| q.to_lowercase());
+    let text = Text::from(
+        HELP_LINES
+            .iter()
+            .map(|line| {
+                let is_heading = !line.is_empty() && !line.starts_with(' ');
+                let matches = search_query
+                    .as_ref()
+                    .map(|query| line.to_lowercase().contains(query))
+                    .unwrap_or(false);
+
+                if matches {
+                    Line::from(Span::styled(*line, theme.accent().bold()))
+                } else if is_heading {
+                    Line::from(Span::styled(*line, theme.primary()))
+                } else {
+                    Line::from(*line)
+                }
+            })
+            .collect::<Vec<_>>(),
+    );
 
     // Clamp scroll to the available content height to avoid infinite scrolling
     let total_lines = text.lines.len();

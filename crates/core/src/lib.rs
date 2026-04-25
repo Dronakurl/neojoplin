@@ -3,6 +3,7 @@
 
 pub mod config;
 pub mod editor;
+pub mod jex;
 
 // Re-exports from joplin-domain for convenience
 pub use joplin_domain::{
@@ -87,6 +88,7 @@ pub enum ConfigError {
 // Re-export config and editor types
 pub use config::{AdvancedConfig, Config, EditorConfig, SyncConfig, UiConfig};
 pub use editor::{Editor, EditorConfig as RuntimeEditorConfig};
+pub use jex::{export_jex, import_jex, JexSummary};
 
 /// Convenience Result type
 pub type NeoJoplinResult<T> = std::result::Result<T, NeoJoplinError>;

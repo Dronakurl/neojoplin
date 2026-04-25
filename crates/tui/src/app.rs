@@ -30,6 +30,9 @@ pub struct App {
     storage: Arc<SqliteStorage>,
     show_help: bool,
     help_scroll: u16,
+    help_search_active: bool,
+    help_search_input: String,
+    help_search_query: String,
 }
 
 impl App {
@@ -97,6 +100,9 @@ impl App {
             storage,
             show_help: false,
             help_scroll: 0,
+            help_search_active: false,
+            help_search_input: String::new(),
+            help_search_query: String::new(),
         })
     }
 
@@ -135,7 +141,17 @@ impl App {
             // Render UI
             terminal.draw(|f| {
                 if self.show_help {
-                    ui::render_help(f, self.help_scroll, &self.state);
+                    ui::render_help(
+                        f,
+                        self.help_scroll,
+                        &self.state,
+                        Some(&self.help_search_query),
+                        if self.help_search_active {
+                            Some(&self.help_search_input)
+                        } else {
+                            None
+                        },
+                    );
                 } else if self.state.show_quit_confirmation {
                     ui::render_quit_confirmation(f, &self.state);
                 } else if self.state.pending_delete.is_some() {
@@ -230,7 +246,40 @@ impl App {
 
         // Handle help popup
         if self.show_help {
+            if self.help_search_active {
+                match key.code {
+                    KeyCode::Esc => {
+                        self.help_search_active = false;
+                        self.help_search_input.clear();
+                    }
+                    KeyCode::Enter => {
+                        self.help_search_query = self.help_search_input.clone();
+                        self.help_search_active = false;
+                        self.apply_help_search();
+                    }
+                    KeyCode::Backspace => {
+                        self.help_search_input.pop();
+                        self.help_search_query = self.help_search_input.clone();
+                        self.apply_help_search();
+                    }
+                    KeyCode::Char(c)
+                        if !key.modifiers.contains(KeyModifiers::CONTROL)
+                            && !key.modifiers.contains(KeyModifiers::ALT) =>
+                    {
+                        self.help_search_input.push(c);
+                        self.help_search_query = self.help_search_input.clone();
+                        self.apply_help_search();
+                    }
+                    _ => {}
+                }
+                return Ok(false);
+            }
+
             match key.code {
+                KeyCode::Char('/') => {
+                    self.help_search_active = true;
+                    self.help_search_input = self.help_search_query.clone();
+                }
                 KeyCode::Char('j') | KeyCode::Down => {
                     self.help_scroll = self.help_scroll.saturating_add(1);
                 }
@@ -240,6 +289,8 @@ impl App {
                 KeyCode::Char('q') => {
                     self.show_help = false;
                     self.help_scroll = 0;
+                    self.help_search_active = false;
+                    self.help_search_input.clear();
                 }
                 _ => {
                     // Ignore all other keys in help mode
@@ -570,7 +621,14 @@ impl App {
             .context("Failed to re-enter alternate screen")?;
         enable_raw_mode().context("Failed to re-enable raw mode")?;
 
-        let full_content = editor_result?;
+        let full_content = match editor_result {
+            Ok(content) => content,
+            Err(error) => {
+                terminal.clear()?;
+                self.state.show_error(&error.to_string());
+                return Ok(());
+            }
+        };
 
         // Force a complete terminal redraw to ensure TUI is properly visible
         terminal.clear()?;
@@ -1139,25 +1197,34 @@ impl App {
         selected_folder_id: Option<String>,
         selected_note_id: Option<String>,
     ) -> Result<()> {
-        // If in trash mode, load deleted notes instead
+        let all_notes = self.storage.list_notes(None).await?;
+        let deleted_notes = self.storage.list_deleted_notes().await?;
+        let mut folders = self.storage.list_folders().await?;
+        let folder_ids: HashSet<String> = folders.iter().map(|folder| folder.id.clone()).collect();
+        self.state.orphan_note_count = all_notes
+            .iter()
+            .filter(|note| note.parent_id.is_empty() || !folder_ids.contains(&note.parent_id))
+            .count();
+        self.state.trash_note_count = deleted_notes.len();
+
+        self.state.sort_folders(&mut folders, &all_notes);
+        folders = self.state.filter_folders(folders);
+        self.state.set_folders(folders);
+
         if self.state.trash_mode {
-            let mut notes = self.storage.list_deleted_notes().await?;
+            let mut notes = deleted_notes;
+            let note_tags = self.load_note_tag_titles(&notes).await?;
+            self.state.set_note_tags(note_tags);
             self.state.sort_notes(&mut notes);
             self.state.set_notes(notes);
             if let Some(note_id) = selected_note_id.as_deref() {
                 self.state.select_note_by_id(note_id);
             }
             return Ok(());
-        }
-
-        let all_notes = self.storage.list_notes(None).await?;
-        let mut folders = self.storage.list_folders().await?;
-        self.state.sort_folders(&mut folders, &all_notes);
-        folders = self.state.filter_folders(folders);
-        self.state.set_folders(folders);
-
-        if all_notebooks_mode {
+        } else if all_notebooks_mode {
             self.state.set_folder(None);
+        } else if self.state.orphan_mode && selected_folder_id.is_none() {
+            self.state.set_orphan_mode(true);
         } else if let Some(folder_id) = selected_folder_id.as_deref() {
             if !self.state.select_folder_by_id(folder_id) && !self.state.folders.is_empty() {
                 self.state.set_folder(Some(0));
@@ -1166,7 +1233,12 @@ impl App {
             self.state.set_folder(None);
         }
 
-        let mut notes = if self.state.all_notebooks_mode {
+        let mut notes = if self.state.orphan_mode {
+            all_notes
+                .into_iter()
+                .filter(|note| note.parent_id.is_empty() || !folder_ids.contains(&note.parent_id))
+                .collect()
+        } else if self.state.all_notebooks_mode {
             all_notes
         } else if let Some(folder) = self.state.selected_folder() {
             self.storage.list_notes(Some(&folder.id)).await?
@@ -1604,6 +1676,8 @@ impl App {
                 .collect(),
             "read" => complete_path_input("read", argument),
             "import" => complete_path_input("import", argument),
+            "import-jex" => complete_path_input("import-jex", argument),
+            "export-jex" => complete_path_input("export-jex", argument),
             _ => Vec::new(),
         };
         items.sort_by_key(|item: &String| item.to_lowercase());
@@ -1632,6 +1706,14 @@ impl App {
                     .map(|value| resolve_import_path(&value))
                     .unwrap_or_else(default_cli_database_path);
                 self.import_from_database(&import_path).await?;
+                Ok(false)
+            }
+            CommandAction::ImportJex(path) => {
+                self.import_from_jex(&resolve_import_path(&path)).await?;
+                Ok(false)
+            }
+            CommandAction::ExportJex(path) => {
+                self.export_to_jex(&resolve_import_path(&path)).await?;
                 Ok(false)
             }
             CommandAction::Read(path) => {
@@ -2045,6 +2127,38 @@ impl App {
         self.refresh_current_lists().await?;
         self.state.set_status(&summary.describe());
         Ok(())
+    }
+
+    async fn import_from_jex(&mut self, source_path: &Path) -> Result<()> {
+        self.state
+            .set_status(&format!("Importing JEX from {}...", source_path.display()));
+        let summary = neojoplin_core::import_jex(self.storage.as_ref(), source_path).await?;
+        self.refresh_current_lists().await?;
+        self.state.set_status(&summary.describe_import(source_path));
+        Ok(())
+    }
+
+    async fn export_to_jex(&mut self, dest_path: &Path) -> Result<()> {
+        self.state
+            .set_status(&format!("Exporting JEX to {}...", dest_path.display()));
+        let summary = neojoplin_core::export_jex(self.storage.as_ref(), dest_path).await?;
+        self.state.set_status(&summary.describe_export(dest_path));
+        Ok(())
+    }
+
+    fn apply_help_search(&mut self) {
+        let query = self.help_search_query.trim().to_lowercase();
+        if query.is_empty() {
+            self.help_scroll = 0;
+            return;
+        }
+
+        if let Some(index) = ui::help_search_lines()
+            .iter()
+            .position(|line| line.to_lowercase().contains(&query))
+        {
+            self.help_scroll = index as u16;
+        }
     }
 
     async fn create_note_from_file(&mut self, file_path: &Path) -> Result<()> {

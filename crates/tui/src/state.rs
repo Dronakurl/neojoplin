@@ -121,6 +121,12 @@ pub struct AppState {
     pub pending_delete: Option<PendingDelete>,
     /// Whether "Trash" mode is active
     pub trash_mode: bool,
+    /// Whether "Orphaned" mode is active
+    pub orphan_mode: bool,
+    /// Number of currently orphaned notes
+    pub orphan_note_count: usize,
+    /// Number of currently trashed notes
+    pub trash_note_count: usize,
     /// Display names for folders (with disambiguation suffixes)
     pub folder_display_names: HashMap<String, String>,
     /// Whether sort help is active
@@ -169,6 +175,9 @@ impl Default for AppState {
             new_folder_id: None,
             pending_delete: None,
             trash_mode: false,
+            orphan_mode: false,
+            orphan_note_count: 0,
+            trash_note_count: 0,
             folder_display_names: HashMap::new(),
             show_sort_popup: false,
             note_sort: NoteSortMode::TimeAsc,
@@ -213,6 +222,8 @@ impl AppState {
         let old_folder = self.selected_folder;
         self.selected_folder = index;
         self.all_notebooks_mode = index.is_none();
+        self.orphan_mode = false;
+        self.trash_mode = false;
         old_folder != index
     }
 
@@ -250,32 +261,65 @@ impl AppState {
         match self.focus {
             FocusPanel::Notebooks => {
                 let len = self.folders.len();
-                if len > 0 {
-                    if self.trash_mode {
-                        if delta < 0 {
-                            // Moving UP from trash: go to last folder
-                            self.trash_mode = false;
-                            self.all_notebooks_mode = false;
+                if self.trash_mode {
+                    if delta < 0 {
+                        self.trash_mode = false;
+                        if len > 0 {
                             self.selected_folder = Some(len - 1);
-                            folder_changed = true;
-                        }
-                        // Moving DOWN in trash: do nothing
-                    } else if self.all_notebooks_mode {
-                        if delta > 0 {
                             self.all_notebooks_mode = false;
-                            self.selected_folder = Some(0);
-                            folder_changed = true;
+                            self.orphan_mode = false;
+                        } else if self.orphan_note_count > 0 {
+                            self.orphan_mode = true;
+                        } else {
+                            self.all_notebooks_mode = true;
                         }
-                    } else if let Some(ref mut idx) = self.selected_folder {
+                        folder_changed = true;
+                    }
+                } else if self.orphan_mode {
+                    if delta < 0 {
+                        self.orphan_mode = false;
+                        self.all_notebooks_mode = true;
+                        self.selected_folder = None;
+                        folder_changed = true;
+                    } else if delta > 0 {
+                        self.orphan_mode = false;
+                        if len > 0 {
+                            self.selected_folder = Some(0);
+                            self.all_notebooks_mode = false;
+                        } else if self.trash_note_count > 0 {
+                            self.trash_mode = true;
+                            self.selected_folder = None;
+                            self.all_notebooks_mode = false;
+                        }
+                        folder_changed = true;
+                    }
+                } else if self.all_notebooks_mode {
+                    if delta > 0 {
+                        self.all_notebooks_mode = false;
+                        if self.orphan_note_count > 0 {
+                            self.orphan_mode = true;
+                            self.selected_folder = None;
+                        } else if len > 0 {
+                            self.selected_folder = Some(0);
+                        } else if self.trash_note_count > 0 {
+                            self.trash_mode = true;
+                        }
+                        folder_changed = true;
+                    }
+                } else if len > 0 {
+                    if let Some(ref mut idx) = self.selected_folder {
                         let old_idx = *idx;
 
                         if delta < 0 && *idx == 0 {
-                            self.all_notebooks_mode = true;
+                            self.orphan_mode = true;
                             self.selected_folder = None;
+                            self.all_notebooks_mode = false;
                             folder_changed = true;
                         } else if delta > 0 && *idx == len - 1 {
-                            // Moving DOWN past the last folder: activate trash mode
                             self.trash_mode = true;
+                            self.orphan_mode = false;
+                            self.selected_folder = None;
+                            self.all_notebooks_mode = false;
                             folder_changed = true;
                         } else {
                             let new_idx_raw =
@@ -286,6 +330,7 @@ impl AppState {
                     } else {
                         self.selected_folder = Some(0);
                         self.all_notebooks_mode = false;
+                        self.orphan_mode = false;
                         folder_changed = true;
                     }
                 }
@@ -363,6 +408,8 @@ impl AppState {
         {
             self.selected_folder = Some(idx);
             self.all_notebooks_mode = false;
+            self.orphan_mode = false;
+            self.trash_mode = false;
             true
         } else {
             false
@@ -643,12 +690,22 @@ impl AppState {
         self.trash_mode = enabled;
         if enabled {
             self.all_notebooks_mode = false;
+            self.orphan_mode = false;
             self.selected_folder = None;
         }
     }
 
     pub fn is_trash_mode(&self) -> bool {
         self.trash_mode
+    }
+
+    pub fn set_orphan_mode(&mut self, enabled: bool) {
+        self.orphan_mode = enabled;
+        if enabled {
+            self.all_notebooks_mode = false;
+            self.trash_mode = false;
+            self.selected_folder = None;
+        }
     }
 }
 
@@ -948,6 +1005,11 @@ mod tests {
         assert!(folder_changed);
         assert!(!state.all_notebooks_mode);
         assert_eq!(state.selected_folder, Some(0));
+
+        let folder_changed = state.move_selection(-1);
+        assert!(folder_changed);
+        assert!(state.orphan_mode);
+        assert_eq!(state.selected_folder, None);
 
         let folder_changed = state.move_selection(-1);
         assert!(folder_changed);
