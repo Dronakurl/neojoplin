@@ -11,6 +11,7 @@ pub enum SettingsTab {
     #[default]
     Sync,
     Encryption,
+    Help,
 }
 
 /// Active field in the encryption password prompt

@@ -301,6 +301,17 @@ impl App {
                 }
             }
 
+            KeyCode::Char('F') => {
+                // F - full content filter for notes or notebooks
+                if matches!(self.state.focus, FocusPanel::Notebooks | FocusPanel::Notes) {
+                    self.state.open_filter_prompt();
+                    self.state.set_status("Full-text filter: enter query and press Enter");
+                } else {
+                    self.state
+                        .set_status("Focus notebooks or notes to filter the current list");
+                }
+            }
+
             // Sync
             KeyCode::Char('s') => {
                 // s - Sync
@@ -394,8 +405,8 @@ impl App {
                 self.delete_selected_note_immediately().await?;
             }
 
-            // Hidden move shortcut
-            KeyCode::Char('M') => {
+            // Move shortcut (m) - visible via ? help but not in ribbon
+            KeyCode::Char('m') => {
                 if self.state.selected_note().is_some() {
                     self.state.open_command_prompt("move ".to_string());
                 } else {

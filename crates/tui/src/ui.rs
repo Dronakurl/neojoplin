@@ -102,6 +102,14 @@ fn render_notebooks_panel(f: &mut Frame, state: &AppState, area: Rect) {
         };
         all_items.push(ListItem::new("📚 All Notes").style(all_style));
 
+        // Orphaned notes entry (non-destructive visual entry)
+        let orphan_style = if state.focus == FocusPanel::Notebooks && state.notebook_filter_query.is_empty() {
+            theme.text()
+        } else {
+            theme.dim()
+        };
+        all_items.push(ListItem::new("🔎 Orphaned").style(orphan_style));
+
         // Add individual notebooks
         for (i, folder) in state.folders.iter().enumerate() {
             let is_selected =
@@ -147,7 +155,8 @@ fn render_notebooks_panel(f: &mut Frame, state: &AppState, area: Rect) {
         let trash_style = if state.trash_mode && !state.all_notebooks_mode {
             theme.selection()
         } else {
-            theme.dim()
+            // Use a more visible error color for trash entries
+            theme.error()
         };
         all_items.push(ListItem::new("🗑 Trash").style(trash_style));
 
@@ -448,87 +457,85 @@ fn termimad_to_ratatui_lines(text: &str, width: usize) -> Vec<Line<'static>> {
 
 /// Render keybinding ribbon (show available keybindings) - Zellij-style arrow separators
 fn render_keybinding_ribbon(f: &mut Frame, state: &AppState, area: Rect) {
+    use std::fmt::Write as FmtWrite;
     let theme = &state.theme;
     let arrow = ""; // Powerline separator
 
-    // Define keybindings: (key, action)
-    let bindings: &[(&str, &str)] = if state.trash_mode {
-        &[
-            ("q", "QUIT"),
-            ("hjkl", "NAV"),
-            ("R", "RESTORE"),
-            ("d", "DELETE"),
-            ("f", "FILTER"),
-            ("S", "SETTINGS"),
-        ]
+    // Build dynamic list of bindings based on state and availability
+    let mut bindings: Vec<(String, String)> = Vec::new();
+
+    // Always available
+    bindings.push(("q".to_string(), "QUIT".to_string()));
+    bindings.push(("←→/hjkl".to_string(), "NAV".to_string()));
+
+    // Contextual bindings
+    if state.trash_mode {
+        bindings.push(("R".to_string(), "RESTORE".to_string()));
+        bindings.push(("d".to_string(), "DELETE".to_string()));
     } else {
-        &[
-            ("q", "QUIT"),
-            ("hjkl", "NAV"),
-            ("n", "NEW"),
-            ("d", "DELETE"),
-            ("t", "TODO"),
-            ("f", "FILTER"),
-            (",", "SORT"),
-            ("s", "SYNC"),
-            ("S", "SETTINGS"),
-        ]
-    };
+        // Only show New when in notebooks/notes
+        if matches!(state.focus, crate::state::FocusPanel::Notebooks | crate::state::FocusPanel::Notes) {
+            bindings.push(("n".to_string(), "NEW".to_string()));
+        }
+        bindings.push(("d".to_string(), "DELETE".to_string()));
+        bindings.push(("t".to_string(), "TODO".to_string()));
+        bindings.push((",".to_string(), "SORT".to_string()));
+        bindings.push(("s".to_string(), "SYNC".to_string()));
+    }
+
+    // Filter available when focus is list-based
+    if matches!(state.focus, crate::state::FocusPanel::Notebooks | crate::state::FocusPanel::Notes) || state.trash_mode {
+        bindings.push(("f".to_string(), "FILTER".to_string()));
+        bindings.push(("F".to_string(), "FULL-FILTER".to_string()));
+    }
+
+    // Settings always available
+    bindings.push(("S".to_string(), "SETTINGS".to_string()));
+
+    // Hidden bindings (not in ribbon) are not included here
 
     let mut spans = vec![];
     let mut total_width = 0;
     let available_width = area.width as usize;
 
     for (key, action) in bindings.iter() {
-        // Calculate segment width
         let key_width = key.chars().count();
         let action_width = action.chars().count();
         let arrow_width = arrow.chars().count();
-
-        // Pattern: "KEY arrow ACTION arrow space" where arrows create the colored box effect
         let segment_width = key_width + 1 + arrow_width + 1 + action_width + 1 + arrow_width + 1;
-
         if total_width + segment_width > available_width {
-            break; // Stop if we're out of space
+            break;
         }
 
-        // Use single primary color for all actions (not alternating)
         let action_bg = theme.primary;
+        let surface_color = theme.surface;
+        let key_color = theme.text;
+        let action_fg_color = Color::Black;
 
-        // Get the actual colors from the theme
-        let surface_color = theme.surface; // Background color
-        let key_color = theme.text; // Normal text color for keys (not grey!)
-        let action_fg_color = Color::Black; // Dark text on colored background
-
-        // Key in normal text (no trailing space, space comes after arrow)
         spans.push(Span::styled(
-            format!("{} ", *key),
+            format!("{} ", key),
             Style::default().fg(key_color).bg(surface_color),
         ));
         total_width += key_width;
 
-        // Left arrow: NOT inverted - surface on action_bg (points TO action)
         spans.push(Span::styled(
             arrow,
             Style::default().fg(surface_color).bg(action_bg),
         ));
         total_width += arrow_width;
 
-        // Action text: black on action background (inverted)
         spans.push(Span::styled(
-            format!(" {} ", *action),
+            format!(" {} ", action),
             Style::default().fg(action_fg_color).bg(action_bg).bold(),
         ));
         total_width += 1 + action_width + 1;
 
-        // Right arrow: INVERTED - action_bg on surface (points AWAY from action)
         spans.push(Span::styled(
             arrow,
             Style::default().fg(action_bg).bg(surface_color),
         ));
         total_width += arrow_width;
 
-        // Space after arrow before next key
         spans.push(Span::styled(
             " ",
             Style::default().fg(key_color).bg(surface_color),
@@ -628,10 +635,11 @@ pub fn render_settings(f: &mut Frame, state: &AppState) {
         .split(inner);
 
     // Tab bar
-    let tab_names = ["Sync", "Encryption"];
+    let tab_names = ["Sync", "Encryption", "Help"];
     let current_tab_idx = match state.settings.current_tab {
         SettingsTab::Sync => 0,
         SettingsTab::Encryption => 1,
+        SettingsTab::Help => 2,
     };
     let tabs = Tabs::new(tab_names)
         .select(current_tab_idx)
@@ -643,6 +651,7 @@ pub fn render_settings(f: &mut Frame, state: &AppState) {
     match state.settings.current_tab {
         SettingsTab::Sync => render_sync_settings_content(f, state, layout[1]),
         SettingsTab::Encryption => render_encryption_settings(f, state, layout[1]),
+        SettingsTab::Help => render_help_tab(f, state, layout[1]),
     }
 
     // Delete confirmation overlay
@@ -1248,7 +1257,7 @@ pub fn render_help(f: &mut Frame, scroll: u16, state: &AppState) {
         Line::from("  N      New notebook"),
         Line::from("  t      New to-do in current notebook"),
         Line::from("  T      Convert selected note ↔ to-do"),
-        Line::from("  M      Move the selected note to another notebook"),
+        Line::from("  m      Move the selected note to another notebook"),
         Line::from("  r      Rename selected note or notebook"),
         Line::from("  f      Filter the focused list (notes also support #tag filters)"),
         Line::from("  ,      Open sort help for the focused list"),
@@ -1282,6 +1291,16 @@ pub fn render_help(f: &mut Frame, scroll: u16, state: &AppState) {
         Line::from("  S          Open settings"),
         Line::from("  q          Quit"),
     ]);
+
+    // Clamp scroll to the available content height to avoid infinite scrolling
+    let total_lines = text.lines.len();
+    let visible_height = area.height.saturating_sub(2) as usize; // border + padding
+    let max_scroll = if total_lines > visible_height {
+        (total_lines - visible_height) as u16
+    } else {
+        0u16
+    };
+    let scroll = std::cmp::min(scroll, max_scroll);
 
     let paragraph = Paragraph::new(text)
         .block(
