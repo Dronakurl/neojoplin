@@ -150,9 +150,15 @@ impl App {
     async fn run_main_loop<B: ratatui::backend::Backend>(
         &mut self,
         terminal: &mut Terminal<B>,
-    ) -> Result<()> {
+    ) -> Result<()>
+    where
+        B::Error: std::error::Error + Send + Sync + 'static,
+    {
         loop {
             self.run_auto_sync_if_due().await?;
+            self.state
+                .settings
+                .set_next_auto_sync_in_seconds(self.auto_sync_scheduler.seconds_until_next_run());
 
             // Render UI
             terminal.draw(|f| {
@@ -202,7 +208,10 @@ impl App {
         &mut self,
         key: KeyEvent,
         terminal: &mut Terminal<B>,
-    ) -> Result<bool> {
+    ) -> Result<bool>
+    where
+        B::Error: std::error::Error + Send + Sync + 'static,
+    {
         // Handle global shortcuts
         if self.state.show_quit_confirmation {
             // Confirm quit
@@ -698,6 +707,9 @@ impl App {
             .filter(|note| note.is_conflict != 0)
             .count();
         self.state.settings.update_runtime_status(conflict_count);
+        self.state
+            .settings
+            .set_next_auto_sync_in_seconds(self.auto_sync_scheduler.seconds_until_next_run());
         Ok(())
     }
 
@@ -731,7 +743,10 @@ impl App {
         &mut self,
         note: &Note,
         terminal: &mut Terminal<B>,
-    ) -> Result<()> {
+    ) -> Result<()>
+    where
+        B::Error: std::error::Error + Send + Sync + 'static,
+    {
         use neojoplin_core::Editor;
 
         self.state
@@ -1226,21 +1241,32 @@ impl App {
             KeyCode::Up | KeyCode::Char('k')
                 if self.state.settings.current_tab == SettingsTab::AutoSync =>
             {
-                self.state.settings.auto_sync.cycle(false);
-                self.auto_sync_scheduler
-                    .set_interval_seconds(self.state.settings.auto_sync.interval_seconds);
-                let data_dir = neojoplin_core::Config::data_dir()?;
-                self.state.settings.save_sync_settings(&data_dir).await?;
+                self.state.settings.auto_sync.move_selection(false);
             }
 
             KeyCode::Down | KeyCode::Char('j')
                 if self.state.settings.current_tab == SettingsTab::AutoSync =>
             {
-                self.state.settings.auto_sync.cycle(true);
+                self.state.settings.auto_sync.move_selection(true);
+            }
+
+            KeyCode::Enter if self.state.settings.current_tab == SettingsTab::AutoSync => {
+                let changed = self.state.settings.auto_sync.apply_selected();
                 self.auto_sync_scheduler
                     .set_interval_seconds(self.state.settings.auto_sync.interval_seconds);
                 let data_dir = neojoplin_core::Config::data_dir()?;
                 self.state.settings.save_sync_settings(&data_dir).await?;
+                self.state
+                    .settings
+                    .update_runtime_status(self.state.settings.status.current_conflict_count);
+                self.state.settings.set_next_auto_sync_in_seconds(
+                    self.auto_sync_scheduler.seconds_until_next_run(),
+                );
+                self.state.set_status(if changed {
+                    "Auto-sync interval updated"
+                } else {
+                    "Auto-sync interval unchanged"
+                });
             }
 
             // Navigate target list

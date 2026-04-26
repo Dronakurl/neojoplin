@@ -8,6 +8,10 @@ use ratatui::{
     widgets::{Block, Borders, List, ListItem, Paragraph, Tabs, Wrap},
     Frame,
 };
+use ratatui_interact::{
+    components::{DialogConfig, DialogState, PopupDialog},
+    traits::ContainerAction,
+};
 
 use crate::settings::{ConnectionResult, EncryptionField, FormField};
 use crate::theme::Theme;
@@ -65,6 +69,11 @@ const HELP_LINES: &[&str] = &[
     "  Trash    Select the Trash notebook entry to browse deleted notes",
     "  Orphaned Select the Orphaned notebook entry to browse notes without a notebook",
     "",
+    "Encryption",
+    "  One active master key encrypts new synced data",
+    "  Older enabled master keys may still be needed to decrypt remote items",
+    "  One master password can unlock multiple master keys",
+    "",
     "Other",
     "  /          Search inside help",
     "  :          Open the command line",
@@ -82,6 +91,61 @@ pub fn help_search_lines() -> &'static [&'static str] {
 /// The full title (including "# ") is preserved in the data model and shown in the preview.
 fn display_title(title: &str) -> &str {
     title.strip_prefix("# ").unwrap_or(title)
+}
+
+fn render_popup_dialog<'a>(
+    f: &mut Frame,
+    title: &str,
+    lines: Vec<Line<'a>>,
+    button_labels: &[&str],
+    border_color: Color,
+    text_alignment: Alignment,
+) {
+    let content_width = lines
+        .iter()
+        .map(|line| line.width() as u16)
+        .max()
+        .unwrap_or(0);
+    let buttons_width = if button_labels.is_empty() {
+        0
+    } else {
+        button_labels
+            .iter()
+            .map(|label| label.chars().count() as u16 + 4)
+            .sum::<u16>()
+            + (button_labels.len().saturating_sub(1) as u16 * 2)
+    };
+    let width = (content_width
+        .max(buttons_width)
+        .max(title.chars().count() as u16)
+        + 6)
+    .max(32);
+    let height = (lines.len() as u16 + if button_labels.is_empty() { 4 } else { 6 }).max(8);
+
+    let config = DialogConfig::new(title)
+        .width_percent(100)
+        .height_percent(100)
+        .min_size(width, height)
+        .max_size(width, height)
+        .border_color(border_color)
+        .focused_border_color(border_color)
+        .buttons(
+            button_labels
+                .iter()
+                .map(|label| ((*label).to_string(), ContainerAction::Close))
+                .collect(),
+        );
+    let mut dialog_state = DialogState::new(());
+    dialog_state.show();
+    let mut dialog = PopupDialog::new(&config, &mut dialog_state, move |frame, area, _| {
+        frame.render_widget(
+            Paragraph::new(lines.clone())
+                .wrap(Wrap { trim: false })
+                .alignment(text_alignment),
+            area,
+        );
+    });
+    dialog.render(f);
 }
 
 /// Render the main UI
@@ -850,7 +914,10 @@ fn settings_bottom_hints<'a>(state: &'a AppState, theme: &'a Theme) -> Line<'a> 
                 }
             }
             SettingsTab::AutoSync => {
-                for s in kh(theme, "j/k", "change interval") {
+                for s in kh(theme, "j/k", "select") {
+                    spans.push(s);
+                }
+                for s in kh(theme, "Enter", "apply") {
                     spans.push(s);
                 }
             }
@@ -878,28 +945,19 @@ fn settings_bottom_hints<'a>(state: &'a AppState, theme: &'a Theme) -> Line<'a> 
 
 /// Render a small delete confirmation overlay
 fn render_delete_confirm_overlay(f: &mut Frame, target_name: &str, parent: Rect, theme: &Theme) {
-    let area = centered_rect(50, 20, parent);
-    let msg = format!("Delete '{}'?", target_name);
-    let hints = Line::from(vec![
-        Span::styled("[y/Enter]", theme.accent()),
-        Span::raw(" yes  ").style(theme.text()),
-        Span::styled("[n/Esc]", theme.muted()),
-        Span::raw(" no").style(theme.text()),
-    ]);
-    let content = Paragraph::new(vec![
-        Line::from(""),
-        Line::from(msg).alignment(Alignment::Center),
-        Line::from(""),
-    ])
-    .block(
-        Block::default()
-            .title("")
-            .borders(Borders::ALL)
-            .border_style(theme.error())
-            .title_bottom(hints),
-    )
-    .alignment(Alignment::Center);
-    f.render_widget(content, area);
+    let _ = parent;
+    render_popup_dialog(
+        f,
+        "Delete target",
+        vec![
+            Line::from("Delete this sync target?").style(theme.error()),
+            Line::from(""),
+            Line::from(target_name.to_string()).style(theme.primary()),
+        ],
+        &["y/Enter", "n/Esc"],
+        theme.error().fg.unwrap_or(Color::Red),
+        Alignment::Center,
+    );
 }
 
 /// Render encryption settings tab content
@@ -934,6 +992,76 @@ fn render_encryption_settings(f: &mut Frame, state: &AppState, area: Rect) {
         Span::raw(enc.master_key_count.to_string()),
     ]));
     lines.push(Line::from(""));
+    lines.push(Line::from(
+        "One active key encrypts new data; older enabled keys may still decrypt synced data.",
+    ));
+    lines.push(Line::from(
+        "A single master password can unlock multiple master keys.",
+    ));
+
+    if !enc.master_keys.is_empty() {
+        lines.push(Line::from(""));
+        lines.push(Line::from("Known master keys:").style(theme.primary()));
+        for key in &enc.master_keys {
+            let short_id = format!("{}…", &key.id[..8.min(key.id.len())]);
+            let status = match key.enabled {
+                Some(true) => "enabled",
+                Some(false) => "disabled",
+                None => "unknown",
+            };
+            let usage = match key.has_been_used {
+                Some(true) => "used",
+                Some(false) => "unused",
+                None => "usage ?",
+            };
+            let created = timestamp_to_datetime(key.created_time)
+                .format("%Y-%m-%d %H:%M")
+                .to_string();
+            let updated = timestamp_to_datetime(key.updated_time)
+                .format("%Y-%m-%d %H:%M")
+                .to_string();
+            let marker = if enc.active_master_key_id.as_deref() == Some(key.id.as_str()) {
+                "●"
+            } else {
+                "○"
+            };
+            lines.push(Line::from(vec![
+                Span::styled(
+                    format!("{} ", marker),
+                    if marker == "●" {
+                        theme.success()
+                    } else {
+                        theme.muted()
+                    },
+                ),
+                Span::styled(short_id, theme.text()),
+                Span::raw("  "),
+                Span::styled(
+                    status,
+                    if key.enabled.unwrap_or(false) {
+                        theme.success()
+                    } else {
+                        theme.warning()
+                    },
+                ),
+                Span::raw("  "),
+                Span::styled(usage, theme.muted()),
+            ]));
+            lines.push(Line::from(format!(
+                "    source: {}  method: {}  created: {}  updated: {}",
+                if key.source_application.is_empty() {
+                    "unknown"
+                } else {
+                    &key.source_application
+                },
+                key.encryption_method
+                    .map(|value| value.to_string())
+                    .unwrap_or_else(|| "?".to_string()),
+                created,
+                updated
+            )));
+        }
+    }
 
     if enc.password_success {
         lines.push(Line::from(vec![
@@ -1090,7 +1218,8 @@ fn render_target_details(f: &mut Frame, state: &AppState, area: Rect) {
         let help_text = vec![
             Line::from("Sync Target Management").bold(),
             Line::from(""),
-            Line::from("Configure your WebDAV sync targets here."),
+            Line::from("Joplin uses one active sync target at a time."),
+            Line::from("NeoJoplin currently supports WebDAV targets."),
             Line::from(""),
             Line::from("Key bindings:"),
             Line::from(vec![
@@ -1178,16 +1307,20 @@ fn render_target_details(f: &mut Frame, state: &AppState, area: Rect) {
                     Span::styled(&target.remote_path, theme.text()),
                 ]),
                 Line::from(""),
-                Line::from("Actions:"),
                 Line::from(vec![
-                    Span::raw("  Press "),
-                    Span::styled("'e'", theme.accent()),
-                    Span::raw(" to edit"),
+                    Span::styled("Active model: ", theme.muted()),
+                    Span::styled("one target at a time", theme.primary()),
                 ]),
                 Line::from(vec![
-                    Span::raw("  Press "),
-                    Span::styled("'d'", theme.accent()),
-                    Span::raw(" to delete"),
+                    Span::styled("Joplin target types: ", theme.muted()),
+                    Span::styled(
+                        "Filesystem, Nextcloud, WebDAV, S3, Joplin Server, Joplin Server SAML",
+                        theme.text(),
+                    ),
+                ]),
+                Line::from(vec![
+                    Span::styled("NeoJoplin today: ", theme.muted()),
+                    Span::styled("WebDAV", theme.success()),
                 ]),
             ];
 
@@ -1445,14 +1578,24 @@ fn render_auto_sync_settings(f: &mut Frame, state: &AppState, area: Rect) {
     let settings = &state.settings.auto_sync;
     let options: Vec<ListItem> = crate::settings::AUTO_SYNC_INTERVAL_OPTIONS
         .iter()
-        .map(|interval| {
-            let is_selected = *interval == settings.interval_seconds;
-            let style = if is_selected {
+        .enumerate()
+        .map(|(index, interval)| {
+            let is_current = *interval == settings.interval_seconds;
+            let is_highlighted = index == settings.selected_option_index;
+            let prefix = if is_current { "● " } else { "○ " };
+            let style = if is_highlighted {
                 theme.selection()
+            } else if is_current {
+                theme.primary()
             } else {
                 theme.text()
             };
-            ListItem::new(format_auto_sync_interval(*interval)).style(style)
+            ListItem::new(format!(
+                "{}{}",
+                prefix,
+                format_auto_sync_interval(*interval)
+            ))
+            .style(style)
         })
         .collect();
 
@@ -1478,8 +1621,20 @@ fn render_auto_sync_settings(f: &mut Frame, state: &AppState, area: Rect) {
                 theme.primary(),
             ),
         ]),
+        Line::from(vec![
+            Span::styled("Selected: ", theme.muted()),
+            Span::styled(
+                format_auto_sync_interval(settings.selected_interval_seconds()),
+                if settings.selected_interval_seconds() == settings.interval_seconds {
+                    theme.text()
+                } else {
+                    theme.accent()
+                },
+            ),
+        ]),
         Line::from(""),
-        Line::from("NeoJoplin will automatically run a background sync on this interval."),
+        Line::from("Move with j/k, then press Enter to apply."),
+        Line::from("NeoJoplin runs one active recurrent sync timer, like Joplin."),
         Line::from("The timer is reset after each sync attempt."),
     ])
     .block(
@@ -1544,6 +1699,23 @@ fn render_sync_status_settings(f: &mut Frame, state: &AppState, area: Rect) {
             Span::styled(status.current_conflict_count.to_string(), theme.text()),
         ]),
         Line::from(vec![
+            Span::styled("Auto-sync: ", theme.muted()),
+            Span::styled(
+                format_auto_sync_interval(status.current_auto_sync_interval_seconds),
+                theme.text(),
+            ),
+        ]),
+        Line::from(vec![
+            Span::styled("Next auto-sync: ", theme.muted()),
+            Span::styled(
+                status
+                    .next_auto_sync_in_seconds
+                    .map(format_duration_brief)
+                    .unwrap_or_else(|| "Not scheduled".to_string()),
+                theme.text(),
+            ),
+        ]),
+        Line::from(vec![
             Span::styled("Encryption now: ", theme.muted()),
             Span::styled(
                 if status.current_encryption_enabled {
@@ -1599,48 +1771,37 @@ fn format_auto_sync_interval(interval_seconds: u64) -> String {
     }
 }
 
+fn format_duration_brief(seconds: u64) -> String {
+    if seconds == 0 {
+        return "due now".to_string();
+    }
+    if seconds < 60 {
+        return format!("in {}s", seconds);
+    }
+    if seconds < 3600 {
+        return format!("in {}m", seconds / 60);
+    }
+    if seconds < 86400 {
+        return format!("in {}h {}m", seconds / 3600, (seconds % 3600) / 60);
+    }
+    format!("in {}d {}h", seconds / 86400, (seconds % 86400) / 3600)
+}
+
 /// Render quit confirmation popup
 pub fn render_quit_confirmation(f: &mut Frame, state: &AppState) {
-    let area = centered_rect(35, 15, f.area()); // Smaller: 35% width, 15% height
     let theme = &state.theme;
-
-    let bottom_title = Line::from(vec![
-        Span::styled("[", theme.muted()),
-        Span::styled("q", theme.accent()),
-        Span::styled("]", theme.muted()),
-        Span::raw(" or ").style(theme.text()),
-        Span::styled("[", theme.muted()),
-        Span::styled("y", theme.accent()),
-        Span::styled("]", theme.muted()),
-        Span::raw(" quit ").style(theme.text()),
-        Span::styled("[", theme.muted()),
-        Span::styled("any", theme.accent()),
-        Span::styled("]", theme.muted()),
-        Span::raw(" cancel ").style(theme.text()),
-    ]);
-
-    let text = Text::from(vec![
-        Line::from(""),
-        Line::from("Quit NeoJoplin?").style(theme.primary()),
-        Line::from(""),
-    ]);
-
-    let paragraph = Paragraph::new(text)
-        .block(
-            Block::default()
-                .title("Confirm Quit")
-                .title_bottom(bottom_title)
-                .borders(Borders::ALL)
-                .border_style(theme.border_focused()),
-        )
-        .wrap(Wrap { trim: true })
-        .alignment(Alignment::Center);
-
-    f.render_widget(paragraph, area);
+    let _ = state;
+    render_popup_dialog(
+        f,
+        "Confirm Quit",
+        vec![Line::from("Quit NeoJoplin?").style(theme.primary())],
+        &["q", "y", "Esc"],
+        Color::Cyan,
+        Alignment::Center,
+    );
 }
 
 pub fn render_delete_confirmation(f: &mut Frame, state: &AppState) {
-    let area = centered_rect_with_min_width(42, 22, 52, f.area());
     let theme = &state.theme;
 
     let (question, item_label) = match state.pending_delete.as_ref() {
@@ -1658,65 +1819,31 @@ pub fn render_delete_confirmation(f: &mut Frame, state: &AppState) {
         None => ("Delete?", ""),
     };
 
-    let bottom_title = match state.pending_delete.as_ref() {
-        Some(crate::state::PendingDelete::Notebook { .. }) => Line::from(vec![
-            Span::styled("[", theme.muted()),
-            Span::styled("y/Enter", theme.accent()),
-            Span::styled("]", theme.muted()),
-            Span::raw(" notebook only ").style(theme.text()),
-            Span::styled("[", theme.muted()),
-            Span::styled("Y", theme.accent()),
-            Span::styled("]", theme.muted()),
-            Span::raw(" delete notebook + notes ").style(theme.text()),
-            Span::styled("[", theme.muted()),
-            Span::styled("n/Esc", theme.accent()),
-            Span::styled("]", theme.muted()),
-            Span::raw(" cancel ").style(theme.text()),
-        ]),
-        _ => Line::from(vec![
-            Span::styled("[", theme.muted()),
-            Span::styled("y/Enter", theme.accent()),
-            Span::styled("]", theme.muted()),
-            Span::raw(" delete ").style(theme.text()),
-            Span::styled("[", theme.muted()),
-            Span::styled("n/Esc", theme.accent()),
-            Span::styled("]", theme.muted()),
-            Span::raw(" cancel ").style(theme.text()),
-        ]),
-    };
-
     let mut text_lines = vec![
-        Line::from(""),
         Line::from(question).style(theme.error()),
         Line::from(""),
         Line::from(item_label).style(theme.primary()),
-        Line::from(""),
     ];
     if let Some(crate::state::PendingDelete::Notebook { note_count, .. }) =
         state.pending_delete.as_ref()
     {
-        text_lines.push(Line::from(""));
         text_lines.push(Line::from(format!(
             "{} notes will become orphaned if you keep them.",
             note_count
         )));
     }
-    text_lines.push(Line::from(""));
-
-    let text = Text::from(text_lines);
-
-    let paragraph = Paragraph::new(text)
-        .block(
-            Block::default()
-                .title("")
-                .title_bottom(bottom_title)
-                .borders(Borders::ALL)
-                .border_style(theme.error()),
-        )
-        .wrap(Wrap { trim: true })
-        .alignment(Alignment::Center);
-
-    f.render_widget(paragraph, area);
+    let buttons = match state.pending_delete.as_ref() {
+        Some(crate::state::PendingDelete::Notebook { .. }) => vec!["y/Enter", "Y", "n/Esc"],
+        _ => vec!["y/Enter", "n/Esc"],
+    };
+    render_popup_dialog(
+        f,
+        "Delete",
+        text_lines,
+        &buttons,
+        Color::Red,
+        Alignment::Center,
+    );
 }
 
 fn build_folder_depths(state: &AppState) -> std::collections::HashMap<&str, usize> {
@@ -1821,46 +1948,25 @@ fn truncate_text(text: &str, max_width: usize) -> String {
 
 /// Render error dialog popup
 pub fn render_error_dialog(f: &mut Frame, state: &AppState) {
-    let area = centered_rect(60, 25, f.area()); // Wider for error messages
     let theme = &state.theme;
-
-    let bottom_title = Line::from(vec![
-        Span::styled("[", theme.muted()),
-        Span::styled("Enter", theme.accent()),
-        Span::styled("]", theme.muted()),
-        Span::raw(" close ").style(theme.text()),
-    ]);
 
     // Split error message into multiple lines if it's too long
     let error_lines = split_error_text(&state.error_message, 50);
 
-    let mut text_lines = vec![
-        Line::from(""),
-        Line::from("⚠ Error").style(theme.error()),
-        Line::from(""),
-    ];
+    let mut text_lines = vec![Line::from("⚠ Error").style(theme.error()), Line::from("")];
 
     for line in error_lines {
         text_lines.push(Line::from(line).style(theme.text()));
     }
 
-    text_lines.push(Line::from(""));
-    text_lines.push(Line::from(""));
-
-    let text = Text::from(text_lines);
-
-    let paragraph = Paragraph::new(text)
-        .block(
-            Block::default()
-                .title("Error")
-                .title_bottom(bottom_title)
-                .borders(Borders::ALL)
-                .border_style(theme.error()),
-        )
-        .wrap(Wrap { trim: true })
-        .alignment(Alignment::Left);
-
-    f.render_widget(paragraph, area);
+    render_popup_dialog(
+        f,
+        "Error",
+        text_lines,
+        &["Enter"],
+        Color::Red,
+        Alignment::Left,
+    );
 }
 
 /// Split error text into multiple lines for better display
@@ -1946,7 +2052,6 @@ pub fn render_rename_prompt(f: &mut Frame, state: &AppState) {
 
 /// Render sort help popup
 pub fn render_sort_popup(f: &mut Frame, state: &AppState) {
-    let area = centered_rect_with_min_width(52, 22, 56, f.area());
     let theme = &state.theme;
 
     let (title, current_sort, lines) = match state.focus {
@@ -1976,31 +2081,12 @@ pub fn render_sort_popup(f: &mut Frame, state: &AppState) {
         ),
     };
 
-    let bottom_title = Line::from(vec![
-        Span::styled("[", theme.muted()),
-        Span::styled("Esc", theme.accent()),
-        Span::styled("]", theme.muted()),
-        Span::raw(" close ").style(theme.text()),
-    ]);
-
     let mut text_lines = vec![
         Line::from(format!("Current sort: {}", current_sort)).style(theme.primary()),
         Line::from(""),
     ];
     text_lines.extend(lines);
-
-    let paragraph = Paragraph::new(Text::from(text_lines))
-        .block(
-            Block::default()
-                .title(title)
-                .title_bottom(bottom_title)
-                .borders(Borders::ALL)
-                .border_style(theme.border_focused()),
-        )
-        .wrap(Wrap { trim: true })
-        .alignment(Alignment::Left);
-
-    f.render_widget(paragraph, area);
+    render_popup_dialog(f, title, text_lines, &["Esc"], Color::Cyan, Alignment::Left);
 }
 
 fn format_with_filter(base_title: String, filter_query: &str) -> String {

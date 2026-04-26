@@ -81,6 +81,32 @@ struct StoredSyncStatus {
     last_sync_encryption_enabled: bool,
 }
 
+#[derive(Debug, Clone, Default)]
+pub struct MasterKeySummary {
+    pub id: String,
+    pub created_time: i64,
+    pub updated_time: i64,
+    pub source_application: String,
+    pub encryption_method: Option<i32>,
+    pub enabled: Option<bool>,
+    pub has_been_used: Option<bool>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct StoredMasterKeyFile {
+    id: String,
+    created_time: i64,
+    updated_time: i64,
+    #[serde(default)]
+    source_application: String,
+    #[serde(default)]
+    encryption_method: Option<i32>,
+    #[serde(default)]
+    enabled: Option<bool>,
+    #[serde(default, rename = "hasBeenUsed")]
+    has_been_used: Option<bool>,
+}
+
 /// Sync settings state
 #[derive(Debug, Clone, Default)]
 pub struct SyncSettings {
@@ -111,12 +137,14 @@ pub const AUTO_SYNC_INTERVAL_OPTIONS: &[u64] = &[0, 300, 600, 1800, 3600, 43200,
 #[derive(Debug, Clone)]
 pub struct AutoSyncSettings {
     pub interval_seconds: u64,
+    pub selected_option_index: usize,
 }
 
 impl Default for AutoSyncSettings {
     fn default() -> Self {
         Self {
             interval_seconds: 300,
+            selected_option_index: 1,
         }
     }
 }
@@ -129,16 +157,34 @@ impl AutoSyncSettings {
             .unwrap_or(0)
     }
 
-    pub fn cycle(&mut self, forward: bool) {
-        let current_index = self.option_index();
-        let next_index = if forward {
+    pub fn move_selection(&mut self, forward: bool) {
+        let current_index = self
+            .selected_option_index
+            .min(AUTO_SYNC_INTERVAL_OPTIONS.len() - 1);
+        self.selected_option_index = if forward {
             (current_index + 1) % AUTO_SYNC_INTERVAL_OPTIONS.len()
         } else if current_index == 0 {
             AUTO_SYNC_INTERVAL_OPTIONS.len() - 1
         } else {
             current_index - 1
         };
-        self.interval_seconds = AUTO_SYNC_INTERVAL_OPTIONS[next_index];
+    }
+
+    pub fn sync_selection_to_value(&mut self) {
+        self.selected_option_index = self.option_index();
+    }
+
+    pub fn selected_interval_seconds(&self) -> u64 {
+        AUTO_SYNC_INTERVAL_OPTIONS[self
+            .selected_option_index
+            .min(AUTO_SYNC_INTERVAL_OPTIONS.len() - 1)]
+    }
+
+    pub fn apply_selected(&mut self) -> bool {
+        let selected = self.selected_interval_seconds();
+        let changed = self.interval_seconds != selected;
+        self.interval_seconds = selected;
+        changed
     }
 }
 
@@ -151,6 +197,8 @@ pub struct SyncStatusSettings {
     pub last_sync_encryption_enabled: bool,
     pub current_conflict_count: usize,
     pub current_encryption_enabled: bool,
+    pub current_auto_sync_interval_seconds: u64,
+    pub next_auto_sync_in_seconds: Option<u64>,
 }
 
 impl Default for SyncStatusSettings {
@@ -163,6 +211,8 @@ impl Default for SyncStatusSettings {
             last_sync_encryption_enabled: false,
             current_conflict_count: 0,
             current_encryption_enabled: false,
+            current_auto_sync_interval_seconds: 0,
+            next_auto_sync_in_seconds: None,
         }
     }
 }
@@ -264,6 +314,7 @@ pub struct EncryptionSettings {
     pub enabled: bool,
     pub active_master_key_id: Option<String>,
     pub master_key_count: usize,
+    pub master_keys: Vec<MasterKeySummary>,
     pub status_message: String,
     pub show_password_prompt: bool,
     pub show_new_key_prompt: bool,
@@ -281,6 +332,7 @@ impl Default for EncryptionSettings {
             enabled: false,
             active_master_key_id: None,
             master_key_count: 0,
+            master_keys: Vec::new(),
             status_message: "Encryption not configured".to_string(),
             show_password_prompt: false,
             show_new_key_prompt: false,
@@ -390,6 +442,7 @@ impl Settings {
             .get("sync.interval")
             .and_then(|value| value.as_u64())
             .unwrap_or(self.auto_sync.interval_seconds);
+        self.auto_sync.sync_selection_to_value();
 
         // Parse active target ID
         let active_id = config
@@ -542,17 +595,30 @@ impl Settings {
             }
         }
 
-        // Count master keys
+        self.encryption.master_keys.clear();
+
         if keys_dir.exists() {
             let mut entries = tokio::fs::read_dir(&keys_dir).await?;
-            let mut count = 0;
             while let Some(entry) = entries.next_entry().await? {
                 if entry.path().extension().is_some_and(|e| e == "json") {
-                    count += 1;
+                    let content = tokio::fs::read_to_string(entry.path()).await?;
+                    let key: StoredMasterKeyFile = serde_json::from_str(&content)?;
+                    self.encryption.master_keys.push(MasterKeySummary {
+                        id: key.id,
+                        created_time: key.created_time,
+                        updated_time: key.updated_time,
+                        source_application: key.source_application,
+                        encryption_method: key.encryption_method,
+                        enabled: key.enabled,
+                        has_been_used: key.has_been_used,
+                    });
                 }
             }
-            self.encryption.master_key_count = count;
+            self.encryption
+                .master_keys
+                .sort_by(|a, b| a.created_time.cmp(&b.created_time));
         }
+        self.encryption.master_key_count = self.encryption.master_keys.len();
 
         self.update_encryption_status();
         self.status.current_encryption_enabled = self.encryption.enabled;
@@ -687,6 +753,11 @@ impl Settings {
     pub fn update_runtime_status(&mut self, conflict_count: usize) {
         self.status.current_conflict_count = conflict_count;
         self.status.current_encryption_enabled = self.encryption.enabled;
+        self.status.current_auto_sync_interval_seconds = self.auto_sync.interval_seconds;
+    }
+
+    pub fn set_next_auto_sync_in_seconds(&mut self, seconds: Option<u64>) {
+        self.status.next_auto_sync_in_seconds = seconds;
     }
 
     /// Disable encryption

@@ -1,7 +1,7 @@
 // Theme system for NeoJoplin TUI
 // Uses semantic colors that work on both dark and light terminal backgrounds
 
-use ratatui::style::{Color, Style, Stylize};
+use ratatui::style::{Color, Style};
 
 /// Semantic theme colors for the TUI
 ///

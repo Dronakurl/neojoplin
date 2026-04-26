@@ -14,8 +14,8 @@ neojoplin-core = { path = "../core" }
 neojoplin-storage = { path = "../storage" }
 tokio = { workspace = true }
 sqlx = { workspace = true }
-ratatui = "0.28"
-crossterm = "0.28"
+ratatui = "0.30"
+crossterm = "0.29"
 anyhow = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
@@ -27,6 +27,7 @@ uuid = { version = "1.11", features = ["v4", "serde"] }
 termimad = "0.22"
 minimad = "=0.11.0"
 fuzzy-matcher = "0.3"
+ratatui-interact = "0.5.3"
 
 [dev-dependencies]
 tokio-test = "0.4"
