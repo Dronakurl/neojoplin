@@ -805,6 +805,16 @@ impl AppState {
         }
     }
 
+    /// The active note text filter query and whether it is exact.
+    pub fn note_text_filter_query(&self) -> Option<(String, bool)> {
+        let (text_query, _) = split_note_filter_query(&self.note_filter_query);
+        if text_query.text.is_empty() {
+            None
+        } else {
+            Some((text_query.text, text_query.exact))
+        }
+    }
+
     /// Open a delete confirmation dialog.
     pub fn confirm_delete(&mut self, pending_delete: PendingDelete) {
         self.pending_delete = Some(pending_delete);
