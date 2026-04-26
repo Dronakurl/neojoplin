@@ -215,6 +215,10 @@ impl App {
     where
         B::Error: std::error::Error + Send + Sync + 'static,
     {
+        if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
+            return Ok(true);
+        }
+
         // Handle global shortcuts
         if self.state.show_quit_confirmation {
             // Confirm quit
@@ -374,7 +378,6 @@ impl App {
                     self.state.show_quit();
                 }
             }
-
             // Help
             KeyCode::Char('?') => {
                 self.show_help = true;
@@ -1779,10 +1782,20 @@ impl App {
         match key.code {
             KeyCode::Char(c) => {
                 self.state.add_filter_char(c);
+                self.update_filter_tag_completion().await?;
                 self.refresh_current_lists().await?;
             }
             KeyCode::Backspace => {
                 self.state.remove_filter_char();
+                self.update_filter_tag_completion().await?;
+                self.refresh_current_lists().await?;
+            }
+            KeyCode::Tab => {
+                self.cycle_filter_tag_completion(false).await?;
+                self.refresh_current_lists().await?;
+            }
+            KeyCode::BackTab => {
+                self.cycle_filter_tag_completion(true).await?;
                 self.refresh_current_lists().await?;
             }
             KeyCode::Enter => {
@@ -1922,6 +1935,19 @@ impl App {
     }
 
     async fn handle_tag_popup_key_event(&mut self, key: KeyEvent) -> Result<bool> {
+        if self.state.tag_popup.pending_delete_tag.is_some() {
+            match key.code {
+                KeyCode::Char('y') => {
+                    self.confirm_delete_selected_tag_from_popup().await?;
+                }
+                KeyCode::Char('n') | KeyCode::Esc => {
+                    self.state.tag_popup.pending_delete_tag = None;
+                }
+                _ => {}
+            }
+            return Ok(false);
+        }
+
         match key.code {
             KeyCode::Esc => {
                 self.state.close_tag_popup();
@@ -1948,7 +1974,7 @@ impl App {
             KeyCode::Delete | KeyCode::Char('d')
                 if self.state.tag_popup.focus == TagPopupFocus::List =>
             {
-                self.delete_selected_tag_from_popup().await?;
+                self.request_delete_selected_tag_from_popup();
             }
             KeyCode::Enter => {
                 if self.state.tag_popup.focus == TagPopupFocus::Input {
@@ -2077,17 +2103,21 @@ impl App {
         Ok(())
     }
 
-    async fn delete_selected_tag_from_popup(&mut self) -> Result<()> {
-        let item = match self.state.tag_popup.current_item() {
-            Some(item) => item.clone(),
-            None => return Ok(()),
-        };
+    fn request_delete_selected_tag_from_popup(&mut self) {
+        if let Some(item) = self.state.tag_popup.current_item() {
+            self.state.tag_popup.pending_delete_tag = Some((item.id.clone(), item.title.clone()));
+        }
+    }
 
-        self.storage.delete_tag(&item.id).await?;
+    async fn confirm_delete_selected_tag_from_popup(&mut self) -> Result<()> {
+        let Some((tag_id, title)) = self.state.tag_popup.pending_delete_tag.clone() else {
+            return Ok(());
+        };
+        self.state.tag_popup.pending_delete_tag = None;
+        self.storage.delete_tag(&tag_id).await?;
         self.refresh_note_tag_cache().await?;
         self.refresh_tag_popup_items(None).await?;
-        self.state
-            .set_status(&format!("Deleted tag {}", item.title));
+        self.state.set_status(&format!("Deleted tag {}", title));
         Ok(())
     }
 
@@ -2802,18 +2832,78 @@ impl App {
     }
 
     fn apply_help_search(&mut self) {
-        let query = self.help_search_query.trim().to_lowercase();
-        if query.is_empty() {
-            self.help_scroll = 0;
-            return;
+        self.help_scroll = 0;
+    }
+
+    async fn update_filter_tag_completion(&mut self) -> Result<()> {
+        let Some((replacement_start, token_prefix, tag_prefix)) =
+            active_filter_tag_token(&self.state.filter_input)
+        else {
+            self.state.filter_completion = None;
+            return Ok(());
+        };
+
+        let mut items: Vec<String> = self
+            .storage
+            .list_tags()
+            .await?
+            .into_iter()
+            .filter(|tag| starts_with_ignore_case(&tag.title, tag_prefix))
+            .map(|tag| {
+                let mut completed = self.state.filter_input[..replacement_start].to_string();
+                completed.push_str(token_prefix);
+                completed.push_str(&tag.title);
+                completed
+            })
+            .collect();
+        items.sort_by_key(|item| item.to_lowercase());
+        items.dedup();
+        self.state.filter_completion = if items.is_empty() {
+            None
+        } else {
+            Some(CompletionState { items, index: 0 })
+        };
+        Ok(())
+    }
+
+    async fn cycle_filter_tag_completion(&mut self, backwards: bool) -> Result<()> {
+        let current_input = self.state.filter_input.clone();
+        let reuse_existing = self
+            .state
+            .filter_completion
+            .as_ref()
+            .and_then(|completion| completion.current().map(|current| (completion, current)))
+            .map(|(completion, current)| current_input == current && !completion.items.is_empty())
+            .unwrap_or(false);
+
+        if reuse_existing {
+            let current = if let Some(completion) = self.state.filter_completion.as_mut() {
+                completion.advance(backwards);
+                completion.current().map(|current| current.to_string())
+            } else {
+                None
+            };
+            if let Some(current) = current {
+                self.state.filter_input = current.clone();
+                self.state.set_filter_query(current);
+            }
+            return Ok(());
         }
 
-        if let Some(index) = ui::help_search_lines()
-            .iter()
-            .position(|line| line.to_lowercase().contains(&query))
-        {
-            self.help_scroll = index as u16;
+        self.update_filter_tag_completion().await?;
+        let current = if let Some(completion) = self.state.filter_completion.as_mut() {
+            if backwards {
+                completion.index = completion.items.len() - 1;
+            }
+            completion.current().map(|current| current.to_string())
+        } else {
+            None
+        };
+        if let Some(current) = current {
+            self.state.filter_input = current.clone();
+            self.state.set_filter_query(current);
         }
+        Ok(())
     }
 
     async fn create_note_from_file(&mut self, file_path: &Path) -> Result<()> {
@@ -3046,6 +3136,23 @@ fn split_command_input(input: &str) -> (&str, &str, bool) {
     } else {
         (input, "", false)
     }
+}
+
+fn active_filter_tag_token(input: &str) -> Option<(usize, &'static str, &str)> {
+    let token_start = input
+        .char_indices()
+        .rev()
+        .find(|(_, c)| c.is_whitespace())
+        .map(|(index, ch)| index + ch.len_utf8())
+        .unwrap_or(0);
+    let token = &input[token_start..];
+    if let Some(rest) = token.strip_prefix("#=") {
+        return Some((token_start, "#=", rest));
+    }
+    if let Some(rest) = token.strip_prefix('#') {
+        return Some((token_start, "#", rest));
+    }
+    None
 }
 
 fn starts_with_ignore_case(text: &str, prefix: &str) -> bool {
