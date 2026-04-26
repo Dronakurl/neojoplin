@@ -1,2 +1,0 @@
-- Did you also port the rename dialogues to ratatui-interact? If not, do it.
-- Entering the colon should already display a list of the current
