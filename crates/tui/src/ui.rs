@@ -91,6 +91,61 @@ pub fn help_search_lines() -> &'static [&'static str] {
     HELP_LINES
 }
 
+fn help_lines_for_query(query: Option<&str>) -> Vec<&'static str> {
+    let Some(query) = query.filter(|query| !query.trim().is_empty()) else {
+        return HELP_LINES.to_vec();
+    };
+
+    let needle = query.to_lowercase();
+    let mut filtered = Vec::new();
+    for &line in HELP_LINES {
+        let is_heading = !line.is_empty() && !line.starts_with(' ');
+        if is_heading {
+            filtered.push(line);
+        } else if !line.is_empty() && line.to_lowercase().contains(&needle) {
+            filtered.push(line);
+        }
+    }
+    filtered
+}
+
+fn highlight_help_line<'a>(line: &'a str, query: Option<&str>, theme: &'a Theme) -> Line<'a> {
+    let is_heading = !line.is_empty() && !line.starts_with(' ');
+    let Some(query) = query.filter(|query| !query.trim().is_empty()) else {
+        return if is_heading {
+            Line::from(Span::styled(line, theme.primary()))
+        } else {
+            Line::from(line)
+        };
+    };
+
+    let lower_line = line.to_lowercase();
+    let lower_query = query.to_lowercase();
+    if let Some(index) = lower_line.find(&lower_query) {
+        let end = index + lower_query.len();
+        let base_style = if is_heading {
+            theme.primary()
+        } else {
+            theme.text()
+        };
+        Line::from(vec![
+            Span::styled(&line[..index], base_style),
+            Span::styled(
+                &line[index..end],
+                Style::default()
+                    .fg(Color::Black)
+                    .bg(theme.accent)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(&line[end..], base_style),
+        ])
+    } else if is_heading {
+        Line::from(Span::styled(line, theme.primary()))
+    } else {
+        Line::from(Span::styled(line, theme.text()))
+    }
+}
+
 /// Strip a leading Markdown H1 prefix ("# ") from a title for display in lists/borders.
 /// The full title (including "# ") is preserved in the data model and shown in the preview.
 fn display_title(title: &str) -> &str {
@@ -736,6 +791,19 @@ fn render_status_line(f: &mut Frame, state: &AppState, area: Rect) {
     let theme = &state.theme;
 
     let status_text = if state.show_filter_prompt {
+        let completion_preview = state
+            .filter_completion
+            .as_ref()
+            .filter(|completion| !completion.items.is_empty())
+            .map(|completion| {
+                completion
+                    .items
+                    .iter()
+                    .take(3)
+                    .cloned()
+                    .collect::<Vec<_>>()
+                    .join("  ")
+            });
         let target = match state.filter_target {
             FocusPanel::Notebooks => "Filter notebooks: ",
             FocusPanel::Notes | FocusPanel::Content => match state.note_filter_mode {
@@ -747,7 +815,16 @@ fn render_status_line(f: &mut Frame, state: &AppState, area: Rect) {
             Span::styled(target, theme.muted()),
             Span::styled(&state.filter_input, theme.primary()),
             Span::styled("█", theme.muted()),
-            Span::styled("  [= literal] [Enter confirm] [Esc cancel]", theme.muted()),
+            if completion_preview.is_some() {
+                Span::styled("  [Tab tags] [Enter confirm] [Esc cancel] ", theme.muted())
+            } else {
+                Span::styled("  [= literal] [Enter confirm] [Esc cancel]", theme.muted())
+            },
+            if let Some(preview) = completion_preview.clone() {
+                Span::styled(preview, theme.text())
+            } else {
+                Span::raw("")
+            },
         ])
     } else if state.command_prompt.visible {
         let mut spans = vec![
@@ -801,7 +878,7 @@ fn render_command_overlay(f: &mut Frame, state: &AppState, input_area: Rect) {
     let theme = &state.theme;
     let mut lines: Vec<Line> = Vec::new();
     let mut max_width = 0usize;
-    for preview in previews.iter().take(8) {
+    for preview in &previews {
         let left = format!("  {}", preview.left);
         let right = format!("  {}", preview.right);
         max_width = max_width.max(left.len() + right.len());
@@ -827,7 +904,14 @@ fn render_command_overlay(f: &mut Frame, state: &AppState, input_area: Rect) {
         popup_width.min(f.area().width.saturating_sub(input_area.x)),
         popup_height,
     );
-    lines.truncate((popup_height.saturating_sub(2)) as usize);
+    let visible_capacity = popup_height.saturating_sub(2) as usize;
+    let was_truncated = lines.len() > visible_capacity;
+    if was_truncated && visible_capacity > 0 {
+        lines.truncate(visible_capacity.saturating_sub(1));
+        lines.push(Line::from(Span::styled("  ...", theme.muted())));
+    } else {
+        lines.truncate(visible_capacity);
+    }
     f.render_widget(Clear, area);
     let popup = Paragraph::new(lines).block(
         Block::default()
@@ -1102,11 +1186,6 @@ fn render_encryption_settings(f: &mut Frame, state: &AppState, area: Rect) {
                 Some(false) => "disabled",
                 None => "unknown",
             };
-            let usage = match key.has_been_used {
-                Some(true) => "used",
-                Some(false) => "unused",
-                None => "usage ?",
-            };
             let created = timestamp_to_datetime(key.created_time)
                 .format("%Y-%m-%d %H:%M")
                 .to_string();
@@ -1137,8 +1216,6 @@ fn render_encryption_settings(f: &mut Frame, state: &AppState, area: Rect) {
                         theme.warning()
                     },
                 ),
-                Span::raw("  "),
-                Span::styled(usage, theme.muted()),
             ]));
             lines.push(Line::from(format!(
                 "    source: {}  method: {}  created: {}  updated: {}",
@@ -1624,31 +1701,19 @@ pub fn render_help(
                     .map(|query| format!(" query: {}", query))
                     .unwrap_or_default(),
             },
-            theme.muted(),
+            if search_input.is_some() || search_query.is_some_and(|query| !query.is_empty()) {
+                theme.accent().bold()
+            } else {
+                theme.muted()
+            },
         ),
     ]);
 
-    let search_query = search_query
-        .filter(|query| !query.is_empty())
-        .map(|q| q.to_lowercase());
+    let visible_lines = help_lines_for_query(search_query);
     let text = Text::from(
-        HELP_LINES
+        visible_lines
             .iter()
-            .map(|line| {
-                let is_heading = !line.is_empty() && !line.starts_with(' ');
-                let matches = search_query
-                    .as_ref()
-                    .map(|query| line.to_lowercase().contains(query))
-                    .unwrap_or(false);
-
-                if matches {
-                    Line::from(Span::styled(*line, theme.accent().bold()))
-                } else if is_heading {
-                    Line::from(Span::styled(*line, theme.primary()))
-                } else {
-                    Line::from(*line)
-                }
-            })
+            .map(|line| highlight_help_line(line, search_query, theme))
             .collect::<Vec<_>>(),
     );
 
@@ -1937,8 +2002,14 @@ pub fn render_delete_confirmation(f: &mut Frame, state: &AppState) {
         )));
     }
     let buttons = match state.pending_delete.as_ref() {
-        Some(crate::state::PendingDelete::Notebook { .. }) => vec!["y/Enter", "Y", "n/Esc"],
-        _ => vec!["y/Enter", "n/Esc"],
+        Some(crate::state::PendingDelete::Notebook { .. }) => {
+            vec![
+                "y/Enter notebook only",
+                "Y delete notebook + notes",
+                "n/Esc cancel",
+            ]
+        }
+        _ => vec!["y/Enter delete", "n/Esc cancel"],
     };
     render_popup_dialog(
         f,
@@ -2029,10 +2100,10 @@ fn current_tag_summary(state: &AppState, max_width: usize) -> String {
         return String::new();
     };
     let Some(tags) = state.note_tags.get(&note.id) else {
-        return String::new();
+        return truncate_text("no tags", max_width);
     };
     if tags.is_empty() {
-        return String::new();
+        return truncate_text("no tags", max_width);
     }
 
     truncate_text(&format!("tags: {}", tags.join(", ")), max_width)
@@ -2136,6 +2207,22 @@ pub fn render_tag_popup(f: &mut Frame, state: &AppState) {
     let theme = &state.theme;
     let popup = &state.tag_popup;
 
+    if let Some((_, title)) = popup.pending_delete_tag.as_ref() {
+        render_popup_dialog(
+            f,
+            "Delete Tag",
+            vec![
+                Line::from("Delete this tag from the database?").style(theme.error()),
+                Line::from(""),
+                Line::from(title.as_str()).style(theme.primary()),
+            ],
+            &["y delete tag", "n/Esc cancel"],
+            Color::Red,
+            Alignment::Center,
+        );
+        return;
+    }
+
     let mut lines = vec![
         Line::from(vec![
             Span::styled("New tag: ", theme.muted()),
@@ -2168,12 +2255,6 @@ pub fn render_tag_popup(f: &mut Frame, state: &AppState) {
         }
     }
 
-    lines.push(Line::from(""));
-    lines.push(
-        Line::from("Space toggle  Enter create/toggle  Tab input/list  d delete tag  Esc close")
-            .style(theme.muted()),
-    );
-
     let content_width = lines
         .iter()
         .map(|line| line.width() as u16)
@@ -2197,6 +2278,28 @@ pub fn render_tag_popup(f: &mut Frame, state: &AppState) {
             .block(
                 Block::default()
                     .title(" Tags ")
+                    .title_bottom(Line::from(vec![
+                        Span::styled("[", theme.muted()),
+                        Span::styled("Space", theme.accent()),
+                        Span::styled("]", theme.muted()),
+                        Span::raw(" toggle ").style(theme.text()),
+                        Span::styled("[", theme.muted()),
+                        Span::styled("Enter", theme.accent()),
+                        Span::styled("]", theme.muted()),
+                        Span::raw(" create/toggle ").style(theme.text()),
+                        Span::styled("[", theme.muted()),
+                        Span::styled("Tab", theme.accent()),
+                        Span::styled("]", theme.muted()),
+                        Span::raw(" input/list ").style(theme.text()),
+                        Span::styled("[", theme.muted()),
+                        Span::styled("d", theme.accent()),
+                        Span::styled("]", theme.muted()),
+                        Span::raw(" delete ").style(theme.text()),
+                        Span::styled("[", theme.muted()),
+                        Span::styled("Esc", theme.accent()),
+                        Span::styled("]", theme.muted()),
+                        Span::raw(" close").style(theme.text()),
+                    ]))
                     .borders(Borders::ALL)
                     .border_style(theme.border_focused()),
             )
