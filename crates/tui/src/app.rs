@@ -21,7 +21,8 @@ use crate::importer::{
     default_cli_database_path, default_desktop_database_path, import_database, resolve_import_path,
 };
 use crate::state::{
-    build_folder_display_names, AppState, FocusPanel, NoteSortMode, NotebookSortMode, PendingDelete,
+    build_folder_display_names, AppState, FocusPanel, NoteSortMode, NotebookSortMode,
+    PendingDelete, TagPopupFocus, TagPopupItem,
 };
 use crate::ui;
 
@@ -182,6 +183,8 @@ impl App {
                     ui::render_error_dialog(f, &self.state);
                 } else if self.state.show_settings {
                     ui::render_settings(f, &self.state);
+                } else if self.state.tag_popup.visible {
+                    ui::render_tag_popup(f, &self.state);
                 } else if self.state.show_rename_prompt {
                     ui::render_rename_prompt(f, &self.state);
                 } else if self.state.show_sort_popup {
@@ -263,6 +266,10 @@ impl App {
 
         if self.state.show_filter_prompt {
             return self.handle_filter_prompt_key_event(key).await;
+        }
+
+        if self.state.tag_popup.visible {
+            return self.handle_tag_popup_key_event(key).await;
         }
 
         if self.state.command_prompt.visible {
@@ -532,6 +539,15 @@ impl App {
                 }
             },
 
+            KeyCode::Char('a') => {
+                if matches!(self.state.focus, FocusPanel::Notes | FocusPanel::Content) {
+                    self.open_tag_popup().await?;
+                } else {
+                    self.state
+                        .set_status("Focus a note before editing its tags");
+                }
+            }
+
             // Toggle todo completion (space bar, like most task managers)
             KeyCode::Char(' ') if self.state.focus == FocusPanel::Notes => {
                 self.toggle_todo().await?;
@@ -732,6 +748,7 @@ impl App {
             && !self.state.show_rename_prompt
             && !self.state.show_filter_prompt
             && !self.state.show_sort_popup
+            && !self.state.tag_popup.visible
             && !self.state.command_prompt.visible
             && !self.state.show_error_dialog
             && !self.state.show_quit_confirmation
@@ -1171,6 +1188,10 @@ impl App {
             return self.handle_delete_confirm_key_event(key).await;
         }
 
+        if self.state.settings.sync.confirm_activate {
+            return self.handle_activate_target_key_event(key).await;
+        }
+
         // Priority 3: encryption password prompt
         if self.state.settings.encryption.show_new_key_prompt {
             return self.handle_encryption_prompt_key_event(key).await;
@@ -1184,6 +1205,8 @@ impl App {
                 self.state.settings.hide_password_prompts();
                 self.state.settings.sync.show_add_form = false;
                 self.state.settings.sync.show_edit_form = false;
+                self.state.settings.sync.confirm_activate = false;
+                self.state.settings.sync.activate_target_index = None;
                 return Ok(false);
             }
 
@@ -1211,7 +1234,7 @@ impl App {
                     self.state.settings.show_new_key_prompt();
                 } else if self.state.settings.current_tab == SettingsTab::Sync {
                     let sync = &mut self.state.settings.sync;
-                    if let Some(idx) = sync.current_target_index {
+                    if let Some(idx) = sync.selected_target_index {
                         if idx < sync.targets.len() {
                             sync.show_edit_form = true;
                             sync.editing_target_index = Some(idx);
@@ -1232,7 +1255,7 @@ impl App {
                     self.state.set_status("Encryption disabled");
                 } else if self.state.settings.current_tab == SettingsTab::Sync {
                     let sync = &mut self.state.settings.sync;
-                    if sync.current_target_index.is_some() && !sync.targets.is_empty() {
+                    if sync.selected_target_index.is_some() && !sync.targets.is_empty() {
                         sync.confirm_delete = true;
                     }
                 }
@@ -1274,30 +1297,26 @@ impl App {
                 if self.state.settings.current_tab == SettingsTab::Sync =>
             {
                 let sync = &mut self.state.settings.sync;
-                if let Some(ref mut idx) = sync.current_target_index {
-                    if *idx > 0 {
-                        *idx -= 1;
-                    }
-                }
+                sync.move_selection(false);
             }
 
             KeyCode::Down | KeyCode::Char('j')
                 if self.state.settings.current_tab == SettingsTab::Sync =>
             {
                 let sync = &mut self.state.settings.sync;
-                if let Some(ref mut idx) = sync.current_target_index {
-                    if *idx + 1 < sync.targets.len() {
-                        *idx += 1;
-                    }
-                }
+                sync.move_selection(true);
             }
 
             // Save active target
             KeyCode::Enter if self.state.settings.current_tab == SettingsTab::Sync => {
-                if let Some(_idx) = self.state.settings.sync.current_target_index {
-                    let data_dir = neojoplin_core::Config::data_dir()?;
-                    let _ = self.state.settings.save_sync_settings(&data_dir).await;
-                    self.state.set_status("Target saved as active");
+                let sync = &mut self.state.settings.sync;
+                if let Some(idx) = sync.selected_target_index {
+                    if sync.current_target_index == Some(idx) {
+                        self.state.set_status("Target is already active");
+                    } else {
+                        sync.confirm_activate = true;
+                        sync.activate_target_index = Some(idx);
+                    }
                 }
             }
 
@@ -1688,13 +1707,22 @@ impl App {
             KeyCode::Char('y') | KeyCode::Enter => {
                 let sync = &mut self.state.settings.sync;
                 sync.confirm_delete = false;
-                if let Some(idx) = sync.current_target_index {
+                if let Some(idx) = sync.selected_target_index {
                     if !sync.targets.is_empty() {
                         sync.targets.remove(idx);
                         if sync.targets.is_empty() {
                             sync.current_target_index = None;
+                            sync.selected_target_index = None;
                         } else if idx >= sync.targets.len() {
-                            sync.current_target_index = Some(sync.targets.len() - 1);
+                            if sync.current_target_index == Some(idx) {
+                                sync.current_target_index = Some(sync.targets.len() - 1);
+                            }
+                            sync.selected_target_index = Some(sync.targets.len() - 1);
+                        } else {
+                            if sync.current_target_index == Some(idx) {
+                                sync.current_target_index = Some(idx.min(sync.targets.len() - 1));
+                            }
+                            sync.selected_target_index = Some(idx);
                         }
                         let data_dir = neojoplin_core::Config::data_dir()?;
                         let _ = self.state.settings.save_sync_settings(&data_dir).await;
@@ -1722,6 +1750,24 @@ impl App {
             }
             KeyCode::Char('n') | KeyCode::Esc => {
                 self.state.clear_pending_delete();
+            }
+            _ => {}
+        }
+
+        Ok(false)
+    }
+
+    async fn handle_activate_target_key_event(&mut self, key: KeyEvent) -> Result<bool> {
+        match key.code {
+            KeyCode::Enter => {
+                self.apply_selected_sync_target(false).await?;
+            }
+            KeyCode::Char('y') => {
+                self.apply_selected_sync_target(true).await?;
+            }
+            KeyCode::Char('n') | KeyCode::Esc => {
+                self.state.settings.sync.confirm_activate = false;
+                self.state.settings.sync.activate_target_index = None;
             }
             _ => {}
         }
@@ -1863,6 +1909,188 @@ impl App {
         self.command_history.push(trimmed.to_string());
     }
 
+    async fn open_tag_popup(&mut self) -> Result<()> {
+        if self.state.selected_note().is_none() {
+            self.state
+                .set_status("Select a note before editing its tags");
+            return Ok(());
+        }
+
+        let items = self.load_tag_popup_items().await?;
+        self.state.open_tag_popup(items);
+        Ok(())
+    }
+
+    async fn handle_tag_popup_key_event(&mut self, key: KeyEvent) -> Result<bool> {
+        match key.code {
+            KeyCode::Esc => {
+                self.state.close_tag_popup();
+            }
+            KeyCode::Tab => {
+                self.state.tag_popup.focus = match self.state.tag_popup.focus {
+                    TagPopupFocus::List => TagPopupFocus::Input,
+                    TagPopupFocus::Input => TagPopupFocus::List,
+                };
+            }
+            KeyCode::Up | KeyCode::Char('k')
+                if self.state.tag_popup.focus == TagPopupFocus::List =>
+            {
+                self.state.tag_popup.move_selection(false);
+            }
+            KeyCode::Down | KeyCode::Char('j')
+                if self.state.tag_popup.focus == TagPopupFocus::List =>
+            {
+                self.state.tag_popup.move_selection(true);
+            }
+            KeyCode::Char(' ') if self.state.tag_popup.focus == TagPopupFocus::List => {
+                self.toggle_selected_tag_from_popup().await?;
+            }
+            KeyCode::Delete | KeyCode::Char('d')
+                if self.state.tag_popup.focus == TagPopupFocus::List =>
+            {
+                self.delete_selected_tag_from_popup().await?;
+            }
+            KeyCode::Enter => {
+                if self.state.tag_popup.focus == TagPopupFocus::Input {
+                    self.create_or_attach_tag_from_popup_input().await?;
+                } else {
+                    self.toggle_selected_tag_from_popup().await?;
+                }
+            }
+            KeyCode::Backspace if self.state.tag_popup.focus == TagPopupFocus::Input => {
+                self.state.tag_popup.input.pop();
+            }
+            KeyCode::Char(c)
+                if self.state.tag_popup.focus == TagPopupFocus::Input
+                    && !key.modifiers.contains(KeyModifiers::CONTROL)
+                    && !key.modifiers.contains(KeyModifiers::ALT) =>
+            {
+                self.state.tag_popup.input.push(c);
+            }
+            _ => {}
+        }
+
+        Ok(false)
+    }
+
+    async fn load_tag_popup_items(&self) -> Result<Vec<TagPopupItem>> {
+        let note = self
+            .state
+            .selected_note()
+            .ok_or_else(|| anyhow::anyhow!("Select a note before editing tags"))?;
+        let attached_tags = self.storage.get_note_tags(&note.id).await?;
+        let attached_ids: HashSet<String> =
+            attached_tags.iter().map(|tag| tag.id.clone()).collect();
+        let mut items: Vec<TagPopupItem> = self
+            .storage
+            .list_tags()
+            .await?
+            .into_iter()
+            .map(|tag| TagPopupItem {
+                attached: attached_ids.contains(&tag.id),
+                id: tag.id,
+                title: tag.title,
+            })
+            .collect();
+        items.sort_by_key(|item| item.title.to_lowercase());
+        Ok(items)
+    }
+
+    async fn refresh_tag_popup_items(&mut self, preferred_tag_id: Option<&str>) -> Result<()> {
+        let items = self.load_tag_popup_items().await?;
+        let previous_focus = self.state.tag_popup.focus;
+        let previous_input = self.state.tag_popup.input.clone();
+        self.state.open_tag_popup(items);
+        self.state.tag_popup.focus = previous_focus;
+        self.state.tag_popup.input = previous_input;
+        if let Some(tag_id) = preferred_tag_id {
+            if let Some(index) = self
+                .state
+                .tag_popup
+                .items
+                .iter()
+                .position(|item| item.id == tag_id)
+            {
+                self.state.tag_popup.selected_index = index;
+            }
+        }
+        Ok(())
+    }
+
+    async fn refresh_note_tag_cache(&mut self) -> Result<()> {
+        let note_tags = self.load_note_tag_titles(&self.state.notes).await?;
+        self.state.set_note_tags(note_tags);
+        Ok(())
+    }
+
+    async fn toggle_selected_tag_from_popup(&mut self) -> Result<()> {
+        let item = match self.state.tag_popup.current_item() {
+            Some(item) => item.clone(),
+            None => return Ok(()),
+        };
+
+        if item.attached {
+            self.untag_selected_note_by_id(&item.id).await?;
+            self.state
+                .set_status(&format!("Removed tag {}", item.title));
+        } else {
+            self.tag_selected_note_by_id(&item.id).await?;
+            self.state.set_status(&format!("Added tag {}", item.title));
+        }
+
+        self.refresh_note_tag_cache().await?;
+        self.refresh_tag_popup_items(Some(&item.id)).await?;
+        Ok(())
+    }
+
+    async fn create_or_attach_tag_from_popup_input(&mut self) -> Result<()> {
+        let tag_name = self.state.tag_popup.input.trim().to_string();
+        if tag_name.is_empty() {
+            self.state.tag_popup.focus = TagPopupFocus::List;
+            return Ok(());
+        }
+
+        let existing_tags = self.storage.list_tags().await?;
+        let tag = if let Some(existing_tag) = resolve_tag_by_title(&existing_tags, &tag_name) {
+            existing_tag.clone()
+        } else {
+            let tag = Tag {
+                id: joplin_domain::joplin_id(),
+                title: tag_name.clone(),
+                created_time: now_ms(),
+                updated_time: now_ms(),
+                user_created_time: 0,
+                user_updated_time: 0,
+                parent_id: String::new(),
+                is_shared: 0,
+            };
+            self.storage.create_tag(&tag).await?;
+            tag
+        };
+
+        self.tag_selected_note_by_id(&tag.id).await?;
+        self.state.tag_popup.input.clear();
+        self.state.tag_popup.focus = TagPopupFocus::List;
+        self.refresh_note_tag_cache().await?;
+        self.refresh_tag_popup_items(Some(&tag.id)).await?;
+        self.state.set_status(&format!("Added tag {}", tag.title));
+        Ok(())
+    }
+
+    async fn delete_selected_tag_from_popup(&mut self) -> Result<()> {
+        let item = match self.state.tag_popup.current_item() {
+            Some(item) => item.clone(),
+            None => return Ok(()),
+        };
+
+        self.storage.delete_tag(&item.id).await?;
+        self.refresh_note_tag_cache().await?;
+        self.refresh_tag_popup_items(None).await?;
+        self.state
+            .set_status(&format!("Deleted tag {}", item.title));
+        Ok(())
+    }
+
     async fn jump_to_list_boundary(&mut self, to_start: bool) -> Result<()> {
         match self.state.focus {
             FocusPanel::Notebooks => {
@@ -1977,14 +2205,46 @@ impl App {
                 }
                 items
             }
-            "tag" => self
-                .storage
-                .list_tags()
-                .await?
-                .into_iter()
-                .filter(|tag| starts_with_ignore_case(&tag.title, argument))
-                .map(|tag| format!("tag {}", tag.title))
-                .collect(),
+            "tag" => {
+                let trimmed_argument = argument.trim_start();
+                let (subcommand, subarg, sub_has_argument_context) =
+                    split_command_input(trimmed_argument);
+                if !sub_has_argument_context {
+                    let mut items = ["add", "remove", "list"]
+                        .into_iter()
+                        .filter(|value| starts_with_ignore_case(value, subcommand))
+                        .map(|value| format!("tag {}", value))
+                        .collect::<Vec<_>>();
+                    items.sort_by_key(|item| item.to_lowercase());
+                    items
+                } else {
+                    match subcommand {
+                        "add" => self
+                            .storage
+                            .list_tags()
+                            .await?
+                            .into_iter()
+                            .filter(|tag| starts_with_ignore_case(&tag.title, subarg.trim_start()))
+                            .map(|tag| format!("tag add {}", tag.title))
+                            .collect(),
+                        "remove" => {
+                            let note_tags = if let Some(note) = self.state.selected_note() {
+                                self.storage.get_note_tags(&note.id).await?
+                            } else {
+                                Vec::new()
+                            };
+                            note_tags
+                                .into_iter()
+                                .filter(|tag| {
+                                    starts_with_ignore_case(&tag.title, subarg.trim_start())
+                                })
+                                .map(|tag| format!("tag remove {}", tag.title))
+                                .collect()
+                        }
+                        _ => Vec::new(),
+                    }
+                }
+            }
             "read" => complete_path_input("read", argument),
             "import" => complete_path_input("import", argument),
             "import-jex" => complete_path_input("import-jex", argument),
@@ -2043,8 +2303,16 @@ impl App {
                     .await?;
                 Ok(false)
             }
-            CommandAction::Tag(tag_name) => {
+            CommandAction::TagAdd(tag_name) => {
                 self.tag_selected_note(&tag_name).await?;
+                Ok(false)
+            }
+            CommandAction::TagRemove(tag_name) => {
+                self.untag_selected_note(&tag_name).await?;
+                Ok(false)
+            }
+            CommandAction::TagList => {
+                self.list_selected_note_tags().await?;
                 Ok(false)
             }
             CommandAction::MkNote(title) => {
@@ -2182,16 +2450,53 @@ impl App {
             if let Some(idx) = sync.editing_target_index {
                 if idx < sync.targets.len() {
                     sync.targets[idx] = target;
+                    sync.selected_target_index = Some(idx);
                 }
             }
         } else {
             sync.targets.push(target);
-            sync.current_target_index = Some(sync.targets.len() - 1);
+            let new_index = sync.targets.len() - 1;
+            sync.selected_target_index = Some(new_index);
+            if sync.current_target_index.is_none() {
+                sync.current_target_index = Some(new_index);
+            }
         }
 
         // Save to file
         let data_dir = neojoplin_core::Config::data_dir()?;
         self.state.settings.save_sync_settings(&data_dir).await?;
+
+        Ok(())
+    }
+
+    async fn apply_selected_sync_target(&mut self, sync_now: bool) -> Result<()> {
+        let Some(idx) = self.state.settings.sync.activate_target_index else {
+            return Ok(());
+        };
+
+        self.state.settings.sync.current_target_index = Some(idx);
+        self.state.settings.sync.selected_target_index = Some(idx);
+        self.state.settings.sync.confirm_activate = false;
+        self.state.settings.sync.activate_target_index = None;
+
+        let data_dir = neojoplin_core::Config::data_dir()?;
+        self.state.settings.save_sync_settings(&data_dir).await?;
+
+        let target_name = self
+            .state
+            .settings
+            .sync
+            .targets
+            .get(idx)
+            .map(|target| target.name.clone())
+            .unwrap_or_else(|| "target".to_string());
+
+        self.state
+            .set_status(&format!("Active sync target set to {}", target_name));
+
+        if sync_now {
+            self.sync().await?;
+        }
 
         Ok(())
     }
@@ -2572,14 +2877,9 @@ impl App {
     }
 
     async fn tag_selected_note(&mut self, tag_name: &str) -> Result<()> {
-        let note = self
-            .state
-            .selected_note()
-            .cloned()
-            .ok_or_else(|| anyhow::anyhow!("Select a note before using :tag"))?;
         let tag_name = tag_name.trim();
         if tag_name.is_empty() {
-            anyhow::bail!("Usage: :tag <tag-name>");
+            anyhow::bail!("Usage: :tag add <tag>");
         }
 
         let existing_tags = self.storage.list_tags().await?;
@@ -2600,30 +2900,91 @@ impl App {
             tag
         };
 
+        self.tag_selected_note_by_id(&tag.id).await?;
+        self.refresh_note_tag_cache().await?;
+        self.state.set_status(&format!("Added tag {}", tag.title));
+        Ok(())
+    }
+
+    async fn tag_selected_note_by_id(&mut self, tag_id: &str) -> Result<()> {
+        let note = self
+            .state
+            .selected_note()
+            .cloned()
+            .ok_or_else(|| anyhow::anyhow!("Select a note before using :tag"))?;
+
         if self
             .storage
             .get_note_tags(&note.id)
             .await?
             .iter()
-            .any(|existing| existing.id == tag.id)
+            .any(|existing| existing.id == tag_id)
         {
-            self.state
-                .set_status(&format!("{} already has tag {}", note.title, tag.title));
             return Ok(());
         }
 
         let note_tag = NoteTag {
             id: joplin_domain::joplin_id(),
-            note_id: note.id.clone(),
-            tag_id: tag.id.clone(),
+            note_id: note.id,
+            tag_id: tag_id.to_string(),
             created_time: now_ms(),
             updated_time: now_ms(),
             is_shared: 0,
         };
         self.storage.add_note_tag(&note_tag).await?;
-        self.refresh_current_lists().await?;
-        self.state
-            .set_status(&format!("Tagged {} with {}", note.title, tag.title));
+        Ok(())
+    }
+
+    async fn untag_selected_note(&mut self, tag_name: &str) -> Result<()> {
+        let note = self
+            .state
+            .selected_note()
+            .cloned()
+            .ok_or_else(|| anyhow::anyhow!("Select a note before using :tag"))?;
+        let tag_name = tag_name.trim();
+        if tag_name.is_empty() {
+            anyhow::bail!("Usage: :tag remove <tag>");
+        }
+
+        let tags = self.storage.get_note_tags(&note.id).await?;
+        let tag = resolve_tag_by_title(&tags, tag_name)
+            .cloned()
+            .ok_or_else(|| anyhow::anyhow!("{} does not have tag {}", note.title, tag_name))?;
+        self.untag_selected_note_by_id(&tag.id).await?;
+        self.refresh_note_tag_cache().await?;
+        self.state.set_status(&format!("Removed tag {}", tag.title));
+        Ok(())
+    }
+
+    async fn untag_selected_note_by_id(&mut self, tag_id: &str) -> Result<()> {
+        let note = self
+            .state
+            .selected_note()
+            .cloned()
+            .ok_or_else(|| anyhow::anyhow!("Select a note before using :tag"))?;
+        self.storage.remove_note_tag(&note.id, tag_id).await?;
+        Ok(())
+    }
+
+    async fn list_selected_note_tags(&mut self) -> Result<()> {
+        let note = self
+            .state
+            .selected_note()
+            .cloned()
+            .ok_or_else(|| anyhow::anyhow!("Select a note before using :tag"))?;
+        let tags = self.storage.get_note_tags(&note.id).await?;
+        if tags.is_empty() {
+            self.state
+                .set_status(&format!("{} has no tags", note.title));
+        } else {
+            self.state.set_status(&format!(
+                "Tags: {}",
+                tags.iter()
+                    .map(|tag| tag.title.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ));
+        }
         Ok(())
     }
 

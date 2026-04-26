@@ -5,7 +5,7 @@ use ratatui::{
     layout::{Alignment, Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style, Stylize},
     text::{Line, Span, Text},
-    widgets::{Block, Borders, List, ListItem, Paragraph, Tabs, Wrap},
+    widgets::{Block, Borders, Clear, List, ListItem, Paragraph, Tabs, Wrap},
     Frame,
 };
 use ratatui_interact::{
@@ -13,11 +13,12 @@ use ratatui_interact::{
     traits::ContainerAction,
 };
 
+use crate::command_line::command_previews;
 use crate::settings::{ConnectionResult, EncryptionField, FormField};
 use crate::theme::Theme;
 
 use crate::settings::SettingsTab;
-use crate::state::{AppState, FocusPanel, NoteFilterMode};
+use crate::state::{AppState, FocusPanel, NoteFilterMode, TagPopupFocus};
 
 const HELP_LINES: &[&str] = &[
     "Navigation",
@@ -34,6 +35,7 @@ const HELP_LINES: &[&str] = &[
     "  t      New to-do in current notebook",
     "  T      Convert selected note <-> to-do",
     "  m      Move the selected note or notebook to another notebook",
+    "  a      Edit tags on the selected note",
     "  r      Rename selected note or notebook",
     "  f      Filter the focused list (notes: title only, #tag still works)",
     "  F      Full-text filter across note contents",
@@ -52,7 +54,9 @@ const HELP_LINES: &[&str] = &[
     "  :mv <notebook>         Alias for :move",
     "  :delete-orphaned       Delete notes whose notebook no longer exists",
     "  :read <file>           Create a note from a file",
-    "  :tag <tag-name>        Add a tag to the selected note",
+    "  :tag add <tag>         Attach a tag to the selected note",
+    "  :tag remove <tag>      Remove a tag from the selected note",
+    "  :tag list              List the selected note's tags",
     "  :import                Import from ~/.config/joplin/database.sqlite",
     "  :import <db>           Import from an explicit Joplin SQLite file",
     "  :import-desktop        Import from ~/.config/joplin-desktop/database.sqlite",
@@ -174,6 +178,10 @@ pub fn render_ui(f: &mut Frame, state: &AppState) {
 
     // Render status line
     render_status_line(f, state, chunks[2]);
+
+    if state.command_prompt.visible {
+        render_command_overlay(f, state, chunks[2]);
+    }
 }
 
 /// Render main content area with split panes
@@ -478,19 +486,7 @@ fn render_content_panel(f: &mut Frame, state: &AppState, area: Rect) {
         " All ".to_string()
     };
 
-    let bottom_indicator = if let Some(note) = state.selected_note() {
-        if let Some(tags) = state.note_tags.get(&note.id) {
-            if !tags.is_empty() {
-                format!("{} • tags: {}", scroll_indicator.trim(), tags.join(", "))
-            } else {
-                scroll_indicator
-            }
-        } else {
-            scroll_indicator
-        }
-    } else {
-        scroll_indicator
-    };
+    let bottom_indicator = scroll_indicator;
 
     let paragraph = Paragraph::new(content)
         .block(
@@ -644,6 +640,14 @@ fn render_keybinding_ribbon(f: &mut Frame, state: &AppState, area: Rect) {
         ) {
             bindings.push(("n".to_string(), "NEW".to_string(), false));
         }
+        if state.selected_note().is_some()
+            && matches!(
+                state.focus,
+                crate::state::FocusPanel::Notes | crate::state::FocusPanel::Content
+            )
+        {
+            bindings.push(("a".to_string(), "TAGS".to_string(), false));
+        }
         bindings.push(("d".to_string(), "DELETE".to_string(), false));
         bindings.push(("t".to_string(), "TODO".to_string(), false));
         bindings.push((",".to_string(), "SORT".to_string(), false));
@@ -788,6 +792,52 @@ fn render_status_line(f: &mut Frame, state: &AppState, area: Rect) {
     f.render_widget(paragraph, area);
 }
 
+fn render_command_overlay(f: &mut Frame, state: &AppState, input_area: Rect) {
+    let previews = command_previews(&state.command_prompt.input);
+    if previews.is_empty() {
+        return;
+    }
+
+    let theme = &state.theme;
+    let mut lines: Vec<Line> = Vec::new();
+    let mut max_width = 0usize;
+    for preview in previews.iter().take(8) {
+        let left = format!("  {}", preview.left);
+        let right = format!("  {}", preview.right);
+        max_width = max_width.max(left.len() + right.len());
+        lines.push(Line::from(vec![
+            Span::styled(left, theme.primary()),
+            Span::styled(right, theme.muted()),
+        ]));
+    }
+
+    let popup_width = (max_width as u16 + 2)
+        .min(f.area().width.saturating_sub(2))
+        .max(28);
+    let popup_height = ((lines.len() as u16) + 2)
+        .min(input_area.y)
+        .min(f.area().height);
+    if popup_height < 3 {
+        return;
+    }
+
+    let area = Rect::new(
+        input_area.x,
+        input_area.y.saturating_sub(popup_height),
+        popup_width.min(f.area().width.saturating_sub(input_area.x)),
+        popup_height,
+    );
+    lines.truncate((popup_height.saturating_sub(2)) as usize);
+    f.render_widget(Clear, area);
+    let popup = Paragraph::new(lines).block(
+        Block::default()
+            .title(" Commands ")
+            .borders(Borders::ALL)
+            .border_style(theme.border_focused()),
+    );
+    f.render_widget(popup, area);
+}
+
 /// Render settings menu
 pub fn render_settings(f: &mut Frame, state: &AppState) {
     let area = centered_rect(70, 80, f.area());
@@ -839,11 +889,20 @@ pub fn render_settings(f: &mut Frame, state: &AppState) {
         let target_name = state
             .settings
             .sync
-            .current_target_index
+            .selected_target_index
             .and_then(|i| state.settings.sync.targets.get(i))
             .map(|t| t.name.as_str())
             .unwrap_or("this target");
         render_delete_confirm_overlay(f, target_name, area, theme);
+    } else if state.settings.sync.confirm_activate {
+        let target_name = state
+            .settings
+            .sync
+            .activate_target_index
+            .and_then(|i| state.settings.sync.targets.get(i))
+            .map(|t| t.name.as_str())
+            .unwrap_or("this target");
+        render_activate_target_overlay(f, target_name, area, theme);
     }
 }
 
@@ -882,6 +941,16 @@ fn settings_bottom_hints<'a>(state: &'a AppState, theme: &'a Theme) -> Line<'a> 
         for s in kh(theme, "n/Esc", "cancel") {
             spans.push(s);
         }
+    } else if sync.confirm_activate {
+        for s in kh(theme, "Enter", "activate") {
+            spans.push(s);
+        }
+        for s in kh(theme, "y", "activate + sync") {
+            spans.push(s);
+        }
+        for s in kh(theme, "n/Esc", "cancel") {
+            spans.push(s);
+        }
     } else if enc.show_new_key_prompt {
         for s in kh(theme, "Tab", "switch field") {
             spans.push(s);
@@ -905,6 +974,12 @@ fn settings_bottom_hints<'a>(state: &'a AppState, theme: &'a Theme) -> Line<'a> 
                     spans.push(s);
                 }
                 if !sync.targets.is_empty() {
+                    for s in kh(theme, "j/k", "select") {
+                        spans.push(s);
+                    }
+                    for s in kh(theme, "Enter", "activate") {
+                        spans.push(s);
+                    }
                     for s in kh(theme, "e", "edit") {
                         spans.push(s);
                     }
@@ -956,6 +1031,24 @@ fn render_delete_confirm_overlay(f: &mut Frame, target_name: &str, parent: Rect,
         ],
         &["y/Enter", "n/Esc"],
         theme.error().fg.unwrap_or(Color::Red),
+        Alignment::Center,
+    );
+}
+
+fn render_activate_target_overlay(f: &mut Frame, target_name: &str, parent: Rect, theme: &Theme) {
+    let _ = parent;
+    render_popup_dialog(
+        f,
+        "Activate target",
+        vec![
+            Line::from("Set this as the active sync target?").style(theme.primary()),
+            Line::from(""),
+            Line::from(target_name.to_string()).style(theme.text()),
+            Line::from(""),
+            Line::from("Enter activates only. y activates and syncs now.").style(theme.muted()),
+        ],
+        &["Enter", "y", "n/Esc"],
+        Color::Cyan,
         Alignment::Center,
     );
 }
@@ -1182,8 +1275,11 @@ fn render_target_list(f: &mut Frame, state: &AppState, area: Rect) {
             .enumerate()
             .map(|(i, target)| {
                 let is_active = sync.current_target_index == Some(i);
+                let is_selected = sync.selected_target_index == Some(i);
                 let prefix = if is_active { "● " } else { "○ " };
-                let style = if is_active {
+                let style = if is_selected {
+                    theme.selection()
+                } else if is_active {
                     theme.primary()
                 } else {
                     theme.text()
@@ -1192,6 +1288,11 @@ fn render_target_list(f: &mut Frame, state: &AppState, area: Rect) {
                 ListItem::new(Line::from(vec![
                     Span::styled(prefix, style),
                     Span::styled(&target.name, style),
+                    if is_active {
+                        Span::styled("  active", theme.success())
+                    } else {
+                        Span::raw("")
+                    },
                 ]))
             })
             .collect()
@@ -1218,8 +1319,11 @@ fn render_target_details(f: &mut Frame, state: &AppState, area: Rect) {
         let help_text = vec![
             Line::from("Sync Target Management").bold(),
             Line::from(""),
-            Line::from("Joplin uses one active sync target at a time."),
-            Line::from("NeoJoplin currently supports WebDAV targets."),
+            Line::from("Select a target with j/k and press Enter to activate it."),
+            Line::from("NeoJoplin currently implements WebDAV only."),
+            Line::from(
+                "Joplin supports additional target types that are listed here for reference.",
+            ),
             Line::from(""),
             Line::from("Key bindings:"),
             Line::from(vec![
@@ -1264,7 +1368,7 @@ fn render_target_details(f: &mut Frame, state: &AppState, area: Rect) {
     }
 
     // Show details of current target
-    if let Some(idx) = sync.current_target_index {
+    if let Some(idx) = sync.selected_target_index {
         if let Some(target) = sync.targets.get(idx) {
             let details = vec![
                 Line::from(vec![
@@ -1308,19 +1412,19 @@ fn render_target_details(f: &mut Frame, state: &AppState, area: Rect) {
                 ]),
                 Line::from(""),
                 Line::from(vec![
-                    Span::styled("Active model: ", theme.muted()),
-                    Span::styled("one target at a time", theme.primary()),
-                ]),
-                Line::from(vec![
-                    Span::styled("Joplin target types: ", theme.muted()),
+                    Span::styled("Selection: ", theme.muted()),
                     Span::styled(
-                        "Filesystem, Nextcloud, WebDAV, S3, Joplin Server, Joplin Server SAML",
-                        theme.text(),
+                        if sync.current_target_index == Some(idx) {
+                            "Active target"
+                        } else {
+                            "Selected only (press Enter to activate)"
+                        },
+                        if sync.current_target_index == Some(idx) {
+                            theme.success()
+                        } else {
+                            theme.warning()
+                        },
                     ),
-                ]),
-                Line::from(vec![
-                    Span::styled("NeoJoplin today: ", theme.muted()),
-                    Span::styled("WebDAV", theme.success()),
                 ]),
             ];
 
@@ -1795,7 +1899,7 @@ pub fn render_quit_confirmation(f: &mut Frame, state: &AppState) {
         f,
         "Confirm Quit",
         vec![Line::from("Quit NeoJoplin?").style(theme.primary())],
-        &["q", "y", "Esc"],
+        &["q/y/quit", "Esc"],
         Color::Cyan,
         Alignment::Center,
     );
@@ -1999,7 +2103,6 @@ fn split_error_text(text: &str, max_width: usize) -> Vec<String> {
 
 /// Render rename prompt
 pub fn render_rename_prompt(f: &mut Frame, state: &AppState) {
-    let area = centered_rect_with_min_width(40, 15, 50, f.area());
     let theme = &state.theme;
 
     let item_name = if state.focus == FocusPanel::Notes {
@@ -2015,39 +2118,91 @@ pub fn render_rename_prompt(f: &mut Frame, state: &AppState) {
     };
 
     let title = format!("Rename: {}", item_name);
-    let bottom_title = Line::from(vec![
-        Span::styled("[", theme.muted()),
-        Span::styled("Enter", theme.accent()),
-        Span::styled("]", theme.muted()),
-        Span::raw(" confirm ").style(theme.text()),
-        Span::styled("[", theme.muted()),
-        Span::styled("Esc", theme.accent()),
-        Span::styled("]", theme.muted()),
-        Span::raw(" cancel ").style(theme.text()),
-    ]);
+    render_popup_dialog(
+        f,
+        &title,
+        vec![Line::from(vec![
+            Span::styled("New name: ", theme.text()),
+            Span::styled(&state.rename_input, theme.primary()),
+            Span::styled("█", theme.muted()),
+        ])],
+        &["Enter", "Esc"],
+        Color::Cyan,
+        Alignment::Left,
+    );
+}
 
-    // Input field with visual highlighting using a styled paragraph
-    let input_text = vec![
-        Span::styled("New name: ", theme.text()),
-        Span::styled(&state.rename_input, theme.primary()),
-        Span::styled("█", theme.muted()), // Cursor indicator
+pub fn render_tag_popup(f: &mut Frame, state: &AppState) {
+    let theme = &state.theme;
+    let popup = &state.tag_popup;
+
+    let mut lines = vec![
+        Line::from(vec![
+            Span::styled("New tag: ", theme.muted()),
+            Span::styled(&popup.input, theme.primary()),
+            if popup.focus == TagPopupFocus::Input {
+                Span::styled("█", theme.muted())
+            } else {
+                Span::raw("")
+            },
+        ]),
+        Line::from(""),
     ];
 
-    // Main dialog content with centered input
-    let text = Text::from(vec![Line::from(""), Line::from(input_text), Line::from("")]);
+    if popup.items.is_empty() {
+        lines.push(Line::from("  No tags yet. Type a name and press Enter.").style(theme.muted()));
+    } else {
+        for (index, item) in popup.items.iter().enumerate().take(12) {
+            let prefix = if item.attached { "[x]" } else { "[ ]" };
+            let style = if index == popup.selected_index {
+                theme.selection()
+            } else if item.attached {
+                theme.success()
+            } else {
+                theme.text()
+            };
+            lines.push(Line::from(vec![
+                Span::styled(format!("  {} ", prefix), style),
+                Span::styled(&item.title, style),
+            ]));
+        }
+    }
 
-    let paragraph = Paragraph::new(text)
-        .block(
-            Block::default()
-                .title(title)
-                .title_bottom(bottom_title)
-                .borders(Borders::ALL)
-                .border_style(theme.border_focused()),
-        )
-        .wrap(Wrap { trim: true })
-        .alignment(Alignment::Left);
+    lines.push(Line::from(""));
+    lines.push(
+        Line::from("Space toggle  Enter create/toggle  Tab input/list  d delete tag  Esc close")
+            .style(theme.muted()),
+    );
 
-    f.render_widget(paragraph, area);
+    let content_width = lines
+        .iter()
+        .map(|line| line.width() as u16)
+        .max()
+        .unwrap_or(0);
+    let height = (lines.len() as u16 + 4)
+        .max(10)
+        .min(f.area().height.saturating_sub(2));
+    let width = (content_width + 6)
+        .max(44)
+        .min(f.area().width.saturating_sub(2));
+    let area = Rect::new(
+        (f.area().width.saturating_sub(width)) / 2,
+        (f.area().height.saturating_sub(height)) / 2,
+        width,
+        height,
+    );
+    f.render_widget(Clear, area);
+    f.render_widget(
+        Paragraph::new(lines)
+            .block(
+                Block::default()
+                    .title(" Tags ")
+                    .borders(Borders::ALL)
+                    .border_style(theme.border_focused()),
+            )
+            .wrap(Wrap { trim: false }),
+        area,
+    );
 }
 
 /// Render sort help popup
@@ -2163,55 +2318,6 @@ fn centered_rect(percent_x: u16, percent_y: u16, r: Rect) -> Rect {
             .as_ref(),
         )
         .split(popup_layout[1])[1]
-}
-
-/// Helper to create centered rectangle with minimum width
-fn centered_rect_with_min_width(percent_x: u16, percent_y: u16, min_width: u16, r: Rect) -> Rect {
-    let popup_layout = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints(
-            [
-                Constraint::Percentage((100 - percent_y) / 2),
-                Constraint::Percentage(percent_y),
-                Constraint::Percentage((100 - percent_y) / 2),
-            ]
-            .as_ref(),
-        )
-        .split(r);
-
-    // Calculate the width as percentage, but ensure minimum width
-    let calculated_width = (r.width * percent_x) / 100;
-    let actual_width = calculated_width.max(min_width);
-
-    // If the calculated width is smaller than minimum, we need a different approach
-    if actual_width > calculated_width {
-        // Use fixed width centered
-        let horizontal_padding = r.width.saturating_sub(actual_width) / 2;
-        Layout::default()
-            .direction(Direction::Horizontal)
-            .constraints(
-                [
-                    Constraint::Length(horizontal_padding),
-                    Constraint::Length(actual_width),
-                    Constraint::Length(horizontal_padding),
-                ]
-                .as_ref(),
-            )
-            .split(popup_layout[1])[1]
-    } else {
-        // Use percentage-based layout
-        Layout::default()
-            .direction(Direction::Horizontal)
-            .constraints(
-                [
-                    Constraint::Percentage((100 - percent_x) / 2),
-                    Constraint::Percentage(percent_x),
-                    Constraint::Percentage((100 - percent_x) / 2),
-                ]
-                .as_ref(),
-            )
-            .split(popup_layout[1])[1]
-    }
 }
 
 #[cfg(test)]

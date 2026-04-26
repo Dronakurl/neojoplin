@@ -112,6 +112,7 @@ struct StoredMasterKeyFile {
 pub struct SyncSettings {
     pub targets: Vec<SyncTarget>,
     pub current_target_index: Option<usize>,
+    pub selected_target_index: Option<usize>,
     pub show_add_form: bool,
     pub show_edit_form: bool,
     pub editing_target_index: Option<usize>,
@@ -130,6 +131,8 @@ pub struct SyncSettings {
 
     // Delete confirmation
     pub confirm_delete: bool,
+    pub confirm_activate: bool,
+    pub activate_target_index: Option<usize>,
 }
 
 pub const AUTO_SYNC_INTERVAL_OPTIONS: &[u64] = &[0, 300, 600, 1800, 3600, 43200, 86400];
@@ -218,6 +221,38 @@ impl Default for SyncStatusSettings {
 }
 
 impl SyncSettings {
+    pub fn sync_selection_to_active(&mut self) {
+        self.selected_target_index = self.current_target_index.or_else(|| {
+            if self.targets.is_empty() {
+                None
+            } else {
+                Some(0)
+            }
+        });
+    }
+
+    pub fn move_selection(&mut self, forward: bool) {
+        let Some(current_index) = self.selected_target_index else {
+            if !self.targets.is_empty() {
+                self.selected_target_index = Some(0);
+            }
+            return;
+        };
+
+        if self.targets.is_empty() {
+            self.selected_target_index = None;
+            return;
+        }
+
+        self.selected_target_index = Some(if forward {
+            (current_index + 1) % self.targets.len()
+        } else if current_index == 0 {
+            self.targets.len() - 1
+        } else {
+            current_index - 1
+        });
+    }
+
     /// Clear all form inputs
     pub fn clear_form(&mut self) {
         self.name_input.clear();
@@ -228,6 +263,8 @@ impl SyncSettings {
         self.connection_result = None;
         self.active_field = None;
         self.confirm_delete = false;
+        self.confirm_activate = false;
+        self.activate_target_index = None;
     }
 
     /// Add character to name input
@@ -405,6 +442,7 @@ impl Settings {
     pub async fn load_sync_settings(&mut self, data_dir: &Path) -> Result<()> {
         self.sync.targets.clear();
         self.sync.current_target_index = None;
+        self.sync.selected_target_index = None;
         self.auto_sync = AutoSyncSettings::default();
 
         let targets_path = sync_targets_path(data_dir);
@@ -422,6 +460,7 @@ impl Settings {
             if self.sync.current_target_index.is_none() && !self.sync.targets.is_empty() {
                 self.sync.current_target_index = Some(0);
             }
+            self.sync.sync_selection_to_active();
         }
 
         let config_path = data_dir.join("settings.json");
@@ -484,10 +523,14 @@ impl Settings {
 
             self.sync.targets.push(target);
             self.sync.current_target_index = Some(0);
+            self.sync.selected_target_index = Some(0);
         } else if self.sync.targets.is_empty() {
             // No targets configured, set to None
             self.sync.current_target_index = None;
+            self.sync.selected_target_index = None;
         }
+
+        self.sync.sync_selection_to_active();
 
         Ok(())
     }
@@ -571,6 +614,7 @@ impl Settings {
 
                 self.sync.targets.push(target);
                 self.sync.current_target_index = Some(0);
+                self.sync.selected_target_index = Some(0);
 
                 // Save in new format
                 self.save_sync_settings(data_dir).await?;

@@ -74,6 +74,75 @@ pub enum NoteFilterMode {
     FullText,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum TagPopupFocus {
+    #[default]
+    List,
+    Input,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TagPopupItem {
+    pub id: String,
+    pub title: String,
+    pub attached: bool,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct TagPopupState {
+    pub visible: bool,
+    pub items: Vec<TagPopupItem>,
+    pub selected_index: usize,
+    pub input: String,
+    pub focus: TagPopupFocus,
+}
+
+impl TagPopupState {
+    pub fn open(&mut self, items: Vec<TagPopupItem>) {
+        self.visible = true;
+        self.items = items;
+        self.selected_index = self
+            .items
+            .iter()
+            .position(|item| item.attached)
+            .unwrap_or(0)
+            .min(self.items.len().saturating_sub(1));
+        self.input.clear();
+        self.focus = if self.items.is_empty() {
+            TagPopupFocus::Input
+        } else {
+            TagPopupFocus::List
+        };
+    }
+
+    pub fn close(&mut self) {
+        self.visible = false;
+        self.items.clear();
+        self.selected_index = 0;
+        self.input.clear();
+        self.focus = TagPopupFocus::List;
+    }
+
+    pub fn current_item(&self) -> Option<&TagPopupItem> {
+        self.items.get(self.selected_index)
+    }
+
+    pub fn move_selection(&mut self, forward: bool) {
+        if self.items.is_empty() {
+            self.selected_index = 0;
+            return;
+        }
+
+        self.selected_index = if forward {
+            (self.selected_index + 1) % self.items.len()
+        } else if self.selected_index == 0 {
+            self.items.len() - 1
+        } else {
+            self.selected_index - 1
+        };
+    }
+}
+
 impl NoteFilterMode {
     pub fn label(self) -> &'static str {
         match self {
@@ -154,6 +223,8 @@ pub struct AppState {
     pub notebook_sort: NotebookSortMode,
     /// Vim-style command prompt state
     pub command_prompt: CommandPromptState,
+    /// Tag selection popup state
+    pub tag_popup: TagPopupState,
     /// Tag names keyed by note ID for filtering
     pub note_tags: HashMap<String, Vec<String>>,
     /// Color theme
@@ -201,6 +272,7 @@ impl Default for AppState {
             note_sort: NoteSortMode::TimeAsc,
             notebook_sort: NotebookSortMode::TimeAsc,
             command_prompt: CommandPromptState::default(),
+            tag_popup: TagPopupState::default(),
             note_tags: HashMap::new(),
             theme: crate::theme::default_theme(),
             show_error_dialog: false,
@@ -780,6 +852,14 @@ impl AppState {
     /// Close the command prompt.
     pub fn close_command_prompt(&mut self) {
         self.command_prompt.close();
+    }
+
+    pub fn open_tag_popup(&mut self, items: Vec<TagPopupItem>) {
+        self.tag_popup.open(items);
+    }
+
+    pub fn close_tag_popup(&mut self) {
+        self.tag_popup.close();
     }
 
     pub fn rebuild_folder_display_names(&mut self) {

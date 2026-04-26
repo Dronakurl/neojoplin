@@ -10,7 +10,9 @@ pub enum CommandAction {
     ImportJex(String),
     ExportJex(String),
     Read(String),
-    Tag(String),
+    TagAdd(String),
+    TagRemove(String),
+    TagList,
     MkNote(String),
     MkTodo(String),
     MkBook(String),
@@ -81,8 +83,8 @@ pub const COMMANDS: &[CommandDescriptor] = &[
     },
     CommandDescriptor {
         name: "tag",
-        usage: ":tag <tag-name>",
-        description: "Attach a tag to the selected note, creating it if needed",
+        usage: ":tag add <tag> | :tag remove <tag> | :tag list",
+        description: "Add, remove, or list tags for the selected note",
         hidden_from_completion: false,
     },
     CommandDescriptor {
@@ -146,6 +148,27 @@ pub struct CommandPromptState {
     pub completion: Option<CompletionState>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CommandPreview {
+    pub left: &'static str,
+    pub right: &'static str,
+}
+
+const TAG_COMMAND_PREVIEWS: &[CommandPreview] = &[
+    CommandPreview {
+        left: ":tag add <tag>",
+        right: "Attach a tag to the selected note, creating it if needed",
+    },
+    CommandPreview {
+        left: ":tag remove <tag>",
+        right: "Detach a tag from the selected note",
+    },
+    CommandPreview {
+        left: ":tag list",
+        right: "List the selected note's tags in the status bar",
+    },
+];
+
 impl CommandPromptState {
     pub fn open(&mut self, initial_input: impl Into<String>) {
         self.visible = true;
@@ -191,7 +214,7 @@ pub fn parse_command(input: &str) -> Result<CommandAction, String> {
         "import-jex" => required_arg(arg, "import-jex <file.jex>").map(CommandAction::ImportJex),
         "export-jex" => required_arg(arg, "export-jex <file.jex>").map(CommandAction::ExportJex),
         "read" => required_arg(arg, "read <file>").map(CommandAction::Read),
-        "tag" => required_arg(arg, "tag <tag-name>").map(CommandAction::Tag),
+        "tag" => parse_tag_command(arg),
         "mknote" => required_arg(arg, "mknote <title>").map(CommandAction::MkNote),
         "mktodo" => required_arg(arg, "mktodo <title>").map(CommandAction::MkTodo),
         "mkbook" => required_arg(arg, "mkbook <title>").map(CommandAction::MkBook),
@@ -231,6 +254,75 @@ pub fn complete_path_input(command_name: &str, raw_arg: &str) -> Vec<String> {
     suggestions
 }
 
+pub fn command_previews(input: &str) -> Vec<CommandPreview> {
+    let trimmed = input.trim_start();
+    if trimmed.is_empty() {
+        return COMMANDS
+            .iter()
+            .filter(|command| !command.hidden_from_completion)
+            .map(|command| CommandPreview {
+                left: command.usage,
+                right: command.description,
+            })
+            .collect();
+    }
+
+    let (name, arg, has_argument_context) = split_command_input(trimmed);
+    if !has_argument_context {
+        return COMMANDS
+            .iter()
+            .filter(|command| {
+                !command.hidden_from_completion && starts_with_ignore_case(command.name, name)
+            })
+            .map(|command| CommandPreview {
+                left: command.usage,
+                right: command.description,
+            })
+            .collect();
+    }
+
+    if name == "tag" {
+        let (subcommand, subarg) = split_command(arg.trim_start());
+        if subarg.is_none() {
+            return TAG_COMMAND_PREVIEWS
+                .iter()
+                .copied()
+                .filter(|preview| {
+                    let sub = preview
+                        .left
+                        .strip_prefix(":tag ")
+                        .unwrap_or(preview.left)
+                        .split_whitespace()
+                        .next()
+                        .unwrap_or_default();
+                    starts_with_ignore_case(sub, subcommand)
+                })
+                .collect();
+        }
+    }
+
+    COMMANDS
+        .iter()
+        .find(|command| command.name == name)
+        .map(|command| {
+            vec![CommandPreview {
+                left: command.usage,
+                right: command.description,
+            }]
+        })
+        .unwrap_or_default()
+}
+
+fn split_command_input(input: &str) -> (&str, &str, bool) {
+    if let Some(index) = input.find(char::is_whitespace) {
+        let command = &input[..index];
+        let argument = &input[index + 1..];
+        (command, argument, true)
+    } else {
+        (input, "", false)
+    }
+}
+
 fn split_command(input: &str) -> (&str, Option<&str>) {
     if let Some(index) = input.find(char::is_whitespace) {
         let name = &input[..index];
@@ -238,6 +330,23 @@ fn split_command(input: &str) -> (&str, Option<&str>) {
         (name, Some(rest))
     } else {
         (input, None)
+    }
+}
+
+fn parse_tag_command(arg: Option<&str>) -> Result<CommandAction, String> {
+    let raw = arg.unwrap_or("").trim();
+    if raw.is_empty() {
+        return Err("Usage: :tag add <tag> | :tag remove <tag> | :tag list".to_string());
+    }
+
+    let (subcommand, subarg) = split_command(raw);
+    match subcommand {
+        "add" => required_arg(subarg, "tag add <tag>").map(CommandAction::TagAdd),
+        "remove" => required_arg(subarg, "tag remove <tag>").map(CommandAction::TagRemove),
+        "list" => no_arg(subarg, "tag list").map(|_| CommandAction::TagList),
+        _ => Err(format!(
+            "Usage: :tag add <tag> | :tag remove <tag> | :tag list"
+        )),
     }
 }
 
@@ -353,5 +462,18 @@ mod tests {
     #[test]
     fn parse_unknown_command_fails() {
         assert!(parse_command("wat").is_err());
+    }
+
+    #[test]
+    fn parse_tag_subcommands() {
+        assert_eq!(
+            parse_command("tag add urgent").unwrap(),
+            CommandAction::TagAdd("urgent".to_string())
+        );
+        assert_eq!(
+            parse_command("tag remove urgent").unwrap(),
+            CommandAction::TagRemove("urgent".to_string())
+        );
+        assert_eq!(parse_command("tag list").unwrap(), CommandAction::TagList);
     }
 }
