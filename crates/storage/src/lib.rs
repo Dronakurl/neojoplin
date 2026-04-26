@@ -802,6 +802,14 @@ impl Storage for SqliteStorage {
             .await
             .map_err(|e| DatabaseError::QueryFailed(format!("Failed to delete tag: {}", e)))?;
 
+        sqlx::query("DELETE FROM note_tags WHERE tag_id = ?")
+            .bind(id)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| {
+                DatabaseError::QueryFailed(format!("Failed to delete note tag links: {}", e))
+            })?;
+
         sqlx::query(
             "INSERT INTO deleted_items (item_type, item_id, deleted_time, sync_target) VALUES (?, ?, ?, ?)",
         )
