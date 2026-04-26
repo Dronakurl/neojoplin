@@ -390,6 +390,7 @@ pub struct Settings {
     pub auto_sync: AutoSyncSettings,
     pub status: SyncStatusSettings,
     pub encryption: EncryptionSettings,
+    pub show_ribbon: bool,
 }
 
 impl Default for Settings {
@@ -400,6 +401,7 @@ impl Default for Settings {
             auto_sync: AutoSyncSettings::default(),
             status: SyncStatusSettings::default(),
             encryption: EncryptionSettings::default(),
+            show_ribbon: true,
         }
     }
 }
@@ -482,6 +484,10 @@ impl Settings {
             .and_then(|value| value.as_u64())
             .unwrap_or(self.auto_sync.interval_seconds);
         self.auto_sync.sync_selection_to_value();
+        self.show_ribbon = config
+            .get("ui.show_ribbon")
+            .and_then(|value| value.as_bool())
+            .unwrap_or(true);
 
         // Parse active target ID
         let active_id = config
@@ -569,6 +575,7 @@ impl Settings {
         };
         config["sync.target"] = serde_json::json!(target_id);
         config["sync.interval"] = serde_json::json!(self.auto_sync.interval_seconds);
+        config["ui.show_ribbon"] = serde_json::json!(self.show_ribbon);
 
         // Save current WebDAV target
         if let Some(idx) = self.sync.current_target_index {
