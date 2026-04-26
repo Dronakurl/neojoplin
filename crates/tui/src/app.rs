@@ -397,8 +397,16 @@ impl App {
             }
 
             KeyCode::Char('f') => {
-                if matches!(self.state.focus, FocusPanel::Notebooks | FocusPanel::Notes) {
-                    self.state.open_filter_prompt(false);
+                if matches!(
+                    self.state.focus,
+                    FocusPanel::Notebooks | FocusPanel::Notes | FocusPanel::Content
+                ) {
+                    let preview_focus = self.state.focus == FocusPanel::Content;
+                    self.state.open_filter_prompt(preview_focus);
+                    if preview_focus {
+                        self.state
+                            .set_status("Preview filter: enter query and press Enter");
+                    }
                 } else {
                     self.state
                         .set_status("Focus notebooks or notes to filter the current list");
@@ -406,8 +414,12 @@ impl App {
             }
 
             KeyCode::Char('F') => {
-                if matches!(self.state.focus, FocusPanel::Notebooks | FocusPanel::Notes) {
-                    let notes_full_text = self.state.focus == FocusPanel::Notes;
+                if matches!(
+                    self.state.focus,
+                    FocusPanel::Notebooks | FocusPanel::Notes | FocusPanel::Content
+                ) {
+                    let notes_full_text =
+                        matches!(self.state.focus, FocusPanel::Notes | FocusPanel::Content);
                     self.state.open_filter_prompt(notes_full_text);
                     if notes_full_text {
                         self.state
@@ -493,6 +505,15 @@ impl App {
                 } else if self.state.focus == FocusPanel::Notebooks {
                     // Switch to notes panel when Enter is pressed on notebooks
                     self.state.next_panel(); // Switch from Notebooks to Notes
+                }
+            }
+
+            KeyCode::Char('e') if self.state.focus == FocusPanel::Content => {
+                if let Some(note) = self.state.selected_note() {
+                    let note_clone = note.clone();
+                    self.edit_note(&note_clone, terminal).await?;
+                } else {
+                    self.state.set_status("Select a note to edit");
                 }
             }
 
@@ -1105,7 +1126,16 @@ impl App {
                 }
             }
             FocusPanel::Content => {
-                self.state.set_status("Cannot delete from content panel");
+                if let Some(note) = self.state.selected_note() {
+                    let permanent = self.state.trash_mode;
+                    self.state.confirm_delete(PendingDelete::Note {
+                        id: note.id.clone(),
+                        title: note.title.clone(),
+                        permanent,
+                    });
+                } else {
+                    self.state.set_status("Select a note before deleting");
+                }
             }
         }
 
@@ -1326,6 +1356,17 @@ impl App {
             KeyCode::Char('r') if self.state.settings.current_tab == SettingsTab::Status => {
                 self.refresh_sync_status().await?;
                 self.state.set_status("Sync status refreshed");
+            }
+
+            KeyCode::Char('b') if self.state.settings.current_tab == SettingsTab::Status => {
+                self.state.settings.show_ribbon = !self.state.settings.show_ribbon;
+                let data_dir = neojoplin_core::Config::data_dir()?;
+                self.state.settings.save_sync_settings(&data_dir).await?;
+                self.state.set_status(if self.state.settings.show_ribbon {
+                    "Ribbon enabled"
+                } else {
+                    "Ribbon disabled"
+                });
             }
 
             _ => {}
@@ -1838,19 +1879,20 @@ impl App {
             }
             KeyCode::Enter => {
                 let input = self.state.command_prompt.input.clone();
-                self.state.close_command_prompt();
-                self.command_history_index = None;
-                self.command_history_draft.clear();
-
                 match parse_command(&input) {
                     Ok(action) => {
                         self.remember_command(&input);
                         match self.execute_command(action).await {
-                            Ok(should_exit) => return Ok(should_exit),
-                            Err(error) => self.state.show_error(&error.to_string()),
+                            Ok(should_exit) => {
+                                self.state.close_command_prompt();
+                                self.command_history_index = None;
+                                self.command_history_draft.clear();
+                                return Ok(should_exit);
+                            }
+                            Err(error) => self.state.command_prompt.set_error(error.to_string()),
                         }
                     }
-                    Err(error) => self.state.show_error(&error),
+                    Err(error) => self.state.command_prompt.set_error(error),
                 }
             }
             KeyCode::Char(c)
