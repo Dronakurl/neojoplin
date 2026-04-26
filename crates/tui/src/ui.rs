@@ -28,6 +28,7 @@ const HELP_LINES: &[&str] = &[
     "  gg                 Jump to the top of the focused list or preview",
     "  ge / G             Jump to the end of the focused list or preview",
     "  Enter              Open notebook (in Notebooks panel)",
+    "  e                  Edit selected note from preview panel",
     "",
     "Notes & Notebooks",
     "  n      New note in current notebook",
@@ -209,33 +210,44 @@ fn render_popup_dialog<'a>(
 
 /// Render the main UI
 pub fn render_ui(f: &mut Frame, state: &AppState) {
-    // Calculate heights for keybinding ribbon and status line
-    let ribbon_height = if f.area().width < 100 { 2 } else { 1 };
-
+    let status_height = 1;
+    let ribbon_height = if state.settings.show_ribbon {
+        if f.area().width < 100 {
+            2
+        } else {
+            1
+        }
+    } else {
+        0
+    };
+    let constraints = if state.settings.show_ribbon {
+        vec![
+            Constraint::Min(0),
+            Constraint::Length(ribbon_height),
+            Constraint::Length(status_height),
+        ]
+    } else {
+        vec![Constraint::Min(0), Constraint::Length(status_height)]
+    };
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .margin(0)
-        .constraints(
-            [
-                Constraint::Min(0),                // Main content
-                Constraint::Length(ribbon_height), // Keybinding ribbon
-                Constraint::Length(1),             // Status line
-            ]
-            .as_ref(),
-        )
+        .constraints(constraints)
         .split(f.area());
 
-    // Render main content
     render_main_content(f, state, chunks[0]);
 
-    // Render keybinding ribbon
-    render_keybinding_ribbon(f, state, chunks[1]);
+    let status_area = if state.settings.show_ribbon {
+        render_keybinding_ribbon(f, state, chunks[1]);
+        chunks[2]
+    } else {
+        chunks[1]
+    };
 
-    // Render status line
-    render_status_line(f, state, chunks[2]);
+    render_status_line(f, state, status_area);
 
     if state.command_prompt.visible {
-        render_command_overlay(f, state, chunks[2]);
+        render_command_overlay(f, state, status_area);
     }
 }
 
@@ -505,10 +517,28 @@ fn render_content_panel(f: &mut Frame, state: &AppState, area: Rect) {
     } else {
         "*Select a note to view its content*".to_string()
     };
+    let preview_filter = if state.focus == FocusPanel::Content {
+        state
+            .note_text_filter_query()
+            .map(|(query, _)| query.to_lowercase())
+    } else {
+        None
+    };
 
     // Render markdown with termimad → ratatui native Text
     let content_width = area.width.saturating_sub(2) as usize;
-    let content_lines: Vec<Line> = termimad_to_ratatui_lines(&markdown_text, content_width);
+    let mut content_lines: Vec<Line> = termimad_to_ratatui_lines(&markdown_text, content_width);
+    if let Some(filter) = preview_filter.as_ref() {
+        if !filter.is_empty() {
+            content_lines.retain(|line| line.to_string().to_lowercase().contains(filter));
+            if content_lines.is_empty() {
+                content_lines.push(Line::from(Span::styled(
+                    "No matching lines in preview",
+                    theme.dim(),
+                )));
+            }
+        }
+    }
 
     // Calculate visible area for scrolling
     let visible_height = area.height.saturating_sub(2) as usize; // Subtract border and padding
@@ -696,23 +726,25 @@ fn render_keybinding_ribbon(f: &mut Frame, state: &AppState, area: Rect) {
             bindings.push(("n".to_string(), "NEW".to_string(), false));
         }
         if state.selected_note().is_some()
-            && matches!(
-                state.focus,
-                crate::state::FocusPanel::Notes | crate::state::FocusPanel::Content
-            )
+            && matches!(state.focus, FocusPanel::Notes | FocusPanel::Content)
         {
             bindings.push(("a".to_string(), "TAGS".to_string(), false));
         }
         bindings.push(("d".to_string(), "DELETE".to_string(), false));
         bindings.push(("t".to_string(), "TODO".to_string(), false));
-        bindings.push((",".to_string(), "SORT".to_string(), false));
+        if matches!(state.focus, FocusPanel::Notebooks | FocusPanel::Notes) {
+            bindings.push((",".to_string(), "SORT".to_string(), false));
+        }
+        if state.focus == FocusPanel::Content && state.selected_note().is_some() {
+            bindings.push(("e".to_string(), "EDIT".to_string(), false));
+        }
         bindings.push(("s".to_string(), "SYNC".to_string(), false));
     }
 
-    // Filter available when focus is list-based
+    // Filter available when focus is list-based or preview
     if matches!(
         state.focus,
-        crate::state::FocusPanel::Notebooks | crate::state::FocusPanel::Notes
+        FocusPanel::Notebooks | FocusPanel::Notes | FocusPanel::Content
     ) || state.trash_mode
     {
         bindings.push(("f".to_string(), "FILTER".to_string(), filters_active));
@@ -833,7 +865,10 @@ fn render_status_line(f: &mut Frame, state: &AppState, area: Rect) {
             Span::styled("█", theme.muted()),
         ];
 
-        if let Some(completion) = state.command_prompt.completion.as_ref() {
+        if let Some(error) = state.command_prompt.error.as_ref() {
+            spans.push(Span::styled("  ", theme.muted()));
+            spans.push(Span::styled(error, theme.error()));
+        } else if let Some(completion) = state.command_prompt.completion.as_ref() {
             if !completion.items.is_empty() {
                 let preview = completion
                     .items
@@ -1082,6 +1117,9 @@ fn settings_bottom_hints<'a>(state: &'a AppState, theme: &'a Theme) -> Line<'a> 
             }
             SettingsTab::Status => {
                 for s in kh(theme, "r", "refresh") {
+                    spans.push(s);
+                }
+                for s in kh(theme, "b", "toggle ribbon") {
                     spans.push(s);
                 }
             }
@@ -1875,6 +1913,21 @@ fn render_sync_status_settings(f: &mut Frame, state: &AppState, area: Rect) {
             ),
         ]),
         Line::from(vec![
+            Span::styled("Ribbon: ", theme.muted()),
+            Span::styled(
+                if state.settings.show_ribbon {
+                    "Enabled"
+                } else {
+                    "Disabled"
+                },
+                if state.settings.show_ribbon {
+                    theme.success()
+                } else {
+                    theme.warning()
+                },
+            ),
+        ]),
+        Line::from(vec![
             Span::styled("Next auto-sync: ", theme.muted()),
             Span::styled(
                 status
@@ -2210,7 +2263,7 @@ pub fn render_tag_popup(f: &mut Frame, state: &AppState) {
     if let Some((_, title)) = popup.pending_delete_tag.as_ref() {
         render_popup_dialog(
             f,
-            "Delete Tag",
+            "Delete Tag for all notes?",
             vec![
                 Line::from("Delete this tag from the database?").style(theme.error()),
                 Line::from(""),
@@ -2225,7 +2278,7 @@ pub fn render_tag_popup(f: &mut Frame, state: &AppState) {
 
     let mut lines = vec![
         Line::from(vec![
-            Span::styled("New tag: ", theme.muted()),
+            Span::styled("New tag: ", theme.primary()),
             Span::styled(&popup.input, theme.primary()),
             if popup.focus == TagPopupFocus::Input {
                 Span::styled("█", theme.muted())
@@ -2239,7 +2292,24 @@ pub fn render_tag_popup(f: &mut Frame, state: &AppState) {
     if popup.items.is_empty() {
         lines.push(Line::from("  No tags yet. Type a name and press Enter.").style(theme.muted()));
     } else {
-        for (index, item) in popup.items.iter().enumerate().take(12) {
+        let max_visible_rows = usize::from(f.area().height.saturating_sub(12)).max(4);
+        let selected = popup
+            .selected_index
+            .min(popup.items.len().saturating_sub(1));
+        let start = selected.saturating_sub(max_visible_rows.saturating_sub(1));
+        let end = (start + max_visible_rows).min(popup.items.len());
+
+        if start > 0 {
+            lines.push(Line::from(Span::styled("  …", theme.muted())));
+        }
+
+        for (index, item) in popup
+            .items
+            .iter()
+            .enumerate()
+            .skip(start)
+            .take(end.saturating_sub(start))
+        {
             let prefix = if item.attached { "[x]" } else { "[ ]" };
             let style = if index == popup.selected_index {
                 theme.selection()
@@ -2253,58 +2323,36 @@ pub fn render_tag_popup(f: &mut Frame, state: &AppState) {
                 Span::styled(&item.title, style),
             ]));
         }
+
+        if end < popup.items.len() {
+            lines.push(Line::from(Span::styled("  …", theme.muted())));
+        }
+
+        lines.push(Line::from(""));
+        lines.push(Line::from(Span::styled(
+            format!("Showing {}-{} of {}", start + 1, end, popup.items.len()),
+            theme.muted(),
+        )));
     }
 
-    let content_width = lines
-        .iter()
-        .map(|line| line.width() as u16)
-        .max()
-        .unwrap_or(0);
-    let height = (lines.len() as u16 + 4)
-        .max(10)
-        .min(f.area().height.saturating_sub(2));
-    let width = (content_width + 6)
-        .max(44)
-        .min(f.area().width.saturating_sub(2));
-    let area = Rect::new(
-        (f.area().width.saturating_sub(width)) / 2,
-        (f.area().height.saturating_sub(height)) / 2,
-        width,
-        height,
-    );
-    f.render_widget(Clear, area);
-    f.render_widget(
-        Paragraph::new(lines)
-            .block(
-                Block::default()
-                    .title(" Tags ")
-                    .title_bottom(Line::from(vec![
-                        Span::styled("[", theme.muted()),
-                        Span::styled("Space", theme.accent()),
-                        Span::styled("]", theme.muted()),
-                        Span::raw(" toggle ").style(theme.text()),
-                        Span::styled("[", theme.muted()),
-                        Span::styled("Enter", theme.accent()),
-                        Span::styled("]", theme.muted()),
-                        Span::raw(" create/toggle ").style(theme.text()),
-                        Span::styled("[", theme.muted()),
-                        Span::styled("Tab", theme.accent()),
-                        Span::styled("]", theme.muted()),
-                        Span::raw(" input/list ").style(theme.text()),
-                        Span::styled("[", theme.muted()),
-                        Span::styled("d", theme.accent()),
-                        Span::styled("]", theme.muted()),
-                        Span::raw(" delete ").style(theme.text()),
-                        Span::styled("[", theme.muted()),
-                        Span::styled("Esc", theme.accent()),
-                        Span::styled("]", theme.muted()),
-                        Span::raw(" close").style(theme.text()),
-                    ]))
-                    .borders(Borders::ALL)
-                    .border_style(theme.border_focused()),
-            )
-            .wrap(Wrap { trim: false }),
-        area,
+    let title = if popup.items.is_empty() {
+        "Tags"
+    } else {
+        "Tags (j/k/↑/↓ to scroll)"
+    };
+    render_popup_dialog(
+        f,
+        title,
+        lines,
+        &[
+            "Space toggle",
+            "Enter create/toggle",
+            "Tab input/list",
+            "d delete",
+            "Esc close",
+        ],
+        Color::Cyan,
+        Alignment::Left,
     );
 }
 
