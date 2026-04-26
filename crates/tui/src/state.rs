@@ -3,7 +3,7 @@
 use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
 
-use crate::command_line::CommandPromptState;
+use crate::command_line::{CommandPromptState, CompletionState};
 use crate::settings::Settings;
 use crate::theme::Theme;
 use fuzzy_matcher::skim::SkimMatcherV2;
@@ -95,6 +95,7 @@ pub struct TagPopupState {
     pub selected_index: usize,
     pub input: String,
     pub focus: TagPopupFocus,
+    pub pending_delete_tag: Option<(String, String)>,
 }
 
 impl TagPopupState {
@@ -113,6 +114,7 @@ impl TagPopupState {
         } else {
             TagPopupFocus::List
         };
+        self.pending_delete_tag = None;
     }
 
     pub fn close(&mut self) {
@@ -121,6 +123,7 @@ impl TagPopupState {
         self.selected_index = 0;
         self.input.clear();
         self.focus = TagPopupFocus::List;
+        self.pending_delete_tag = None;
     }
 
     pub fn current_item(&self) -> Option<&TagPopupItem> {
@@ -191,6 +194,8 @@ pub struct AppState {
     pub filter_target: FocusPanel,
     /// Current filter prompt input
     pub filter_input: String,
+    /// Tag completion state for filter prompt
+    pub filter_completion: Option<CompletionState>,
     /// Filter input value before opening the prompt
     pub filter_original_input: String,
     /// Active notebook filter query
@@ -256,6 +261,7 @@ impl Default for AppState {
             show_filter_prompt: false,
             filter_target: FocusPanel::Notes,
             filter_input: String::new(),
+            filter_completion: None,
             filter_original_input: String::new(),
             notebook_filter_query: String::new(),
             note_filter_query: String::new(),
@@ -744,6 +750,7 @@ impl AppState {
             };
         }
         self.filter_input = self.current_filter_query().to_string();
+        self.filter_completion = None;
         self.filter_original_input = self.filter_input.clone();
         self.show_filter_prompt = true;
     }
@@ -755,18 +762,21 @@ impl AppState {
             self.set_filter_query(original);
         }
         self.show_filter_prompt = false;
+        self.filter_completion = None;
         self.filter_original_input.clear();
     }
 
     /// Add a character to the live filter query.
     pub fn add_filter_char(&mut self, c: char) {
         self.filter_input.push(c);
+        self.filter_completion = None;
         self.set_filter_query(self.filter_input.clone());
     }
 
     /// Remove a character from the live filter query.
     pub fn remove_filter_char(&mut self) {
         self.filter_input.pop();
+        self.filter_completion = None;
         self.set_filter_query(self.filter_input.clone());
     }
 
