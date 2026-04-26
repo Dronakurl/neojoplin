@@ -146,6 +146,7 @@ pub struct CommandPromptState {
     pub visible: bool,
     pub input: String,
     pub completion: Option<CompletionState>,
+    pub error: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -174,27 +175,36 @@ impl CommandPromptState {
         self.visible = true;
         self.input = initial_input.into();
         self.completion = None;
+        self.error = None;
     }
 
     pub fn close(&mut self) {
         self.visible = false;
         self.input.clear();
         self.completion = None;
+        self.error = None;
     }
 
     pub fn set_input(&mut self, input: String) {
         self.input = input;
         self.completion = None;
+        self.error = None;
     }
 
     pub fn push_char(&mut self, c: char) {
         self.input.push(c);
         self.completion = None;
+        self.error = None;
     }
 
     pub fn pop_char(&mut self) {
         self.input.pop();
         self.completion = None;
+        self.error = None;
+    }
+
+    pub fn set_error(&mut self, error: impl Into<String>) {
+        self.error = Some(error.into());
     }
 }
 
