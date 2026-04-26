@@ -2046,21 +2046,24 @@ pub fn render_delete_confirmation(f: &mut Frame, state: &AppState) {
         Line::from(""),
         Line::from(item_label).style(theme.primary()),
     ];
-    if let Some(crate::state::PendingDelete::Notebook { note_count, .. }) =
-        state.pending_delete.as_ref()
+    let note_count = if let Some(crate::state::PendingDelete::Notebook { note_count, .. }) =
+        state.pending_delete.clone()
     {
         text_lines.push(Line::from(format!(
             "{} notes will become orphaned if you keep them.",
             note_count
         )));
-    }
+        note_count
+    } else {
+        0
+    };
     let buttons = match state.pending_delete.as_ref() {
         Some(crate::state::PendingDelete::Notebook { .. }) => {
-            vec![
-                "y/Enter notebook only",
-                "Y delete notebook + notes",
-                "n/Esc cancel",
-            ]
+            if note_count > 0 {
+                vec!["y/Enter", "Y delete all notes", "n/Esc cancel"]
+            } else {
+                vec!["y/Enter", "n/Esc cancel"]
+            }
         }
         _ => vec!["y/Enter delete", "n/Esc cancel"],
     };
