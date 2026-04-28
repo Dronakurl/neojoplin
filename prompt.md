@@ -5,4 +5,5 @@
   🦹🏽♂  Degoogle
   All the other emojis stay the same
   
-
+- The `ui.rs` is becoming quite large. 2000 lines of code.
+  Split it up in individual modules.
