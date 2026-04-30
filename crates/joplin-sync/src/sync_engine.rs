@@ -87,12 +87,14 @@ impl SyncEngine {
         self.check_locks().await?;
         self.load_sync_info().await?;
 
-        // Detect E2EE state changes — if encryption was just enabled or disabled,
-        // clear sync_items to force re-upload of all items in the new format
-        self.handle_encryption_state_change().await?;
-
         // Load master keys from remote info.json if E2EE is available
         self.load_remote_master_keys().await;
+
+        // Detect E2EE state changes — if encryption was just enabled or disabled,
+        // clear sync_items to force re-upload of all items in the new format.
+        // Remote keys need to be loaded first so a fresh profile can attach to an
+        // already-encrypted target without being mistaken for "encryption disabled".
+        self.handle_encryption_state_change().await?;
 
         self.ensure_remote_directory().await?;
 

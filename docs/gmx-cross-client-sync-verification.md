@@ -1,121 +1,128 @@
-# GMX `/joplin` cross-client sync verification
+# GMX cross-client sync verification
 
 ## Scope
 
-This verification used the productive GMX WebDAV target at `/joplin` and was performed carefully against:
+This verification now covers two GMX targets:
 
-- **Joplin CLI**
-- **NeoJoplin**
+1. **Productive `/joplin`**
+2. **Playground `/joplin_test`**
 
-The Joplin Desktop profile was left untouched.
+All tests were performed with isolated Joplin CLI and NeoJoplin homes. The Joplin Desktop profile was left untouched.
 
-## What was changed locally
+## Current result
 
-1. The old Joplin CLI profile was backed up and replaced with a fresh profile before pointing it to GMX. This was necessary because the previous CLI profile had unrelated local data and hundreds of conflicts, which would have been unsafe to sync to production.
-2. The NeoJoplin local database/data directory was removed to allow a clean import from the encrypted remote.
+**NeoJoplin and Joplin CLI now interoperate successfully on both local WebDAV and GMX `/joplin_test`, in plaintext and with E2EE.**
 
-## What worked
+What is **working today**:
 
-### Joplin CLI
+- Joplin CLI → NeoJoplin plaintext sync
+- NeoJoplin → Joplin CLI plaintext sync
+- Joplin CLI → NeoJoplin encrypted sync
+- NeoJoplin → Joplin CLI encrypted sync
+- bidirectional note body edits
+- matching note counts after each playground scenario
 
-Joplin CLI was configured to use the GMX WebDAV target and synced successfully.
+What is **still not ready**:
 
-Observed result after the clean sync/decrypt flow:
+- attaching NeoJoplin to the old productive encrypted `/joplin` dataset that contains legacy master keys using method `4`
 
-- Sync target: WebDAV (`sync.target = 6`)
-- Remote path: `https://webdav.mc.gmx.net/joplin/`
-- Visible note count: **301**
-- Sync status: **466 / 466** items
-- Conflicts: **0**
+## Verified working scenarios
 
-Important finding: the productive GMX target did **not** decrypt with the generic `E2EE_PASSWORD` value from `.env`. It decrypted only with `GMX_E2EE_PASSWORD`.
+### 1. Local WebDAV plaintext
 
-## What failed
+- Joplin CLI created a note
+- NeoJoplin imported it
+- NeoJoplin edited that note
+- Joplin CLI received the edit
+- NeoJoplin created a second note
+- Joplin CLI imported it
+- Joplin CLI edited that second note
+- NeoJoplin received the edit
+- Final counts matched: **2 notes / 2 notes**
 
-### NeoJoplin against the same encrypted target
+### 2. Local WebDAV encrypted
 
-NeoJoplin did **not** successfully sync the productive encrypted GMX target.
+- Same roundtrip as above
+- NeoJoplin attached to the encrypted target using the remote master key
+- Joplin CLI required an explicit `joplin e2ee decrypt --retry-failed-items` pass after incoming encrypted changes
+- Final counts matched: **2 notes / 2 notes**
 
-Observed result:
+### 3. GMX `/joplin_test` plaintext
 
-- NeoJoplin completed the command without a hard process failure, but emitted many sync warnings.
-- NeoJoplin imported only **2** visible notes.
-- Joplin CLI imported **301** visible notes from the same remote.
-- NeoJoplin reported repeated failures such as:
-  - `Failed to decrypt master key ... Invalid IV length: 16 (expected 12)`
-  - `Failed to decrypt item ... Master key not found: ...`
+- Joplin CLI created `GmxPlain`
+- NeoJoplin imported it
+- NeoJoplin edited it to `Neo edited GMX plain body v2`
+- Joplin CLI received that edit
+- NeoJoplin created `GmxNeoPlain`
+- Joplin CLI imported it
+- Joplin CLI edited it to `Edited by Joplin on GMX plain v3`
+- NeoJoplin received that edit
+- Final counts matched: **2 notes / 2 notes**
 
-This means cross-client parity is currently **not achieved**.
+### 4. GMX `/joplin_test` encrypted
 
-## Root cause assessment
+- Joplin CLI created `GmxEnc`
+- NeoJoplin imported it with `--e2ee-password "$GMX_E2EE_PASSWORD"`
+- NeoJoplin edited it to `Neo edited GMX encrypted body v2`
+- Joplin CLI received the encrypted change
+- Joplin CLI decrypted with `joplin e2ee decrypt --retry-failed-items`
+- NeoJoplin created `GmxNeoEnc`
+- Joplin CLI imported and decrypted it
+- Joplin CLI edited it to `Edited by Joplin on GMX encrypted v3`
+- NeoJoplin received that edit
+- Final counts matched: **2 notes / 2 notes**
 
-The failure is not a bad password issue.
+## Code fixes that made this work
 
-Evidence:
+### 1. Stop auto-generating a fresh local master key on first sync attach
 
-1. Joplin CLI successfully decrypted the same remote with `GMX_E2EE_PASSWORD`.
-2. A safe inspection of remote `info.json` showed:
-   - `e2ee = true`
-   - `masterKeyCount = 12`
-   - remote master key content uses a format whose first entry has:
-     - `salt_len = 12`
-     - `iv_len = 24`
-     - no nested `data` object
-3. NeoJoplin's master key loader expects a different JSON shape and encoding for encrypted master keys:
-   - hex-encoded salt
-   - nested `data.iv` / `data.ct`
-   - AES-GCM nonce handling that does not match the remote format
+Previously, passing `--e2ee-password` on a fresh NeoJoplin profile would auto-enable local encryption and generate a new local key before sync. That caused key drift and broke encrypted interoperability.
 
-Because of that mismatch, NeoJoplin loads only its own newly generated local key and cannot load most remote master keys from GMX/Joplin. Once encrypted notes reference those remote keys, note decryption fails and sync completeness collapses.
+Now, a fresh profile with only a password can attach to an already-encrypted target and use the target's master key.
 
-## Reliability verdict
+### 2. Pass the E2EE service into the sync engine as soon as a password is available
 
-**NeoJoplin is not currently reliable for the productive encrypted GMX `/joplin` target.**
+Previously, NeoJoplin only attached the E2EE service to the sync engine if keys were already loaded locally. That prevented a fresh profile from loading remote keys during sync.
 
-At the time of verification:
+Now, a password-only E2EE service is enough for the sync engine to fetch and load remote keys.
 
-| Client | Result |
-| --- | --- |
-| Joplin CLI | Working |
-| NeoJoplin | Not working reliably |
+### 3. Load remote keys before evaluating encryption state changes
 
-So the system is **not ready** for dependable same-remote cross-client operation between NeoJoplin and Joplin CLI on this encrypted dataset.
+Previously, the sync engine decided "local encryption is disabled" before loading remote keys, which triggered the wrong re-upload behavior for encrypted targets.
 
-## Consequence for the requested cross-client checks
+Now, a fresh profile attaches to the remote encrypted state correctly before deciding whether any re-upload is needed.
 
-The following checks could **not** be validated end-to-end because NeoJoplin never reached a correct full import state:
+## Remaining limitation: productive `/joplin`
 
-- same final note count between both applications
-- note body edit propagation between both applications
-- new note propagation between both applications
-- trustworthy simultaneous use against the same encrypted remote
+The old productive `/joplin` dataset is a different problem from the fresh playground folder.
 
-Those tests would not be meaningful until the NeoJoplin E2EE master-key compatibility bug is fixed.
+Safe inspection showed that `/joplin` contains a mix of master key methods:
 
-## Practical setup plan for NeoJoplin with the GMX `/joplin` folder
+- **method `8`** (current format)
+- **method `4`** (legacy SJCL-style format)
 
-This is the safe order to follow once the E2EE compatibility issue is fixed:
+NeoJoplin now works with fresh method-`8` encrypted targets such as `/joplin_test`, but it still does **not** support the old method-`4` master keys that exist in the productive `/joplin` folder.
+
+So:
+
+- **`/joplin_test`** is ready for cross-client use
+- **`/joplin`** still needs legacy key support before it is safe
+
+## Practical setup for a fresh shared encrypted target
 
 1. Keep Joplin Desktop untouched.
-2. Use a clean NeoJoplin data directory before first production sync.
-3. Configure NeoJoplin with:
-   - `--url $GMX_URL`
-   - `-U $GMX_USER`
-   - `-P $GMX_PASS`
-   - `-r /joplin`
-4. Pass the productive encryption password explicitly as:
+2. Use isolated or clean profiles for first verification.
+3. Configure both clients to the same remote path, for example `/joplin_test`.
+4. For NeoJoplin, always pass the intended password explicitly:
    - `--e2ee-password "$GMX_E2EE_PASSWORD"`
-5. Do **not** rely on `E2EE_PASSWORD` if it differs from `GMX_E2EE_PASSWORD`.
-6. Run one initial full sync and verify:
-   - no master-key decryption warnings
-   - note/folder/resource counts match Joplin CLI
-   - random note bodies open correctly
-7. Only after count parity is reached, test bidirectional create/edit propagation.
-8. Only after that succeeds, assess concurrent sync behavior with both clients.
+5. For Joplin CLI, after syncing incoming encrypted changes, run:
+   - `joplin e2ee decrypt --retry-failed-items`
+6. Verify:
+   - note counts match
+   - Joplin-authored edits reach NeoJoplin
+   - NeoJoplin-authored edits reach Joplin CLI
+   - newly created notes appear in both clients
 
-## Required code fixes before retrying
+## Next step for the productive folder
 
-1. Make NeoJoplin load remote Joplin master keys in the actual format used by GMX/Joplin `info.json`.
-2. Ensure IV/salt decoding matches the real remote encoding.
-3. Avoid auto-generating a fresh active local key on first sync when the intent is to attach to an already-encrypted remote target.
-4. Make environment handling explicit so the productive GMX E2EE password is not confused with unrelated local/test passwords.
+To make the existing productive `/joplin` folder work, NeoJoplin still needs legacy method-`4` master key support.
