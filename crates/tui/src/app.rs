@@ -679,7 +679,7 @@ impl App {
         // Load E2EE service from .env / encryption.json (same logic as CLI)
         let e2ee = load_e2ee_service(&data_dir).await?;
         let encryption_enabled = e2ee.is_enabled();
-        if e2ee.is_enabled() {
+        if e2ee.is_enabled() || e2ee.get_master_password().is_some() {
             sync_engine = sync_engine.with_e2ee(e2ee);
         }
 
@@ -3249,13 +3249,57 @@ fn resolve_tag_by_title<'a>(tags: &'a [Tag], title: &str) -> Option<&'a Tag> {
 }
 
 /// Load the E2EE service from disk (encryption.json + key files).
-/// Reads the password from the E2EE_PASSWORD env var or the project `.env` file.
+/// Reads the password from encryption.json first, then falls back to the
+/// E2EE_PASSWORD env var or the project `.env` file.
 async fn load_e2ee_service(data_dir: &Path) -> Result<joplin_sync::E2eeService> {
     use joplin_sync::{E2eeService, MasterKey};
 
     let encryption_config_path = data_dir.join("encryption.json");
+    let stored_password = if encryption_config_path.exists() {
+        if let Ok(content) = tokio::fs::read_to_string(&encryption_config_path).await {
+            if let Ok(config) = serde_json::from_str::<serde_json::Value>(&content) {
+                config
+                    .get("master_password")
+                    .and_then(|v| v.as_str())
+                    .filter(|s| !s.is_empty())
+                    .map(|s| s.to_string())
+            } else {
+                None
+            }
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+
+    let env_password = std::env::var("E2EE_PASSWORD").ok().or_else(|| {
+        if let Ok(env_path) = std::env::current_dir() {
+            let env_file = env_path.join(".env");
+            if env_file.exists() {
+                if let Ok(content) = std::fs::read_to_string(&env_file) {
+                    for line in content.lines() {
+                        if let Some((key, value)) = line.split_once('=') {
+                            if key.trim() == "E2EE_PASSWORD" {
+                                return Some(value.trim().to_string());
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        None
+    });
+
+    let master_password = stored_password.or(env_password).unwrap_or_default();
+
+    let mut e2ee = E2eeService::new();
+    if !master_password.is_empty() {
+        e2ee.set_master_password(master_password);
+    }
+
     if !encryption_config_path.exists() {
-        return Ok(E2eeService::new());
+        return Ok(e2ee);
     }
 
     let config_content = tokio::fs::read_to_string(&encryption_config_path).await?;
@@ -3266,21 +3310,7 @@ async fn load_e2ee_service(data_dir: &Path) -> Result<joplin_sync::E2eeService> 
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
     if !enabled {
-        return Ok(E2eeService::new());
-    }
-
-    // Read master password from encryption.json (stored on enable), then fall back to env
-    let master_password = config
-        .get("master_password")
-        .and_then(|v| v.as_str())
-        .filter(|s| !s.is_empty())
-        .map(|s| s.to_string())
-        .or_else(|| std::env::var("E2EE_PASSWORD").ok())
-        .unwrap_or_default();
-
-    let mut e2ee = E2eeService::new();
-    if !master_password.is_empty() {
-        e2ee.set_master_password(master_password);
+        return Ok(e2ee);
     }
 
     if let Some(active_key_id) = config.get("active_master_key_id").and_then(|v| v.as_str()) {
@@ -3288,9 +3318,27 @@ async fn load_e2ee_service(data_dir: &Path) -> Result<joplin_sync::E2eeService> 
         let key_file = keys_dir.join(format!("{}.json", active_key_id));
         if key_file.exists() {
             let key_content = tokio::fs::read_to_string(&key_file).await?;
-            let master_key: MasterKey = serde_json::from_str(&key_content)?;
-            e2ee.load_master_key(&master_key)?;
-            e2ee.set_active_master_key(active_key_id.to_string());
+            match serde_json::from_str::<MasterKey>(&key_content) {
+                Ok(master_key) => match e2ee.load_master_key(&master_key) {
+                    Ok(()) => e2ee.set_active_master_key(active_key_id.to_string()),
+                    Err(e) => {
+                        tracing::warn!(
+                            "Skipping local master key {} because it could not be loaded: {}",
+                            active_key_id,
+                            e
+                        );
+                    }
+                },
+                Err(e) => {
+                    tracing::warn!(
+                        "Skipping local master key {} because it could not be parsed: {}",
+                        active_key_id,
+                        e
+                    );
+                }
+            }
+        } else {
+            tracing::warn!("Master key file not found: {}", key_file.display());
         }
     }
 
