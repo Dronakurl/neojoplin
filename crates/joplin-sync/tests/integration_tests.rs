@@ -195,6 +195,27 @@ impl Storage for MockStorage {
         Ok(())
     }
 
+    async fn purge_sync_item(&self, item_type: i32, item_id: &str) -> Result<(), DatabaseError> {
+        match item_type {
+            1 => {
+                self.notes.write().await.retain(|note| note.id != item_id);
+            }
+            2 => {
+                self.folders
+                    .write()
+                    .await
+                    .retain(|folder| folder.id != item_id);
+            }
+            _ => {}
+        }
+
+        self.sync_items
+            .write()
+            .await
+            .retain(|item| !(item.item_type == item_type && item.item_id == item_id));
+        Ok(())
+    }
+
     async fn get_setting(&self, key: &str) -> Result<Option<String>, DatabaseError> {
         Ok(self.settings.read().await.get(key).cloned())
     }

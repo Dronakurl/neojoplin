@@ -2,16 +2,16 @@
 
 ## Scope
 
-This verification now covers two GMX targets:
+This verification covers two GMX targets:
 
 1. **Productive `/joplin`**
 2. **Playground `/joplin_test`**
 
-All tests were performed with isolated Joplin CLI and NeoJoplin homes. The Joplin Desktop profile was left untouched.
+All tests were performed with isolated Joplin CLI and NeoJoplin homes where appropriate. The Joplin Desktop profile was left untouched.
 
 ## Current result
 
-**NeoJoplin and Joplin CLI now interoperate successfully on both local WebDAV and GMX `/joplin_test`, in plaintext and with E2EE.**
+**NeoJoplin and Joplin CLI now interoperate successfully on local WebDAV, GMX `/joplin_test`, and the productive GMX `/joplin` target.**
 
 What is **working today**:
 
@@ -20,11 +20,14 @@ What is **working today**:
 - Joplin CLI → NeoJoplin encrypted sync
 - NeoJoplin → Joplin CLI encrypted sync
 - bidirectional note body edits
-- matching note counts after each playground scenario
+- cross-client note creation
+- remote deletion propagation back into NeoJoplin
+- matching note counts after the verified scenarios
 
-What is **still not ready**:
+What is **still worth watching**:
 
-- attaching NeoJoplin to the old productive encrypted `/joplin` dataset that contains legacy master keys using method `4`
+- the productive `/joplin` dataset still contains older disabled legacy master keys, so sync logs may contain compatibility warnings for historical keys that are no longer active
+- Joplin CLI must have the active productive key present in `encryption.passwordCache` locally or it cannot encrypt newly created notes for upload
 
 ## Verified working scenarios
 
@@ -72,6 +75,25 @@ What is **still not ready**:
 - NeoJoplin received that edit
 - Final counts matched: **2 notes / 2 notes**
 
+### 5. Productive GMX `/joplin`
+
+The productive target is encrypted and contains mixed master-key generations:
+
+- **method `8`** keys in the current format
+- **method `4`** keys in the older SJCL-style format
+
+The productive verification covered:
+
+1. fresh NeoJoplin import from GMX `/joplin`
+2. encrypted note decryption against real remote note content
+3. note-count parity with Joplin CLI after import: **301 / 301**
+4. Joplin CLI creating a new encrypted probe note and syncing it to GMX
+5. NeoJoplin importing that probe note
+6. Joplin CLI deleting the same probe note and syncing again
+7. NeoJoplin removing the probe note on the next sync and returning to **301 / 301**
+
+That establishes working create, edit, decrypt, and delete convergence on the productive shared target.
+
 ## Code fixes that made this work
 
 ### 1. Stop auto-generating a fresh local master key on first sync attach
@@ -92,37 +114,23 @@ Previously, the sync engine decided "local encryption is disabled" before loadin
 
 Now, a fresh profile attaches to the remote encrypted state correctly before deciding whether any re-upload is needed.
 
-## Remaining limitation: productive `/joplin`
+### 4. Support legacy productive-key decryption
 
-The old productive `/joplin` dataset is a different problem from the fresh playground folder.
+The productive GMX target contains a mixture of newer KeyV1-style keys and older SJCL-based keys. NeoJoplin now supports the legacy SJCL AES-CCM path needed to unlock productive remote data that Joplin had already encrypted years ago.
 
-Safe inspection showed that `/joplin` contains a mix of master key methods:
+This was verified against both the Joplin reference implementation and real encrypted GMX note payloads.
 
-- **method `8`** (current format)
-- **method `4`** (legacy SJCL-style format)
+### 5. Apply remote deletions during delta sync
 
-NeoJoplin now works with fresh method-`8` encrypted targets such as `/joplin_test`, but it still does **not** support the old method-`4` master keys that exist in the productive `/joplin` folder.
+Previously, NeoJoplin only downloaded new or updated remote items. If Joplin deleted a note and synced, the remote file disappeared but NeoJoplin kept the local note forever.
 
-So:
+NeoJoplin now purges locally tracked items that disappeared from the remote target, so deletions converge in the same way as creations and edits.
 
-- **`/joplin_test`** is ready for cross-client use
-- **`/joplin`** still needs legacy key support before it is safe
+## Practical setup for a productive shared target
 
-## Practical setup for a fresh shared encrypted target
-
-1. Keep Joplin Desktop untouched.
-2. Use isolated or clean profiles for first verification.
-3. Configure both clients to the same remote path, for example `/joplin_test`.
-4. For NeoJoplin, always pass the intended password explicitly:
-   - `--e2ee-password "$GMX_E2EE_PASSWORD"`
-5. For Joplin CLI, after syncing incoming encrypted changes, run:
-   - `joplin e2ee decrypt --retry-failed-items`
-6. Verify:
-   - note counts match
-   - Joplin-authored edits reach NeoJoplin
-   - NeoJoplin-authored edits reach Joplin CLI
-   - newly created notes appear in both clients
-
-## Next step for the productive folder
-
-To make the existing productive `/joplin` folder work, NeoJoplin still needs legacy method-`4` master key support.
+1. Configure both clients to `https://webdav.mc.gmx.net/joplin/`.
+2. Keep Joplin Desktop on its own untouched profile.
+3. Ensure Joplin CLI has the active productive master key unlocked in its local `encryption.passwordCache`.
+4. Start NeoJoplin with the productive E2EE password available so it can load remote master keys during sync.
+5. After incoming encrypted changes in Joplin CLI, run `joplin e2ee decrypt --retry-failed-items` if any items remain pending decryption.
+6. Verify parity by comparing note counts in both local databases after major migration steps.

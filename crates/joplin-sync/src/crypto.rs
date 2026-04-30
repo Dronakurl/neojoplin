@@ -21,6 +21,31 @@ pub struct EncryptionChunk {
     pub ct: String,   // base64-encoded (ciphertext + auth tag)
 }
 
+pub fn parse_chunk(content: &str) -> Result<EncryptionChunk> {
+    serde_json::from_str(content).or_else(|_| {
+        let mut parts = content.split(':');
+        let salt = parts
+            .next()
+            .ok_or_else(|| anyhow!("Legacy chunk is missing salt"))?;
+        let iv = parts
+            .next()
+            .ok_or_else(|| anyhow!("Legacy chunk is missing iv"))?;
+        let ct = parts
+            .next()
+            .ok_or_else(|| anyhow!("Legacy chunk is missing ciphertext"))?;
+
+        if parts.next().is_some() {
+            return Err(anyhow!("Legacy chunk has too many ':' separators"));
+        }
+
+        Ok(EncryptionChunk {
+            salt: salt.to_string(),
+            iv: iv.to_string(),
+            ct: ct.to_string(),
+        })
+    })
+}
+
 /// Derive a 256-bit key using PBKDF2-HMAC-SHA512 (Joplin compatible)
 pub fn derive_key_pbkdf2(password: &str, salt: &[u8], iterations: u32) -> [u8; 32] {
     let mut key = [0u8; 32];
@@ -117,6 +142,20 @@ mod tests {
 
         let chunk = encrypt_chunk(password, &salt, plaintext, 3).unwrap();
         let decrypted = decrypt_chunk(password, &chunk, 3).unwrap();
+
+        assert_eq!(plaintext.to_vec(), decrypted);
+    }
+
+    #[test]
+    fn test_parse_legacy_colon_chunk() {
+        let password = "test_master_key_hex_string";
+        let salt = generate_salt();
+        let plaintext = b"Hello, World!";
+
+        let chunk = encrypt_chunk(password, &salt, plaintext, 3).unwrap();
+        let legacy = format!("{}:{}:{}", chunk.salt, chunk.iv, chunk.ct);
+        let parsed = parse_chunk(&legacy).unwrap();
+        let decrypted = decrypt_chunk(password, &parsed, 3).unwrap();
 
         assert_eq!(plaintext.to_vec(), decrypted);
     }

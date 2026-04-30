@@ -1213,6 +1213,88 @@ impl Storage for SqliteStorage {
         Ok(())
     }
 
+    async fn purge_sync_item(&self, item_type: i32, item_id: &str) -> Result<(), DatabaseError> {
+        let mut tx = self.pool.begin().await.map_err(|e| {
+            DatabaseError::QueryFailed(format!("Failed to start purge transaction: {}", e))
+        })?;
+
+        match item_type {
+            1 => {
+                sqlx::query("DELETE FROM notes WHERE id = ?")
+                    .bind(item_id)
+                    .execute(&mut *tx)
+                    .await
+                    .map_err(|e| {
+                        DatabaseError::QueryFailed(format!("Failed to purge note: {}", e))
+                    })?;
+                sqlx::query("DELETE FROM notes_fts WHERE id = ?")
+                    .bind(item_id)
+                    .execute(&mut *tx)
+                    .await
+                    .map_err(|e| {
+                        DatabaseError::QueryFailed(format!("Failed to purge note FTS row: {}", e))
+                    })?;
+            }
+            2 => {
+                sqlx::query("DELETE FROM folders WHERE id = ?")
+                    .bind(item_id)
+                    .execute(&mut *tx)
+                    .await
+                    .map_err(|e| {
+                        DatabaseError::QueryFailed(format!("Failed to purge folder: {}", e))
+                    })?;
+            }
+            3 => {
+                sqlx::query("DELETE FROM tags WHERE id = ?")
+                    .bind(item_id)
+                    .execute(&mut *tx)
+                    .await
+                    .map_err(|e| {
+                        DatabaseError::QueryFailed(format!("Failed to purge tag: {}", e))
+                    })?;
+            }
+            4 => {
+                sqlx::query("DELETE FROM note_tags WHERE id = ?")
+                    .bind(item_id)
+                    .execute(&mut *tx)
+                    .await
+                    .map_err(|e| {
+                        DatabaseError::QueryFailed(format!("Failed to purge note_tag: {}", e))
+                    })?;
+            }
+            5 => {
+                sqlx::query("DELETE FROM resources WHERE id = ?")
+                    .bind(item_id)
+                    .execute(&mut *tx)
+                    .await
+                    .map_err(|e| {
+                        DatabaseError::QueryFailed(format!("Failed to purge resource: {}", e))
+                    })?;
+            }
+            _ => {
+                return Err(DatabaseError::InvalidData(format!(
+                    "Unknown sync item type for purge: {}",
+                    item_type
+                )));
+            }
+        }
+
+        sqlx::query("DELETE FROM sync_items WHERE item_id = ? AND item_type = ?")
+            .bind(item_id)
+            .bind(item_type)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| {
+                DatabaseError::QueryFailed(format!("Failed to purge sync item record: {}", e))
+            })?;
+
+        tx.commit().await.map_err(|e| {
+            DatabaseError::QueryFailed(format!("Failed to commit purge transaction: {}", e))
+        })?;
+
+        Ok(())
+    }
+
     // Database info
     async fn get_version(&self) -> Result<i32, DatabaseError> {
         let version: Option<i32> = sqlx::query_scalar("SELECT version FROM version LIMIT 1")

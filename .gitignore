@@ -26,3 +26,4 @@ Thumbs.db
 # Archive
 .archive/
 /.harper-dictionary.txt
+/.env

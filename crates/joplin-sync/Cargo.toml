@@ -24,7 +24,9 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 uuid = { version = "1.11", features = ["v4", "serde"] }
 rand = "0.8"
+aes = "0.8"
 aes-gcm = "0.10"
+ccm = "0.5"
 sha2 = "0.10"
 sha-1 = "0.10"
 hex = "0.4"

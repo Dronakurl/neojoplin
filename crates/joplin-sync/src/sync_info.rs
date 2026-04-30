@@ -88,6 +88,12 @@ pub struct MasterKeyInfo {
     pub content: String,
     #[serde(default, rename = "hasBeenUsed")]
     pub has_been_used: bool,
+    #[serde(default = "default_master_key_enabled")]
+    pub enabled: i32,
+}
+
+fn default_master_key_enabled() -> i32 {
+    1
 }
 
 /// Delta context for tracking sync state (NeoJoplin-specific extension)

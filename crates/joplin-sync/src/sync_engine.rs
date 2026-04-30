@@ -8,6 +8,7 @@ use joplin_domain::{
     Tag, WebDavClient,
 };
 use serde_json;
+use std::collections::HashSet;
 use std::sync::Arc;
 use tokio::sync::mpsc;
 
@@ -184,6 +185,11 @@ impl SyncEngine {
         };
 
         for mk_info in &sync_info.master_keys {
+            if mk_info.enabled == 0 {
+                tracing::debug!("Skipping disabled remote master key: {}", mk_info.id);
+                continue;
+            }
+
             let key_id = mk_info.id.replace('-', "");
             if e2ee.get_master_key_ids().contains(&key_id) {
                 tracing::debug!("Master key {} already loaded", key_id);
@@ -199,7 +205,7 @@ impl SyncEngine {
                 checksum: mk_info.checksum.clone(),
                 content: mk_info.content.clone(),
                 has_been_used: mk_info.has_been_used,
-                enabled: true,
+                enabled: mk_info.enabled != 0,
             };
 
             match e2ee.load_master_key(&master_key) {
@@ -487,6 +493,7 @@ impl SyncEngine {
             .get_all_sync_items()
             .await
             .map_err(SyncError::Local)?;
+        self.apply_remote_deletions(&remote_items, &local_items).await?;
         let items_to_download = self.find_delta_items(&remote_items, &local_items);
 
         if items_to_download.is_empty() {
@@ -523,6 +530,34 @@ impl SyncEngine {
         let _ = self
             .event_tx
             .send(SyncEvent::PhaseCompleted(SyncPhase::Delta));
+        Ok(())
+    }
+
+    async fn apply_remote_deletions(
+        &self,
+        remote_items: &[RemoteItem],
+        local_items: &[joplin_domain::SyncItem],
+    ) -> Result<()> {
+        let remote_ids: HashSet<&str> = remote_items.iter().map(|item| item.id.as_str()).collect();
+
+        for local_item in local_items {
+            if remote_ids.contains(local_item.item_id.as_str()) {
+                continue;
+            }
+
+            self.storage
+                .purge_sync_item(local_item.item_type, &local_item.item_id)
+                .await
+                .map_err(SyncError::Local)?;
+
+            let _ = self.event_tx.send(SyncEvent::Warning {
+                message: format!(
+                    "Removed local item {} because it no longer exists on the remote target",
+                    local_item.item_id
+                ),
+            });
+        }
+
         Ok(())
     }
 
@@ -640,10 +675,11 @@ impl SyncEngine {
                                 encryption_method: mk.encryption_method,
                                 checksum: mk.checksum.clone(),
                                 content: mk.content.clone(),
-                                has_been_used: true,
-                            });
-                        }
+                            has_been_used: true,
+                            enabled: if mk.enabled { 1 } else { 0 },
+                        });
                     }
+                }
                 }
             } else if sync_info.e2ee.value {
                 // E2EE was previously enabled but now disabled
@@ -1628,6 +1664,48 @@ mod tests {
         assert_eq!(storage.cleared_limits.lock().unwrap().as_slice(), &[1]);
     }
 
+    #[tokio::test]
+    async fn test_apply_remote_deletions_purges_missing_local_items() {
+        let (engine, storage) = make_test_engine_with_storage();
+        let remote_items = vec![RemoteItem {
+            id: "keep-note".to_string(),
+            item_type: ItemType::Note,
+            modified: Some(200),
+        }];
+        let local_items = vec![
+            SyncItem {
+                id: 1,
+                sync_target: SyncTarget::WebDAV as i32,
+                sync_time: 100,
+                item_type: 1,
+                item_id: "keep-note".to_string(),
+                sync_disabled: 0,
+                sync_disabled_reason: String::new(),
+                item_location: 1,
+            },
+            SyncItem {
+                id: 2,
+                sync_target: SyncTarget::WebDAV as i32,
+                sync_time: 100,
+                item_type: 1,
+                item_id: "deleted-note".to_string(),
+                sync_disabled: 0,
+                sync_disabled_reason: String::new(),
+                item_location: 1,
+            },
+        ];
+
+        engine
+            .apply_remote_deletions(&remote_items, &local_items)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            storage.purged_items.lock().unwrap().as_slice(),
+            &[(1, "deleted-note".to_string())]
+        );
+    }
+
     /// Helper: create a test engine with minimal mocks
     fn make_test_engine() -> SyncEngine {
         make_test_engine_with_storage().0
@@ -1655,6 +1733,7 @@ mod tests {
         deleted_items: Mutex<Vec<DeletedItem>>,
         requested_sync_targets: Mutex<Vec<i32>>,
         cleared_limits: Mutex<Vec<i64>>,
+        purged_items: Mutex<Vec<(i32, String)>>,
     }
     #[async_trait::async_trait]
     impl joplin_domain::Storage for FakeStorage {
@@ -1798,6 +1877,17 @@ mod tests {
             _: &str,
             _: i64,
         ) -> std::result::Result<(), joplin_domain::DatabaseError> {
+            Ok(())
+        }
+        async fn purge_sync_item(
+            &self,
+            item_type: i32,
+            item_id: &str,
+        ) -> std::result::Result<(), joplin_domain::DatabaseError> {
+            self.purged_items
+                .lock()
+                .unwrap()
+                .push((item_type, item_id.to_string()));
             Ok(())
         }
         async fn get_setting(

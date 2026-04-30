@@ -10,11 +10,21 @@
 //   ...
 //
 // Each chunk is JSON: {"salt":"base64","iv":"base64","ct":"base64"}
-// Encrypted with PBKDF2-HMAC-SHA512 + AES-256-GCM.
+// Modern methods use PBKDF2-HMAC-SHA512 + AES-256-GCM, while legacy SJCL
+// methods use PBKDF2-HMAC-SHA256 + AES-CCM.
 
+use aes::{Aes128, Aes256};
 use anyhow::{anyhow, Result};
+use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
+use ccm::{
+    aead::{generic_array::GenericArray, AeadInPlace, KeyInit},
+    consts::{U10, U11, U12, U13, U7, U8, U9},
+    Ccm,
+};
+use pbkdf2::pbkdf2_hmac;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use sha2::Sha256;
 
 pub const JED_IDENTIFIER: &str = "JED";
 pub const JED_VERSION: &str = "01";
@@ -82,6 +92,16 @@ impl EncryptionMethod {
             _ => 0,
         }
     }
+
+    fn is_legacy_sjcl_ccm(self) -> bool {
+        matches!(
+            self,
+            EncryptionMethod::SJCL3
+                | EncryptionMethod::SJCL4
+                | EncryptionMethod::SJCL1a
+                | EncryptionMethod::SJCL1b
+        )
+    }
 }
 
 /// JED format header
@@ -106,6 +126,45 @@ pub struct MasterKey {
     pub has_been_used: bool,
     #[serde(default)]
     pub enabled: bool,
+}
+
+#[derive(Debug, Deserialize)]
+struct SjclCipherText {
+    #[serde(default = "sjcl_default_iter")]
+    iter: u32,
+    #[serde(default = "sjcl_default_ks")]
+    ks: u32,
+    #[serde(default = "sjcl_default_ts")]
+    ts: u32,
+    #[serde(default = "sjcl_default_mode")]
+    mode: String,
+    #[serde(default)]
+    adata: String,
+    #[serde(default = "sjcl_default_cipher")]
+    cipher: String,
+    salt: String,
+    iv: String,
+    ct: String,
+}
+
+fn sjcl_default_iter() -> u32 {
+    10_000
+}
+
+fn sjcl_default_ks() -> u32 {
+    128
+}
+
+fn sjcl_default_ts() -> u32 {
+    64
+}
+
+fn sjcl_default_mode() -> String {
+    "ccm".to_string()
+}
+
+fn sjcl_default_cipher() -> String {
+    "aes".to_string()
 }
 
 impl MasterKey {
@@ -274,36 +333,35 @@ impl E2eeService {
         content: &str,
         method: EncryptionMethod,
     ) -> Result<String> {
-        let chunk: crate::crypto::EncryptionChunk = serde_json::from_str(content).map_err(|e| {
-            anyhow!(
-                "Invalid encryption chunk JSON: {} (content starts with: {})",
-                e,
-                &content[..content.len().min(100)]
-            )
-        })?;
+        let decrypted_bytes = if method.is_legacy_sjcl_ccm() {
+            decrypt_sjcl_chunk(password, content)?
+        } else {
+            let chunk = crate::crypto::parse_chunk(content).map_err(|e| {
+                anyhow!(
+                    "Invalid encryption chunk: {} (content starts with: {})",
+                    e,
+                    &content[..content.len().min(100)]
+                )
+            })?;
 
-        let decrypted_bytes = crate::crypto::decrypt_chunk(password, &chunk, method.iterations())?;
+            crate::crypto::decrypt_chunk(password, &chunk, method.iterations())?
+        };
 
-        // Decode based on method
         match method {
-            EncryptionMethod::KeyV1 => {
-                // KeyV1: result is hex-encoded master key
-                Ok(hex::encode(&decrypted_bytes))
+            EncryptionMethod::KeyV1 => Ok(hex::encode(&decrypted_bytes)),
+            EncryptionMethod::StringV1 => decode_utf16le(&decrypted_bytes),
+            EncryptionMethod::FileV1 => Ok(BASE64.encode(&decrypted_bytes)),
+            EncryptionMethod::SJCL1a | EncryptionMethod::SJCL1b => {
+                let escaped = String::from_utf8(decrypted_bytes)
+                    .map_err(|e| anyhow!("Invalid SJCL escaped UTF-8: {}", e))?;
+                js_unescape(&escaped)
             }
-            EncryptionMethod::StringV1 => {
-                // StringV1: result is UTF-16LE encoded string
-                decode_utf16le(&decrypted_bytes)
-            }
-            EncryptionMethod::FileV1 => {
-                // FileV1: result is base64-encoded file data
-                use base64::Engine;
-                Ok(base64::engine::general_purpose::STANDARD.encode(&decrypted_bytes))
-            }
-            _ => {
-                // Try UTF-8 as fallback
-                String::from_utf8(decrypted_bytes.clone())
-                    .or_else(|_| decode_utf16le(&decrypted_bytes))
-            }
+            EncryptionMethod::SJCL | EncryptionMethod::SJCL2 => Err(anyhow!(
+                "Unsupported legacy OCB2 encryption method {:?}; only SJCL CCM variants are supported",
+                method
+            )),
+            _ => String::from_utf8(decrypted_bytes)
+                .or_else(|e| Err(anyhow!("Invalid UTF-8 plaintext for {:?}: {}", method, e))),
         }
     }
 
@@ -416,6 +474,152 @@ fn decode_utf16le(bytes: &[u8]) -> Result<String> {
         .map(|chunk| u16::from_le_bytes([chunk[0], chunk[1]]))
         .collect();
     String::from_utf16(&u16_values).map_err(|e| anyhow!("Invalid UTF-16LE data: {}", e))
+}
+
+fn decrypt_sjcl_chunk(password: &str, content: &str) -> Result<Vec<u8>> {
+    let chunk: SjclCipherText = serde_json::from_str(content).map_err(|e| {
+        anyhow!(
+            "Invalid SJCL chunk JSON: {} (content starts with: {})",
+            e,
+            &content[..content.len().min(100)]
+        )
+    })?;
+
+    if chunk.mode != "ccm" {
+        return Err(anyhow!("Unsupported SJCL mode: {}", chunk.mode));
+    }
+    if chunk.cipher != "aes" {
+        return Err(anyhow!("Unsupported SJCL cipher: {}", chunk.cipher));
+    }
+    if !matches!(chunk.ks, 128 | 256) {
+        return Err(anyhow!("Unsupported SJCL key size: {}", chunk.ks));
+    }
+    if !matches!(chunk.ts, 64 | 96 | 128) {
+        return Err(anyhow!("Unsupported SJCL tag size: {}", chunk.ts));
+    }
+
+    let salt = BASE64
+        .decode(&chunk.salt)
+        .map_err(|e| anyhow!("Invalid SJCL base64 salt: {}", e))?;
+    let iv = BASE64
+        .decode(&chunk.iv)
+        .map_err(|e| anyhow!("Invalid SJCL base64 iv: {}", e))?;
+    let ciphertext = BASE64
+        .decode(&chunk.ct)
+        .map_err(|e| anyhow!("Invalid SJCL base64 ciphertext: {}", e))?;
+    let aad = chunk.adata.as_bytes();
+
+    let mut key = vec![0u8; (chunk.ks / 8) as usize];
+    pbkdf2_hmac::<Sha256>(password.as_bytes(), &salt, chunk.iter, &mut key);
+
+    decrypt_sjcl_ccm(&key, &iv, &ciphertext, aad, (chunk.ts / 8) as usize)
+}
+
+fn decrypt_sjcl_ccm(
+    key: &[u8],
+    iv: &[u8],
+    ciphertext: &[u8],
+    aad: &[u8],
+    tag_len: usize,
+) -> Result<Vec<u8>> {
+    if ciphertext.len() < tag_len {
+        return Err(anyhow!(
+            "Invalid SJCL ciphertext length: {} (shorter than tag length {})",
+            ciphertext.len(),
+            tag_len
+        ));
+    }
+
+    let nonce = sjcl_ccm_nonce(iv, ciphertext.len() - tag_len);
+    let (message, tag) = ciphertext.split_at(ciphertext.len() - tag_len);
+
+    macro_rules! decrypt_ccm {
+        ($cipher:ty, $nonce_size:ty) => {{
+            type Alg = Ccm<$cipher, U8, $nonce_size>;
+            let cipher = Alg::new(GenericArray::from_slice(key));
+            let mut buffer = message.to_vec();
+            cipher
+                .decrypt_in_place_detached(
+                    GenericArray::from_slice(&nonce),
+                    aad,
+                    &mut buffer,
+                    GenericArray::from_slice(tag),
+                )
+                .map_err(|e| anyhow!("AES-CCM decryption failed: {}", e))?;
+            Ok(buffer)
+        }};
+    }
+
+    match (key.len(), nonce.len()) {
+        (16, 7) => decrypt_ccm!(Aes128, U7),
+        (16, 8) => decrypt_ccm!(Aes128, U8),
+        (16, 9) => decrypt_ccm!(Aes128, U9),
+        (16, 10) => decrypt_ccm!(Aes128, U10),
+        (16, 11) => decrypt_ccm!(Aes128, U11),
+        (16, 12) => decrypt_ccm!(Aes128, U12),
+        (16, 13) => decrypt_ccm!(Aes128, U13),
+        (32, 7) => decrypt_ccm!(Aes256, U7),
+        (32, 8) => decrypt_ccm!(Aes256, U8),
+        (32, 9) => decrypt_ccm!(Aes256, U9),
+        (32, 10) => decrypt_ccm!(Aes256, U10),
+        (32, 11) => decrypt_ccm!(Aes256, U11),
+        (32, 12) => decrypt_ccm!(Aes256, U12),
+        (32, 13) => decrypt_ccm!(Aes256, U13),
+        _ => Err(anyhow!(
+            "Unsupported SJCL CCM parameters: key_len={}, nonce_len={}",
+            key.len(),
+            nonce.len()
+        )),
+    }
+}
+
+fn sjcl_ccm_nonce(iv: &[u8], payload_len: usize) -> Vec<u8> {
+    let mut l = 2usize;
+    while l < 4 && (payload_len >> (8 * l)) > 0 {
+        l += 1;
+    }
+
+    if iv.len() < 15usize.saturating_sub(l) {
+        l = 15 - iv.len();
+    }
+
+    let nonce_len = 15 - l;
+    iv[..nonce_len].to_vec()
+}
+
+fn js_unescape(input: &str) -> Result<String> {
+    let bytes = input.as_bytes();
+    let mut units = Vec::with_capacity(input.len());
+    let mut i = 0;
+
+    while i < bytes.len() {
+        if bytes[i] == b'%' {
+            if i + 1 < bytes.len() && bytes[i + 1] == b'u' {
+                if i + 6 > bytes.len() {
+                    return Err(anyhow!("Invalid %u escape in SJCL payload"));
+                }
+                let value = u16::from_str_radix(&input[i + 2..i + 6], 16)
+                    .map_err(|e| anyhow!("Invalid %u escape in SJCL payload: {}", e))?;
+                units.push(value);
+                i += 6;
+                continue;
+            }
+
+            if i + 3 > bytes.len() {
+                return Err(anyhow!("Invalid % escape in SJCL payload"));
+            }
+            let value = u8::from_str_radix(&input[i + 1..i + 3], 16)
+                .map_err(|e| anyhow!("Invalid % escape in SJCL payload: {}", e))?;
+            units.push(value as u16);
+            i += 3;
+            continue;
+        }
+
+        units.push(bytes[i] as u16);
+        i += 1;
+    }
+
+    String::from_utf16(&units).map_err(|e| anyhow!("Invalid UTF-16 from JS unescape: {}", e))
 }
 
 /// Encode a JED header matching Joplin's encodeHeader_()
@@ -566,5 +770,54 @@ mod tests {
 
         let decrypted = service.decrypt_string(&encrypted).unwrap();
         assert_eq!(original, decrypted);
+    }
+
+    #[test]
+    fn test_load_legacy_sjcl4_master_key() {
+        let master_key = MasterKey {
+            id: "0123456789abcdef0123456789abcdef".to_string(),
+            created_time: 0,
+            updated_time: 0,
+            source_application: "joplin".to_string(),
+            encryption_method: EncryptionMethod::SJCL4.as_u8() as i32,
+            checksum: String::new(),
+            content: "{\"iv\":\"xM0Qb7/7c3L3MB9D0N9I5A==\",\"v\":1,\"iter\":10000,\"ks\":256,\"ts\":64,\"mode\":\"ccm\",\"adata\":\"\",\"cipher\":\"aes\",\"salt\":\"ZWZnaGlqa2xtbm8=\",\"ct\":\"EVkeg+7l6rdEE862mINYr2RZKLt8iuqDqDjbGWxBfwjm69ZzHVu/l9Uh+kCL3kGOOW/Okc3IPUbgC1L1fmTN1I35sYrhozMcIa7bGowgd7Arzl1XQ9W+VANmiGy9677g2xSZO2xCmPWB0Ez+SidxDHtRNybMexJmkGBZIIGxAbcQF3P25F0bnW2mgJPQFyuZcwalDYIHC9m4pDeRv7is5tIcOqdNohEIPlZmWO98BEpaDq3Vg3qjIKijCYuZMrBE9EUEBP5fTUo55iIQnyaB5Y82QWBwJ7K/HfgK16aRMa0u3Sbuc4jW9C/f6Km0ylsDyZzuqayh5ewZx7mbJUGi+T/N9wJYuDS2HtytBCgWemzACFXddy/WsC10j+vjquGns23ojupmQplfhZ7DD2KTs2jWIEfUYPcbadhCOPJDLy1U784mQPS6drJOlIA4P1AFQf8iaOPbBiehesKLQrD13qXOA+caWZM/R8Crvd9qb2iAEPUaksJT4MKVsAe6xYkoXRVn9/gtpqfKzGswkfAR0idsER6yflDGWaGa0t25zX2qef+bxLWvvIirqoYCnp09JG3B8mk920ZcxvV4evkqbEq3s+jGBEetUODi9/mDFFheQlS5i28k3mn8feBIkKQS8bJ3HtKzCOTOkwoeT3pCLkHn3Fc7sSXNSy102Hf7lTxrpTF6mFj65g==\"}".to_string(),
+            has_been_used: true,
+            enabled: true,
+        };
+
+        let mut service = E2eeService::new();
+        service.set_master_password("legacy-master-password".to_string());
+        service.load_master_key(&master_key).unwrap();
+
+        let key = service
+            .find_master_key("0123456789abcdef0123456789abcdef")
+            .unwrap();
+        assert_eq!(key.len(), 512);
+        assert!(key.chars().all(|c| c.is_ascii_hexdigit()));
+    }
+
+    #[test]
+    fn test_decrypt_legacy_sjcl1b_item_chunk() {
+        let plaintext = decrypt_sjcl_chunk(
+            "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff",
+            "{\"iv\":\"ASNFZ4mrze8QMlR2mLrc/g==\",\"v\":1,\"iter\":101,\"ks\":256,\"ts\":64,\"mode\":\"ccm\",\"adata\":\"\",\"cipher\":\"aes\",\"salt\":\"YWJjZGVmZ2hpams=\",\"ct\":\"E5unJY2opBpe+mMpxlaosDZwCML1z9jrZ1BITw==\"}",
+        )
+        .unwrap();
+
+        let escaped = String::from_utf8(plaintext).unwrap();
+        let decoded = js_unescape(&escaped).unwrap();
+        assert_eq!(decoded, "Hello 🌍");
+    }
+
+    #[test]
+    fn test_decrypt_short_legacy_sjcl4_chunk() {
+        let plaintext = decrypt_sjcl_chunk(
+            "legacy-master-password",
+            "{\"iv\":\"xM0Qb7/7c3L3MB9D0N9I5A==\",\"v\":1,\"iter\":10000,\"ks\":256,\"ts\":64,\"mode\":\"ccm\",\"adata\":\"\",\"cipher\":\"aes\",\"salt\":\"ZWZnaGlqa2xtbm8=\",\"ct\":\"SQ1A3LXwseUIQsCwz5c3iXFLucIl\"}",
+        )
+        .unwrap();
+
+        assert_eq!(String::from_utf8(plaintext).unwrap(), "hello method4");
     }
 }

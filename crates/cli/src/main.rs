@@ -298,11 +298,25 @@ async fn load_e2ee_service(password_override: Option<String>) -> Result<E2eeServ
 
         if key_file_path.exists() {
             let key_content = tokio::fs::read_to_string(&key_file_path).await?;
-            let encrypted_master_key: MasterKey = serde_json::from_str(&key_content)
-                .map_err(|e| anyhow::anyhow!("Failed to parse master key: {}", e))?;
-            e2ee.load_master_key(&encrypted_master_key)
-                .map_err(|e| anyhow::anyhow!("Failed to load master key: {}", e))?;
-            e2ee.set_active_master_key(active_key_id.to_string());
+            match serde_json::from_str::<MasterKey>(&key_content) {
+                Ok(encrypted_master_key) => match e2ee.load_master_key(&encrypted_master_key) {
+                    Ok(()) => e2ee.set_active_master_key(active_key_id.to_string()),
+                    Err(e) => {
+                        tracing::warn!(
+                            "Skipping local master key {} because it could not be loaded: {}",
+                            active_key_id,
+                            e
+                        );
+                    }
+                },
+                Err(e) => {
+                    tracing::warn!(
+                        "Skipping local master key {} because it could not be parsed: {}",
+                        active_key_id,
+                        e
+                    );
+                }
+            }
         } else {
             tracing::warn!("Master key file not found: {}", key_file_path.display());
         }
