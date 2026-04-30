@@ -6,7 +6,7 @@ A native Rust terminal client for [Joplin](https://joplinapp.org/) note-taking w
 
 - ✅ **Sync Compatible** - Bidirectional sync with Joplin Desktop/CLI
 - ✅ **CLI Interface** - Fast, scriptable command-line interface
-- ✅ **TUI Interface** - Interactive terminal user interface with vim-style navigation
+- ✅ **TUI** - Interactive terminal user interface with vim-style navigation
 - ✅ **WebDAV Sync** - Three-phase sync with any WebDAV server (GMX, Nextcloud, etc.)
 - ✅ **External Editor** - Edit notes with your favorite editor (helix, nvim, etc.)
 - ✅ **Emoji Support** - Beautiful folder icons and UI elements
@@ -28,7 +28,7 @@ cargo build --release
 ### Prerequisites
 
 - Rust toolchain (1.70+)
-- SQLite3
+- SQLite
 - WebDAV server (or use Joplin Cloud, Dropbox, OneDrive, etc.)
 
 ## Quick Start

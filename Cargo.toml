@@ -1,15 +1,15 @@
 [workspace]
 members = [
-    "crates/joplin-domain",
-    "crates/joplin",
-    "crates/joplin-sync",
-    "crates/core",
-    "crates/storage",
-    "crates/sync",
-    "crates/e2ee",
-    "crates/tui",
-    "crates/cli",
-    "crates/test-utils",
+  "crates/joplin-domain",
+  "crates/joplin",
+  "crates/joplin-sync",
+  "crates/core",
+  "crates/storage",
+  "crates/sync",
+  "crates/e2ee",
+  "crates/tui",
+  "crates/cli",
+  "crates/test-utils",
 ]
 resolver = "2"
 

@@ -33,7 +33,7 @@ The joplin terminal application is also installed on this system. The code of th
  
 ### Core Challenge
 
-The entire application is built around **exact replication of Joplin's sync protocol and database schema**. Any deviation will break compatibility with existing Joplin installations. I want that the user can use the joplin command line along side the neojoplin application, sharing the same database and syncing to it. 
+The entire application is built around **exact replication of Joplin's sync protocol and database schema**. Any deviation will break compatibility with existing Joplin installations. I want that the user can use the joplin command line alongside the neojoplin application, sharing the same database and syncing to it. 
 
 ### Key Architectural Layers I want that the user can use the joplin command line along side the neojoplin application, sharing the same database and syncing to it. 
 
@@ -227,22 +227,6 @@ joplin sync
 **Unit tests:** In module files throughout the codebase
 **Integration tests:** `tests/integration/`
 
-### Current Implementation Status
-
-**✅ Phase 1 Complete:**
-- Database schema v41 (exact Joplin compatibility)
-- Core models (Note, Folder, Tag, Resource, etc.)
-- Basic CLI commands (init, mk-note, mk-book, ls, cat, list-books)
-- SQLite with FTS5 full-text search
-- CRUD operations for notes and folders
-
-**✅ Phase 2-3 Complete:**
-- WebDAV client implementation
-- Three-phase sync protocol (UPLOAD → DELETE_REMOTE → DELTA)
-- Multi-type item sync (notes, folders, tags, resources)
-- Lock handling and conflict resolution
-- Full Joplin CLI compatibility achieved
-
 ### Important Implementation Notes
 
 1. **Never modify the database schema** - it must match Joplin v41 exactly
@@ -277,6 +261,5 @@ joplin sync
 - **Multi-type sync**: All item types (notes, folders, tags, resources) supported
 
 **🔄 Future Enhancements:**
-- **Editor**: nvim-rs for embedded Neovim (not helix as initially planned)
 - **Enhanced E2EE**: Full JED format implementation for encrypted sync
 - **Performance**: Async optimization for large note collections
