@@ -16,6 +16,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 **Running specific tests:**
 - `cargo test --all` - Run all tests
 - `cargo test database::` - Run only database tests
+This is the same proble
 - `cargo test -- --nocapture` - Show test output
 
 **Database management:**

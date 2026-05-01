@@ -13,7 +13,7 @@ use std::time::Duration;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
-use joplin_domain::{now_ms, Folder, Note, NoteTag, Storage, Tag};
+use joplin_domain::{now_ms, Folder, Note, NoteTag, Storage, SyncEvent, Tag};
 use neojoplin_core::AutoSyncScheduler;
 use neojoplin_storage::SqliteStorage;
 use std::path::Path;
@@ -23,8 +23,8 @@ use crate::importer::{
     default_cli_database_path, default_desktop_database_path, import_database, resolve_import_path,
 };
 use crate::state::{
-    build_folder_display_names, AppState, FocusPanel, NoteSortMode, NotebookSortMode,
-    PendingDelete, TagPopupFocus, TagPopupItem,
+    build_folder_display_names, AppState, ContentViewMode, FocusPanel, NoteSortMode,
+    NotebookSortMode, PendingDelete, TagPopupFocus, TagPopupItem,
 };
 use crate::ui;
 
@@ -43,7 +43,19 @@ pub struct App {
     command_history_draft: String,
     auto_sync_scheduler: AutoSyncScheduler,
     /// Background sync task handle
-    sync_task: Option<JoinHandle<Result<(String, bool, std::path::PathBuf), joplin_domain::DomainError>>>,
+    sync_task: Option<
+        JoinHandle<
+            Result<(String, bool, std::path::PathBuf, SyncStats), joplin_domain::DomainError>,
+        >,
+    >,
+}
+
+#[derive(Default, Debug, Clone, Copy)]
+struct SyncStats {
+    uploaded_notes: usize,
+    downloaded_notes: usize,
+    uploaded_items: usize,
+    downloaded_items: usize,
 }
 
 impl App {
@@ -372,7 +384,10 @@ impl App {
         match key.code {
             // Escape - clear active filters
             KeyCode::Esc if self.state.has_active_filter(self.state.focus) => {
-                self.state.set_filter_query(String::new());
+                match self.state.focus {
+                    FocusPanel::Notebooks => self.state.notebook_filter_query.clear(),
+                    FocusPanel::Notes | FocusPanel::Content => self.state.clear_note_filters(),
+                }
                 self.refresh_current_lists().await?;
             }
 
@@ -437,6 +452,29 @@ impl App {
                 }
             }
 
+            KeyCode::Char('c') => {
+                self.state.toggle_show_completed_todos();
+                self.refresh_current_lists().await?;
+                if self.state.show_completed_todos {
+                    self.state
+                        .set_status("Showing completed todos in the notes list");
+                } else {
+                    self.state
+                        .set_status("Hiding completed todos in the notes list");
+                }
+            }
+
+            KeyCode::Char('C') => {
+                self.state.toggle_completed_only_filter();
+                self.refresh_current_lists().await?;
+                if self.state.completed_only_filter {
+                    self.state
+                        .set_status("Filter enabled: showing completed todos only");
+                } else {
+                    self.state.set_status("Completed-todo-only filter disabled");
+                }
+            }
+
             // Sync
             KeyCode::Char('s') => {
                 // s - Sync
@@ -470,9 +508,12 @@ impl App {
             // Vim-style navigation
             KeyCode::Char('j') | KeyCode::Down => {
                 if self.state.focus == FocusPanel::Content {
-                    // Scroll content down
-                    self.state.content_scroll_offset =
-                        self.state.content_scroll_offset.saturating_add(1);
+                    if self.state.content_view_mode == ContentViewMode::VersionList {
+                        self.state.move_version_selection(1);
+                    } else {
+                        self.state.content_scroll_offset =
+                            self.state.content_scroll_offset.saturating_add(1);
+                    }
                 } else {
                     let folder_changed = self.state.move_selection(1);
                     if folder_changed {
@@ -482,9 +523,12 @@ impl App {
             }
             KeyCode::Char('k') | KeyCode::Up => {
                 if self.state.focus == FocusPanel::Content {
-                    // Scroll content up
-                    self.state.content_scroll_offset =
-                        self.state.content_scroll_offset.saturating_sub(1);
+                    if self.state.content_view_mode == ContentViewMode::VersionList {
+                        self.state.move_version_selection(-1);
+                    } else {
+                        self.state.content_scroll_offset =
+                            self.state.content_scroll_offset.saturating_sub(1);
+                    }
                 } else {
                     let folder_changed = self.state.move_selection(-1);
                     if folder_changed {
@@ -511,6 +555,10 @@ impl App {
                 } else if self.state.focus == FocusPanel::Notebooks {
                     // Switch to notes panel when Enter is pressed on notebooks
                     self.state.next_panel(); // Switch from Notebooks to Notes
+                } else if self.state.focus == FocusPanel::Content
+                    && self.state.content_view_mode == ContentViewMode::VersionList
+                {
+                    self.preview_selected_version().await?;
                 }
             }
 
@@ -595,7 +643,11 @@ impl App {
 
             // Rename
             KeyCode::Char('r') => {
-                if self.state.focus == FocusPanel::Notes {
+                if self.state.focus == FocusPanel::Content
+                    && self.state.content_view_mode != ContentViewMode::Note
+                {
+                    self.restore_selected_version().await?;
+                } else if self.state.focus == FocusPanel::Notes {
                     if let Some(note) = self.state.selected_note() {
                         self.state.rename_input = note.title.clone();
                         self.state.show_rename_prompt();
@@ -606,6 +658,10 @@ impl App {
                         self.state.show_rename_prompt();
                     }
                 }
+            }
+
+            KeyCode::Char('v') if self.state.focus == FocusPanel::Content => {
+                self.toggle_version_view().await?;
             }
 
             // Restore from trash (R key)
@@ -666,7 +722,8 @@ impl App {
         let (base_url, remote_path) = split_webdav_url(&target.url);
 
         if !automatic {
-            self.state.set_status(&format!("Starting sync to {}{}...", base_url, remote_path));
+            self.state
+                .set_status(&format!("Starting sync to {}{}...", base_url, remote_path));
         }
 
         use joplin_sync::{ReqwestWebDavClient, SyncEngine, WebDavConfig};
@@ -699,18 +756,59 @@ impl App {
         let task = tokio::spawn(async move {
             let webdav_client = Arc::new(ReqwestWebDavClient::new(webdav_config_clone)?);
             let (event_tx, mut event_rx) = mpsc::unbounded_channel();
-            
+
             let mut sync_engine = SyncEngine::new(storage, webdav_client, event_tx)
                 .with_remote_path(remote_path_clone);
-            
+
             if let Some(e2ee) = e2ee_clone {
                 sync_engine = sync_engine.with_e2ee(e2ee);
             }
-            
-            // Consume sync events without printing
-            tokio::spawn(async move { while let Some(_event) = event_rx.recv().await {} });
-            
-            sync_engine.sync().await.map(|_| (target_name, encryption_enabled_clone, data_dir_clone))
+
+            let mut stats = SyncStats::default();
+            let mut sync_future = Box::pin(sync_engine.sync());
+            let sync_result = loop {
+                tokio::select! {
+                    result = &mut sync_future => break result,
+                    maybe_event = event_rx.recv() => {
+                        let Some(event) = maybe_event else { continue };
+                        match event {
+                            SyncEvent::ItemUploadComplete { item_type, .. } => {
+                                stats.uploaded_items += 1;
+                                if item_type == "note" {
+                                    stats.uploaded_notes += 1;
+                                }
+                            }
+                            SyncEvent::ItemDownloadComplete { item_type, .. } => {
+                                stats.downloaded_items += 1;
+                                if item_type == "note" {
+                                    stats.downloaded_notes += 1;
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+            };
+
+            while let Ok(event) = event_rx.try_recv() {
+                match event {
+                    SyncEvent::ItemUploadComplete { item_type, .. } => {
+                        stats.uploaded_items += 1;
+                        if item_type == "note" {
+                            stats.uploaded_notes += 1;
+                        }
+                    }
+                    SyncEvent::ItemDownloadComplete { item_type, .. } => {
+                        stats.downloaded_items += 1;
+                        if item_type == "note" {
+                            stats.downloaded_notes += 1;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+
+            sync_result.map(|_| (target_name, encryption_enabled_clone, data_dir_clone, stats))
         });
 
         self.sync_task = Some(task);
@@ -724,7 +822,7 @@ impl App {
             if task.is_finished() {
                 // Task completed, get the result
                 match task.await {
-                    Ok(Ok((target_name, encryption_enabled, data_dir))) => {
+                    Ok(Ok((target_name, encryption_enabled, data_dir, stats))) => {
                         // Record successful sync
                         self.state.settings.record_sync_result(
                             target_name,
@@ -733,22 +831,35 @@ impl App {
                             encryption_enabled,
                         );
                         self.state.settings.save_sync_status(&data_dir).await?;
-                        self.state.set_status("✓ Sync completed successfully");
-                        let selected_folder_id = self.state.selected_folder_id().map(str::to_string);
+                        self.state.set_status(&format!(
+                            "✓ Sync completed (notes: ↑{} ↓{}, items: ↑{} ↓{})",
+                            stats.uploaded_notes,
+                            stats.downloaded_notes,
+                            stats.uploaded_items,
+                            stats.downloaded_items
+                        ));
+                        let selected_folder_id =
+                            self.state.selected_folder_id().map(str::to_string);
                         let selected_note_id = self.state.selected_note_id().map(str::to_string);
                         let all_notebooks_mode = self.state.all_notebooks_mode;
-                        self.refresh_lists(all_notebooks_mode, selected_folder_id, selected_note_id)
-                            .await?;
+                        self.refresh_lists(
+                            all_notebooks_mode,
+                            selected_folder_id,
+                            selected_note_id,
+                        )
+                        .await?;
                         self.refresh_sync_status().await?;
                     }
                     Ok(Err(e)) => {
                         let error_message = e.to_string();
                         // We don't have target info here, so just show error
-                        self.state.show_error(&format!("Sync failed: {}", error_message));
+                        self.state
+                            .show_error(&format!("Sync failed: {}", error_message));
                         self.refresh_sync_status().await?;
                     }
                     Err(join_err) => {
-                        self.state.show_error(&format!("Sync task error: {}", join_err));
+                        self.state
+                            .show_error(&format!("Sync task error: {}", join_err));
                     }
                 }
                 self.state.set_sync_in_progress(false);
@@ -1579,6 +1690,74 @@ impl App {
         Ok(())
     }
 
+    async fn toggle_version_view(&mut self) -> Result<()> {
+        if self.state.content_view_mode == ContentViewMode::Note {
+            let Some(note) = self.state.selected_note() else {
+                self.state.set_status("Select a note to view versions");
+                return Ok(());
+            };
+            let revisions = self.storage.list_note_revisions(&note.id).await?;
+            if revisions.is_empty() {
+                self.state
+                    .set_status("No versions are available for this note yet");
+                return Ok(());
+            }
+            self.state.open_version_list(revisions);
+            self.state
+                .set_status("Version list opened - Enter to preview, r to restore");
+        } else {
+            self.state.clear_version_view();
+            self.state.set_status("Returned to current note preview");
+        }
+        Ok(())
+    }
+
+    async fn preview_selected_version(&mut self) -> Result<()> {
+        let Some(note_id) = self.state.selected_note_id().map(str::to_string) else {
+            self.state.set_status("Select a note to preview a version");
+            return Ok(());
+        };
+        let Some(revision) = self.state.selected_note_version().cloned() else {
+            self.state.set_status("Select a version to preview");
+            return Ok(());
+        };
+        let snapshot = self
+            .storage
+            .get_note_revision_snapshot(&note_id, &revision.id)
+            .await?;
+        self.state
+            .show_version_preview(snapshot.title, snapshot.body);
+        self.state
+            .set_status("Previewing selected version - press v to return");
+        Ok(())
+    }
+
+    async fn restore_selected_version(&mut self) -> Result<()> {
+        let Some(note_id) = self.state.selected_note_id().map(str::to_string) else {
+            self.state.set_status("Select a note to restore a version");
+            return Ok(());
+        };
+        let Some(revision) = self.state.selected_note_version().cloned() else {
+            self.state.set_status("Select a version to restore");
+            return Ok(());
+        };
+        let note = self
+            .storage
+            .restore_note_to_revision(&note_id, &revision.id)
+            .await?;
+        let selected_folder_id = self.state.selected_folder_id().map(str::to_string);
+        self.refresh_lists(
+            self.state.all_notebooks_mode,
+            selected_folder_id,
+            Some(note.id.clone()),
+        )
+        .await?;
+        self.state.clear_version_view();
+        self.state
+            .set_status(&format!("Restored version for note: {}", note.title));
+        Ok(())
+    }
+
     /// Convert the selected note between note and to-do.
     async fn convert_note_type(&mut self) -> Result<()> {
         if self.state.focus != FocusPanel::Notes {
@@ -1873,7 +2052,11 @@ impl App {
                 self.refresh_current_lists().await?;
             }
             KeyCode::Esc => {
-                self.state.set_filter_query(String::new());
+                if matches!(self.state.filter_target, FocusPanel::Notebooks) {
+                    self.state.notebook_filter_query.clear();
+                } else {
+                    self.state.clear_note_filters();
+                }
                 self.state.close_filter_prompt(false);
                 self.refresh_current_lists().await?;
             }
@@ -2224,7 +2407,19 @@ impl App {
                 }
             }
             FocusPanel::Content => {
-                self.state.content_scroll_offset = if to_start { 0 } else { usize::MAX / 2 };
+                if self.state.content_view_mode == ContentViewMode::VersionList {
+                    if self.state.note_versions.is_empty() {
+                        self.state.selected_note_version = None;
+                    } else {
+                        self.state.selected_note_version = Some(if to_start {
+                            0
+                        } else {
+                            self.state.note_versions.len() - 1
+                        });
+                    }
+                } else {
+                    self.state.content_scroll_offset = if to_start { 0 } else { usize::MAX / 2 };
+                }
             }
         }
 

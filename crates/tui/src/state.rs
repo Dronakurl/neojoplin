@@ -8,7 +8,7 @@ use crate::settings::Settings;
 use crate::theme::Theme;
 use fuzzy_matcher::skim::SkimMatcherV2;
 use fuzzy_matcher::FuzzyMatcher;
-use joplin_domain::{Folder, Note};
+use joplin_domain::{Folder, Note, NoteRevision};
 
 /// Which panel has focus
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -16,6 +16,13 @@ pub enum FocusPanel {
     Notebooks,
     Notes,
     Content,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ContentViewMode {
+    Note,
+    VersionList,
+    VersionPreview,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -170,8 +177,18 @@ pub struct AppState {
     pub selected_note: Option<usize>,
     /// Content of currently selected note
     pub current_note_content: String,
+    /// Current mode for the content panel.
+    pub content_view_mode: ContentViewMode,
     /// Content scroll offset
     pub content_scroll_offset: usize,
+    /// Loaded revisions for the selected note.
+    pub note_versions: Vec<NoteRevision>,
+    /// Selected revision index in version list mode.
+    pub selected_note_version: Option<usize>,
+    /// Title for currently previewed revision.
+    pub version_preview_title: String,
+    /// Body for currently previewed revision.
+    pub version_preview_body: String,
     /// Currently focused panel
     pub focus: FocusPanel,
     /// Whether to show quit confirmation
@@ -202,6 +219,10 @@ pub struct AppState {
     pub notebook_filter_query: String,
     /// Active note filter query
     pub note_filter_query: String,
+    /// Whether completed todos are included in regular note/todo views.
+    pub show_completed_todos: bool,
+    /// Whether the notes list is filtered to completed todos only.
+    pub completed_only_filter: bool,
     /// Whether note filtering searches titles only or full text
     pub note_filter_mode: NoteFilterMode,
     /// Newly created note kept at end of the list until renamed
@@ -251,7 +272,12 @@ impl Default for AppState {
             notes: Vec::new(),
             selected_note: None,
             current_note_content: String::new(),
+            content_view_mode: ContentViewMode::Note,
             content_scroll_offset: 0,
+            note_versions: Vec::new(),
+            selected_note_version: None,
+            version_preview_title: String::new(),
+            version_preview_body: String::new(),
             focus: FocusPanel::Notebooks,
             show_quit_confirmation: false,
             show_settings: false,
@@ -267,6 +293,8 @@ impl Default for AppState {
             filter_original_input: String::new(),
             notebook_filter_query: String::new(),
             note_filter_query: String::new(),
+            show_completed_todos: false,
+            completed_only_filter: false,
             note_filter_mode: NoteFilterMode::TitleOnly,
             new_note_id: None,
             new_folder_id: None,
@@ -339,6 +367,7 @@ impl AppState {
             self.selected_note = None;
             self.current_note_content.clear();
             self.content_scroll_offset = 0;
+            self.clear_version_view();
             return;
         }
 
@@ -462,6 +491,9 @@ impl AppState {
 
     /// Switch focus to next panel
     pub fn next_panel(&mut self) {
+        if self.focus == FocusPanel::Content {
+            self.clear_version_view();
+        }
         self.focus = match self.focus {
             FocusPanel::Notebooks => FocusPanel::Notes,
             FocusPanel::Notes => FocusPanel::Content,
@@ -471,6 +503,9 @@ impl AppState {
 
     /// Switch focus to previous panel
     pub fn prev_panel(&mut self) {
+        if self.focus == FocusPanel::Content {
+            self.clear_version_view();
+        }
         self.focus = match self.focus {
             FocusPanel::Notebooks => FocusPanel::Content,
             FocusPanel::Notes => FocusPanel::Notebooks,
@@ -484,8 +519,54 @@ impl AppState {
             if idx < self.notes.len() {
                 self.current_note_content = self.notes[idx].body.clone();
                 self.content_scroll_offset = 0;
+                self.clear_version_view();
             }
         }
+    }
+
+    pub fn clear_version_view(&mut self) {
+        self.content_view_mode = ContentViewMode::Note;
+        self.note_versions.clear();
+        self.selected_note_version = None;
+        self.version_preview_title.clear();
+        self.version_preview_body.clear();
+    }
+
+    pub fn open_version_list(&mut self, versions: Vec<NoteRevision>) {
+        self.note_versions = versions;
+        self.selected_note_version = if self.note_versions.is_empty() {
+            None
+        } else {
+            Some(0)
+        };
+        self.content_view_mode = ContentViewMode::VersionList;
+        self.version_preview_title.clear();
+        self.version_preview_body.clear();
+        self.content_scroll_offset = 0;
+    }
+
+    pub fn show_version_preview(&mut self, title: String, body: String) {
+        self.version_preview_title = title;
+        self.version_preview_body = body;
+        self.content_view_mode = ContentViewMode::VersionPreview;
+        self.content_scroll_offset = 0;
+    }
+
+    pub fn selected_note_version(&self) -> Option<&NoteRevision> {
+        self.selected_note_version
+            .and_then(|idx| self.note_versions.get(idx))
+    }
+
+    pub fn move_version_selection(&mut self, delta: isize) {
+        if self.note_versions.is_empty() {
+            self.selected_note_version = None;
+            return;
+        }
+
+        let current = self.selected_note_version.unwrap_or(0);
+        let len = self.note_versions.len();
+        let next = (current as isize + delta).rem_euclid(len as isize) as usize;
+        self.selected_note_version = Some(next);
     }
 
     /// Get currently selected folder
@@ -625,6 +706,19 @@ impl AppState {
 
     /// Apply the active note filter query to a list of notes.
     pub fn filter_notes(&self, notes: Vec<Note>) -> Vec<Note> {
+        let notes: Vec<Note> = notes
+            .into_iter()
+            .filter(|note| {
+                if self.completed_only_filter {
+                    note.is_todo == 1 && note.todo_completed > 0
+                } else if self.show_completed_todos {
+                    true
+                } else {
+                    note.is_todo != 1 || note.todo_completed == 0
+                }
+            })
+            .collect();
+
         let (text_query, tag_terms) = split_note_filter_query(&self.note_filter_query);
         if text_query.text.is_empty() && tag_terms.is_empty() {
             return notes;
@@ -808,9 +902,32 @@ impl AppState {
     pub fn has_active_filter(&self, panel: FocusPanel) -> bool {
         match panel {
             FocusPanel::Notebooks => !self.notebook_filter_query.is_empty(),
-            FocusPanel::Notes => !self.note_filter_query.is_empty(),
+            FocusPanel::Notes => !self.note_filter_query.is_empty() || self.completed_only_filter,
             FocusPanel::Content => false,
         }
+    }
+
+    pub fn toggle_show_completed_todos(&mut self) {
+        if self.completed_only_filter {
+            self.completed_only_filter = false;
+            self.show_completed_todos = true;
+        } else {
+            self.show_completed_todos = !self.show_completed_todos;
+        }
+    }
+
+    pub fn toggle_completed_only_filter(&mut self) {
+        if self.completed_only_filter {
+            self.completed_only_filter = false;
+        } else {
+            self.completed_only_filter = true;
+            self.show_completed_todos = true;
+        }
+    }
+
+    pub fn clear_note_filters(&mut self) {
+        self.note_filter_query.clear();
+        self.completed_only_filter = false;
     }
 
     /// The active note text filter query and whether it is exact.

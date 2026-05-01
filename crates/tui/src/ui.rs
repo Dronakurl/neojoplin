@@ -18,7 +18,7 @@ use crate::settings::{ConnectionResult, EncryptionField, FormField};
 use crate::theme::Theme;
 
 use crate::settings::SettingsTab;
-use crate::state::{AppState, FocusPanel, NoteFilterMode, TagPopupFocus};
+use crate::state::{AppState, ContentViewMode, FocusPanel, NoteFilterMode, TagPopupFocus};
 
 const HELP_LINES: &[&str] = &[
     "Navigation",
@@ -38,6 +38,7 @@ const HELP_LINES: &[&str] = &[
     "  m      Move the selected note or notebook to another notebook",
     "  a      Edit tags on the selected note",
     "  r      Rename selected note or notebook",
+    "  v      Open/close note version browser (preview panel)",
     "  f      Filter the focused list (notes: title only, #tag still works)",
     "  F      Full-text filter across note contents",
     "  ,      Open sort help for the focused list",
@@ -71,8 +72,14 @@ const HELP_LINES: &[&str] = &[
     "",
     "Todos & Trash",
     "  Space    Toggle todo completed / unchecked",
+    "  c        Toggle whether completed todos are included",
+    "  C        Toggle filter: show only completed todos",
     "  Trash    Select the Trash notebook entry to browse deleted notes",
     "  Orphaned Select the Orphaned notebook entry to browse notes without a notebook",
+    "Version Browser",
+    "  v      Open versions from note preview; press v again to return",
+    "  Enter  Preview selected version",
+    "  r      Restore selected version (from version list or version preview)",
     "",
     "Encryption",
     "  One active master key encrypts new synced data",
@@ -396,30 +403,40 @@ fn render_notebooks_panel(f: &mut Frame, state: &AppState, area: Rect) {
 
 /// Render notes panel
 fn render_notes_panel(f: &mut Frame, state: &AppState, area: Rect) {
+    let filter_label = if state.completed_only_filter {
+        if state.note_filter_query.is_empty() {
+            "#completed".to_string()
+        } else {
+            format!("{} #completed", state.note_filter_query)
+        }
+    } else {
+        state.note_filter_query.clone()
+    };
+
     let title = if state.trash_mode {
         format_with_filter(
             format!("🗑 Trash [{}]", state.note_sort.label()),
-            &state.note_filter_query,
+            &filter_label,
         )
     } else if state.orphan_mode {
         format_with_filter(
             format!("Notes - Orphaned [{}]", state.note_sort.label()),
-            &state.note_filter_query,
+            &filter_label,
         )
     } else if state.all_notebooks_mode {
         format_with_filter(
             format!("Notes - All Notebooks [{}]", state.note_sort.label()),
-            &state.note_filter_query,
+            &filter_label,
         )
     } else if let Some(folder) = state.selected_folder() {
         format_with_filter(
             format!("Notes - {} [{}]", folder.title, state.note_sort.label()),
-            &state.note_filter_query,
+            &filter_label,
         )
     } else {
         format_with_filter(
             format!("Notes [{}]", state.note_sort.label()),
-            &state.note_filter_query,
+            &filter_label,
         )
     };
     let theme = &state.theme;
@@ -453,17 +470,18 @@ fn render_notes_panel(f: &mut Frame, state: &AppState, area: Rect) {
                     theme.text()
                 };
 
-                let icon = if note.is_todo == 1 {
-                    if note.todo_completed > 0 {
+                let label = if note.is_todo == 1 {
+                    let icon = if note.todo_completed > 0 {
                         "󰄲"
                     } else {
                         "󰄱"
-                    }
+                    };
+                    format!("{} {}", icon, display_title(&note.title))
                 } else {
-                    "📝"
+                    display_title(&note.title).to_string()
                 };
 
-                ListItem::new(format!("{} {}", icon, display_title(&note.title))).style(style)
+                ListItem::new(label).style(style)
             })
             .collect();
         slice_visible_items(
@@ -491,19 +509,88 @@ fn render_notes_panel(f: &mut Frame, state: &AppState, area: Rect) {
 
 /// Render note content panel
 fn render_content_panel(f: &mut Frame, state: &AppState, area: Rect) {
-    let title = if let Some(note) = state.selected_note() {
+    let theme = &state.theme;
+    let border_style = if state.focus == FocusPanel::Content {
+        theme.border_focused()
+    } else {
+        theme.border_normal()
+    };
+
+    if state.content_view_mode == ContentViewMode::VersionList {
+        let selected_idx = state.selected_note_version.unwrap_or(0);
+        let items: Vec<ListItem> = if state.note_versions.is_empty() {
+            vec![ListItem::new("No versions available").style(theme.dim())]
+        } else {
+            state
+                .note_versions
+                .iter()
+                .enumerate()
+                .map(|(idx, revision)| {
+                    let ts = timestamp_to_datetime(revision.item_updated_time)
+                        .format("%Y-%m-%d %H:%M")
+                        .to_string();
+                    let style = if idx == selected_idx {
+                        theme.selection()
+                    } else {
+                        theme.text()
+                    };
+                    ListItem::new(format!("{}  {}", ts, revision.id)).style(style)
+                })
+                .collect()
+        };
+        let list = List::new(slice_visible_items(
+            items,
+            selected_idx,
+            area.height.saturating_sub(2) as usize,
+        ))
+        .block(
+            Block::default()
+                .title("Versions")
+                .title_alignment(Alignment::Left)
+                .title(
+                    Line::from(current_notebook_label(state))
+                        .alignment(Alignment::Right)
+                        .style(theme.muted()),
+                )
+                .title_bottom(Line::from(" Select version and press Enter ").style(theme.muted()))
+                .title_bottom(
+                    Line::from(format!(" {} versions ", state.note_versions.len()))
+                        .alignment(Alignment::Right)
+                        .style(theme.dim()),
+                )
+                .borders(Borders::ALL)
+                .border_style(border_style),
+        )
+        .highlight_style(theme.selection());
+        f.render_widget(list, area);
+        return;
+    }
+
+    let title = if state.content_view_mode == ContentViewMode::VersionPreview {
+        if state.version_preview_title.is_empty() {
+            "Version Preview".to_string()
+        } else {
+            format!("Version: {}", display_title(&state.version_preview_title))
+        }
+    } else if let Some(note) = state.selected_note() {
         display_title(&note.title).to_string()
     } else {
         "Content".to_string()
     };
-    let theme = &state.theme;
     let notebook_name = current_notebook_label(state);
-    let tag_summary = current_tag_summary(state, area.width.saturating_sub(18) as usize);
+    let tag_summary = if state.content_view_mode == ContentViewMode::VersionPreview {
+        "Press v to return to current note".to_string()
+    } else {
+        current_tag_summary(state, area.width.saturating_sub(18) as usize)
+    };
 
-    // Get note content as markdown. If the title starts with "# ", prepend it so
-    // the heading is visible in the rendered preview (the title is stored separately
-    // from the body, so we need to inject it here for correct markdown display).
-    let markdown_text = if let Some(note) = state.selected_note() {
+    let markdown_text = if state.content_view_mode == ContentViewMode::VersionPreview {
+        if state.version_preview_body.is_empty() {
+            "*This revision is empty*".to_string()
+        } else {
+            state.version_preview_body.clone()
+        }
+    } else if let Some(note) = state.selected_note() {
         let body = if note.body.is_empty() {
             "*This note is empty*".to_string()
         } else {
@@ -517,15 +604,15 @@ fn render_content_panel(f: &mut Frame, state: &AppState, area: Rect) {
     } else {
         "*Select a note to view its content*".to_string()
     };
-    let preview_filter = if state.focus == FocusPanel::Content {
-        state
-            .note_text_filter_query()
-            .map(|(query, _)| query.to_lowercase())
-    } else {
-        None
-    };
+    let preview_filter =
+        if state.focus == FocusPanel::Content && state.content_view_mode == ContentViewMode::Note {
+            state
+                .note_text_filter_query()
+                .map(|(query, _)| query.to_lowercase())
+        } else {
+            None
+        };
 
-    // Render markdown with termimad → ratatui native Text
     let content_width = area.width.saturating_sub(2) as usize;
     let mut content_lines: Vec<Line> = termimad_to_ratatui_lines(&markdown_text, content_width);
     if let Some(filter) = preview_filter.as_ref() {
@@ -540,38 +627,28 @@ fn render_content_panel(f: &mut Frame, state: &AppState, area: Rect) {
         }
     }
 
-    // Calculate visible area for scrolling
-    let visible_height = area.height.saturating_sub(2) as usize; // Subtract border and padding
+    let visible_height = area.height.saturating_sub(2) as usize;
     let total_lines = content_lines.len();
-
-    // Ensure scroll offset is valid
     let max_scroll = total_lines.saturating_sub(visible_height);
-
     let scroll_offset = state.content_scroll_offset.min(max_scroll);
-
-    // Get visible lines based on scroll offset
     let visible_lines: Vec<Line> = content_lines
         .iter()
         .skip(scroll_offset)
         .take(visible_height)
         .cloned()
         .collect();
-
     let content = Text::from(visible_lines);
 
-    // Create scroll indicator
     let scroll_indicator = if total_lines > visible_height {
         let position = if visible_height >= total_lines {
             100
         } else {
             ((scroll_offset * 100) / (total_lines - visible_height)).min(100)
         };
-        format!(" {}% ", position)
+        format!("{}  {}%", displayed_item_timestamp(state), position)
     } else {
-        " All ".to_string()
+        format!("{}  All", displayed_item_timestamp(state))
     };
-
-    let bottom_indicator = scroll_indicator;
 
     let paragraph = Paragraph::new(content)
         .block(
@@ -583,18 +660,14 @@ fn render_content_panel(f: &mut Frame, state: &AppState, area: Rect) {
                         .alignment(Alignment::Right)
                         .style(theme.muted()),
                 )
-                .title_bottom(Line::from(bottom_indicator).style(theme.muted()))
+                .title_bottom(Line::from(format!(" {} ", scroll_indicator)).style(theme.muted()))
                 .title_bottom(
                     Line::from(tag_summary)
                         .alignment(Alignment::Right)
                         .style(theme.dim()),
                 )
                 .borders(Borders::ALL)
-                .border_style(if state.focus == FocusPanel::Content {
-                    theme.border_focused()
-                } else {
-                    theme.border_normal()
-                }),
+                .border_style(border_style),
         )
         .wrap(Wrap { trim: false });
 
@@ -735,8 +808,20 @@ fn render_keybinding_ribbon(f: &mut Frame, state: &AppState, area: Rect) {
         if matches!(state.focus, FocusPanel::Notebooks | FocusPanel::Notes) {
             bindings.push((",".to_string(), "SORT".to_string(), false));
         }
-        if state.focus == FocusPanel::Content && state.selected_note().is_some() {
+        if state.focus == FocusPanel::Content
+            && state.selected_note().is_some()
+            && state.content_view_mode == ContentViewMode::Note
+        {
             bindings.push(("e".to_string(), "EDIT".to_string(), false));
+        }
+        if state.focus == FocusPanel::Content
+            && state.selected_note().is_some()
+            && state.content_view_mode == ContentViewMode::Note
+        {
+            bindings.push(("v".to_string(), "VERSIONS".to_string(), false));
+        }
+        if state.focus == FocusPanel::Content && state.content_view_mode != ContentViewMode::Note {
+            bindings.push(("r".to_string(), "RESTORE".to_string(), false));
         }
         bindings.push(("s".to_string(), "SYNC".to_string(), false));
     }
@@ -1958,12 +2043,12 @@ fn render_sync_status_settings(f: &mut Frame, state: &AppState, area: Rect) {
                 if status.last_sync_encryption_enabled {
                     "Enabled"
                 } else {
-                    "Disabled"
+                    "Disabled (plaintext sync)"
                 },
                 if status.last_sync_encryption_enabled {
                     theme.success()
                 } else {
-                    theme.warning()
+                    theme.text()
                 },
             ),
         ]),
@@ -2149,6 +2234,22 @@ fn current_notebook_label(state: &AppState) -> String {
     } else {
         "Orphaned".to_string()
     }
+}
+
+fn displayed_item_timestamp(state: &AppState) -> String {
+    if state.content_view_mode == ContentViewMode::VersionPreview {
+        if let Some(revision) = state.selected_note_version() {
+            return timestamp_to_datetime(revision.item_updated_time)
+                .format("%Y-%m-%d %H:%M")
+                .to_string();
+        }
+    }
+    if let Some(note) = state.selected_note() {
+        return timestamp_to_datetime(note.updated_time)
+            .format("%Y-%m-%d %H:%M")
+            .to_string();
+    }
+    "-".to_string()
 }
 
 fn current_tag_summary(state: &AppState, max_width: usize) -> String {

@@ -6,10 +6,10 @@ use futures::io::AsyncReadExt;
 use futures::stream::{self, StreamExt};
 use joplin_domain::{
     now_ms, DomainError, E2eeError, Folder, Note, NoteTag, Result, Storage, SyncError, SyncEvent,
-    SyncPhase, SyncTarget, Tag, WebDavClient,
+    SyncPhase, SyncTarget, Tag, WebDavClient, WebDavError,
 };
 use serde_json;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use tokio::sync::mpsc;
 
@@ -45,6 +45,8 @@ struct RemoteItem {
     item_type: ItemType,
     modified: Option<i64>,
 }
+
+const MAX_CONCURRENT_TRANSFERS: usize = 10;
 
 /// Main sync engine
 pub struct SyncEngine {
@@ -96,10 +98,8 @@ impl SyncEngine {
         let start = std::time::Instant::now();
 
         // Parallelize initial immutable setup operations: check locks and ensure remote dir
-        let (lock_result, dir_result) = tokio::join!(
-            self.check_locks(),
-            self.ensure_remote_directory(),
-        );
+        let (lock_result, dir_result) =
+            tokio::join!(self.check_locks(), self.ensure_remote_directory(),);
 
         lock_result?;
         dir_result?;
@@ -276,10 +276,16 @@ impl SyncEngine {
             .event_tx
             .send(SyncEvent::PhaseStarted(SyncPhase::Upload));
 
-        let folders = self.get_changed_folders().await?;
-        let tags = self.get_changed_tags().await?;
-        let notes = self.get_changed_notes().await?;
-        let note_tags = self.get_changed_note_tags().await?;
+        let (folders, tags, notes, note_tags) = tokio::join!(
+            self.get_changed_folders(),
+            self.get_changed_tags(),
+            self.get_changed_notes(),
+            self.get_changed_note_tags(),
+        );
+        let folders = folders?;
+        let tags = tags?;
+        let notes = notes?;
+        let note_tags = note_tags?;
 
         let total_items = folders.len() + tags.len() + notes.len() + note_tags.len();
 
@@ -291,51 +297,67 @@ impl SyncEngine {
                 message: "No local changes to upload".to_string(),
             });
         } else {
-            let mut uploaded = 0;
+            let mut upload_jobs = Vec::with_capacity(total_items);
             for folder in &folders {
-                self.upload_item_encrypted(
+                upload_jobs.push((
                     ItemType::Folder,
-                    &folder.id,
-                    &self.serialize_folder(folder)?,
-                )
-                .await?;
-                uploaded += 1;
-                self.report_progress(
-                    SyncPhase::Upload,
-                    uploaded,
-                    total_items,
-                    "Uploading folders",
-                );
+                    folder.id.clone(),
+                    self.serialize_folder(folder)?,
+                ));
             }
 
             for tag in &tags {
-                self.upload_item_encrypted(ItemType::Tag, &tag.id, &self.serialize_tag(tag)?)
-                    .await?;
-                uploaded += 1;
-                self.report_progress(SyncPhase::Upload, uploaded, total_items, "Uploading tags");
+                upload_jobs.push((ItemType::Tag, tag.id.clone(), self.serialize_tag(tag)?));
             }
 
             for note_tag in &note_tags {
-                self.upload_item_encrypted(
+                upload_jobs.push((
                     ItemType::NoteTag,
-                    &note_tag.id,
-                    &self.serialize_note_tag(note_tag)?,
-                )
-                .await?;
+                    note_tag.id.clone(),
+                    self.serialize_note_tag(note_tag)?,
+                ));
+            }
+
+            for note in &notes {
+                upload_jobs.push((ItemType::Note, note.id.clone(), self.serialize_note(note)?));
+            }
+
+            let webdav = self.webdav.clone();
+            let event_tx = self.event_tx.clone();
+            let remote_path = self.context.remote_path.clone();
+            let e2ee_service = self.e2ee_service.clone();
+            let mut uploaded = 0;
+            let mut uploads = stream::iter(upload_jobs.into_iter().map(
+                |(item_type, item_id, content)| {
+                    let webdav = webdav.clone();
+                    let event_tx = event_tx.clone();
+                    let remote_path = remote_path.clone();
+                    let e2ee_service = e2ee_service.clone();
+                    async move {
+                        Self::upload_item_to_remote(
+                            webdav,
+                            event_tx,
+                            remote_path,
+                            e2ee_service,
+                            item_type,
+                            item_id,
+                            content,
+                        )
+                        .await
+                    }
+                },
+            ))
+            .buffer_unordered(MAX_CONCURRENT_TRANSFERS);
+
+            while let Some(result) = uploads.next().await {
+                result?;
                 uploaded += 1;
                 self.report_progress(
                     SyncPhase::Upload,
                     uploaded,
                     total_items,
-                    "Uploading note tags",
+                    "Uploading local changes",
                 );
-            }
-
-            for note in &notes {
-                self.upload_item_encrypted(ItemType::Note, &note.id, &self.serialize_note(note)?)
-                    .await?;
-                uploaded += 1;
-                self.report_progress(SyncPhase::Upload, uploaded, total_items, "Uploading notes");
             }
 
             let sync_time = now_ms();
@@ -352,11 +374,14 @@ impl SyncEngine {
     /// Upload an item with E2EE encryption (Joplin compatible format)
     /// Joplin stores all items at root level: {remote_path}/{id}.md
     /// When encrypted, the plaintext content is put in encryption_cipher_text field
-    async fn upload_item_encrypted(
-        &self,
+    async fn upload_item_to_remote(
+        webdav: Arc<dyn WebDavClient>,
+        event_tx: mpsc::UnboundedSender<SyncEvent>,
+        remote_path: String,
+        e2ee_service: Option<E2eeService>,
         item_type: ItemType,
-        item_id: &str,
-        plaintext_content: &str,
+        item_id: String,
+        plaintext_content: String,
     ) -> Result<()> {
         let type_num = match item_type {
             ItemType::Note => 1,
@@ -372,12 +397,12 @@ impl SyncEngine {
             ItemType::NoteTag => "note_tag",
         };
 
-        let content = if let Some(ref e2ee) = self.e2ee_service {
+        let content = if let Some(ref e2ee) = e2ee_service {
             if e2ee.is_enabled() {
                 // Encrypt the full content and produce Joplin encrypted format
-                match e2ee.encrypt_string(plaintext_content) {
+                match e2ee.encrypt_string(&plaintext_content) {
                     Ok(encrypted) => {
-                        let now = self.ms_to_iso(now_ms());
+                        let now = Self::ms_to_iso_value(now_ms());
                         // Build the encrypted item metadata wrapper
                         let mut enc_content = String::new();
                         enc_content.push_str(&format!("id: {}\n", item_id));
@@ -405,39 +430,35 @@ impl SyncEngine {
                             item_id,
                             e
                         );
-                        plaintext_content.to_string()
+                        plaintext_content
                     }
                 }
             } else {
-                plaintext_content.to_string()
+                plaintext_content
             }
         } else {
-            plaintext_content.to_string()
+            plaintext_content
         };
 
         // Upload to root level (Joplin 3.5+ format)
-        let remote_path = format!(
-            "{}/{}.md",
-            self.context.remote_path.trim_end_matches('/'),
-            item_id
-        );
+        let remote_path = Self::remote_item_path_from(&remote_path, &item_id);
 
-        let _ = self.event_tx.send(SyncEvent::ItemUpload {
+        let _ = event_tx.send(SyncEvent::ItemUpload {
             item_type: type_name.to_string(),
-            item_id: item_id.to_string(),
+            item_id: item_id.clone(),
         });
 
         let bytes = content.into_bytes();
-        self.webdav
+        webdav
             .put(&remote_path, &bytes, bytes.len() as u64)
             .await
             .map_err(|e| {
                 SyncError::Server(format!("Failed to upload {} {}: {}", type_name, item_id, e))
             })?;
 
-        let _ = self.event_tx.send(SyncEvent::ItemUploadComplete {
+        let _ = event_tx.send(SyncEvent::ItemUploadComplete {
             item_type: type_name.to_string(),
-            item_id: item_id.to_string(),
+            item_id,
         });
 
         Ok(())
@@ -464,30 +485,39 @@ impl SyncEngine {
             });
         } else {
             let total = deleted_items.len();
-            for (i, deleted_item) in deleted_items.iter().enumerate() {
-                let remote_path = format!(
-                    "{}/{}.md",
-                    self.context.remote_path.trim_end_matches('/'),
-                    deleted_item.item_id
-                );
-                if let Err(e) = self.webdav.delete(&remote_path).await {
+            let deleted_items_to_clear = deleted_items.len() as i64;
+            let webdav = self.webdav.clone();
+            let remote_path = self.context.remote_path.clone();
+            let mut deleted = 0;
+            let mut deletions = stream::iter(deleted_items.into_iter().map(|deleted_item| {
+                let webdav = webdav.clone();
+                let remote_path = remote_path.clone();
+                let item_id = deleted_item.item_id;
+                async move {
+                    let remote_path = Self::remote_item_path_from(&remote_path, &item_id);
+                    let result = webdav.delete(&remote_path).await;
+                    (item_id, result)
+                }
+            }))
+            .buffer_unordered(MAX_CONCURRENT_TRANSFERS);
+
+            while let Some((item_id, result)) = deletions.next().await {
+                if let Err(e) = result {
                     let _ = self.event_tx.send(SyncEvent::Warning {
-                        message: format!(
-                            "Failed to delete remote item {}: {}",
-                            deleted_item.item_id, e
-                        ),
+                        message: format!("Failed to delete remote item {}: {}", item_id, e),
                     });
                 }
+                deleted += 1;
                 self.report_progress(
                     SyncPhase::DeleteRemote,
-                    i + 1,
+                    deleted,
                     total,
                     "Deleting remote items",
                 );
             }
 
             self.storage
-                .clear_deleted_items(deleted_items.len() as i64)
+                .clear_deleted_items(deleted_items_to_clear)
                 .await
                 .map_err(SyncError::Local)?;
         }
@@ -510,7 +540,8 @@ impl SyncEngine {
             .get_all_sync_items()
             .await
             .map_err(SyncError::Local)?;
-        self.apply_remote_deletions(&remote_items, &local_items).await?;
+        self.apply_remote_deletions(&remote_items, &local_items)
+            .await?;
         let items_to_download = self.find_delta_items(&remote_items, &local_items);
 
         if items_to_download.is_empty() {
@@ -533,39 +564,43 @@ impl SyncEngine {
             let context = self.context.clone();
             let e2ee_opt = self.e2ee_service.clone();
 
-            let download_futures: Vec<_> = items_to_download.iter().map(|remote_item| {
-                let id = remote_item.id.clone();
-                let item_type = remote_item.item_type;
-                let storage = storage.clone();
-                let webdav = webdav.clone();
-                let event_tx = event_tx.clone();
-                let context = context.clone();
-                let e2ee_service = e2ee_opt.clone();
-                async move {
-                    tracing::debug!("Downloading item: {} ({:?})", id, item_type);
-                    // Create a temporary sync engine just for this download
-                    let mut temp_engine = SyncEngine::new(storage, webdav, event_tx)
-                        .with_remote_path(context.remote_path.clone());
-                    if let Some(e2ee) = e2ee_service {
-                        temp_engine = temp_engine.with_e2ee(e2ee);
+            let mut downloaded = 0;
+            let mut download_futures =
+                stream::iter(items_to_download.into_iter().map(|remote_item| {
+                    let id = remote_item.id.clone();
+                    let item_type = remote_item.item_type;
+                    let storage = storage.clone();
+                    let webdav = webdav.clone();
+                    let event_tx = event_tx.clone();
+                    let context = context.clone();
+                    let e2ee_service = e2ee_opt.clone();
+                    async move {
+                        tracing::debug!("Downloading item: {} ({:?})", id, item_type);
+                        // Create a temporary sync engine just for this download
+                        let mut temp_engine = SyncEngine::new(storage, webdav, event_tx)
+                            .with_remote_path(context.remote_path.clone());
+                        if let Some(e2ee) = e2ee_service {
+                            temp_engine = temp_engine.with_e2ee(e2ee);
+                        }
+                        let result = temp_engine.download_item(&id, &item_type).await;
+                        (id, result)
                     }
-                    let result = temp_engine.download_item(&id, &item_type).await;
-                    (id, result)
-                }
-            }).collect();
+                }))
+                .buffer_unordered(MAX_CONCURRENT_TRANSFERS);
 
-            let results: Vec<_> = stream::iter(download_futures)
-                .buffer_unordered(10) // Parallelize with max 10 concurrent downloads
-                .collect()
-                .await;
-
-            for (i, (id, result)) in results.into_iter().enumerate() {
+            while let Some((id, result)) = download_futures.next().await {
                 if let Err(e) = result {
                     let _ = self.event_tx.send(SyncEvent::Warning {
                         message: format!("Failed to download {}: {}", id, e),
                     });
                 }
-                self.report_progress(SyncPhase::Delta, i + 1, total, "Downloading remote changes");
+                downloaded += 1;
+                self.report_progress(
+                    SyncPhase::Delta,
+                    downloaded,
+                    total,
+                    "Downloading remote changes",
+                );
             }
         }
 
@@ -604,6 +639,10 @@ impl SyncEngine {
     }
 
     // === Helper methods ===
+
+    fn remote_item_path_from(remote_path: &str, item_id: &str) -> String {
+        format!("{}/{}.md", remote_path.trim_end_matches('/'), item_id)
+    }
 
     async fn check_locks(&self) -> Result<()> {
         let lock_path = format!(
@@ -717,11 +756,11 @@ impl SyncEngine {
                                 encryption_method: mk.encryption_method,
                                 checksum: mk.checksum.clone(),
                                 content: mk.content.clone(),
-                            has_been_used: true,
-                            enabled: if mk.enabled { 1 } else { 0 },
-                        });
+                                has_been_used: true,
+                                enabled: if mk.enabled { 1 } else { 0 },
+                            });
+                        }
                     }
-                }
                 }
             } else if sync_info.e2ee.value {
                 // E2EE was previously enabled but now disabled
@@ -851,7 +890,7 @@ impl SyncEngine {
                     }
                 }
                 tracing::info!("Found {} remote items", remote_items.len());
-                
+
                 // Cache the results
                 self.cached_remote_items = Some(remote_items.clone());
                 self.remote_items_cache_time = now_ms();
@@ -870,9 +909,13 @@ impl SyncEngine {
         local_items: &[joplin_domain::SyncItem],
     ) -> Vec<RemoteItem> {
         let mut items_to_download = Vec::new();
+        let local_items_by_id: HashMap<&str, &joplin_domain::SyncItem> = local_items
+            .iter()
+            .map(|item| (item.item_id.as_str(), item))
+            .collect();
 
         for remote_item in remote_items {
-            let local = local_items.iter().find(|l| l.item_id == remote_item.id);
+            let local = local_items_by_id.get(remote_item.id.as_str()).copied();
             match local {
                 None => {
                     // New item — not tracked locally
@@ -905,44 +948,28 @@ impl SyncEngine {
     }
 
     async fn download_item(&self, item_id: &str, _item_type: &ItemType) -> Result<()> {
-        // Try root level first (Joplin 3.5+ format), then subdirectories
-        let root_path = format!(
-            "{}/{}.md",
-            self.context.remote_path.trim_end_matches('/'),
-            item_id
-        );
-
-        let final_path = if self.webdav.exists(&root_path).await.unwrap_or(false) {
-            root_path
-        } else {
-            // Try subdirectories
-            for subdir in &["items", "folders", "tags", "note_tags", "resources"] {
-                let subdir_path = format!(
-                    "{}/{}/{}.md",
-                    self.context.remote_path.trim_end_matches('/'),
-                    subdir,
-                    item_id
-                );
-                if self.webdav.exists(&subdir_path).await.unwrap_or(false) {
-                    break;
-                }
-            }
-            // Default to root
-            format!(
-                "{}/{}.md",
-                self.context.remote_path.trim_end_matches('/'),
-                item_id
-            )
-        };
+        let root_path = Self::remote_item_path_from(&self.context.remote_path, item_id);
 
         let _ = self.event_tx.send(SyncEvent::ItemDownload {
             item_type: "item".to_string(),
             item_id: item_id.to_string(),
         });
 
-        let mut reader = self.webdav.get(&final_path).await.map_err(|e| {
-            SyncError::Server(format!("Failed to download item {}: {}", item_id, e))
-        })?;
+        let mut reader = match self.webdav.get(&root_path).await {
+            Ok(reader) => reader,
+            Err(WebDavError::NotFound(_)) => {
+                self.legacy_item_reader(item_id).await.map_err(|e| {
+                    SyncError::Server(format!("Failed to download item {}: {}", item_id, e))
+                })?
+            }
+            Err(e) => {
+                return Err(SyncError::Server(format!(
+                    "Failed to download item {}: {}",
+                    item_id, e
+                ))
+                .into());
+            }
+        };
 
         let mut content = Vec::new();
         reader
@@ -953,18 +980,39 @@ impl SyncEngine {
         let content_str = String::from_utf8_lossy(&content);
         tracing::debug!("Downloaded {} bytes for {}", content.len(), item_id);
 
-        self.store_downloaded_item(item_id, &content_str).await?;
+        let downloaded_item_type = self.store_downloaded_item(item_id, &content_str).await?;
 
         let _ = self.event_tx.send(SyncEvent::ItemDownloadComplete {
-            item_type: "item".to_string(),
+            item_type: downloaded_item_type.to_string(),
             item_id: item_id.to_string(),
         });
 
         Ok(())
     }
 
+    async fn legacy_item_reader(
+        &self,
+        item_id: &str,
+    ) -> std::result::Result<Box<dyn futures::io::AsyncRead + Unpin + Send>, WebDavError> {
+        for subdir in ["items", "folders", "tags", "note_tags", "resources"] {
+            let legacy_path = format!(
+                "{}/{}/{}.md",
+                self.context.remote_path.trim_end_matches('/'),
+                subdir,
+                item_id
+            );
+            match self.webdav.get(&legacy_path).await {
+                Ok(reader) => return Ok(reader),
+                Err(WebDavError::NotFound(_)) => continue,
+                Err(err) => return Err(err),
+            }
+        }
+
+        Err(WebDavError::NotFound(item_id.to_string()))
+    }
+
     /// Store a downloaded item, handling encryption and type detection
-    async fn store_downloaded_item(&self, item_id: &str, content: &str) -> Result<()> {
+    async fn store_downloaded_item(&self, item_id: &str, content: &str) -> Result<&'static str> {
         // Parse the metadata to determine type and encryption status
         let metadata = self.parse_item_metadata(content);
 
@@ -996,14 +1044,15 @@ impl SyncEngine {
                         item_id
                     );
                     // Store the encrypted item with its metadata
-                    return self.store_encrypted_item(
+                    self.store_encrypted_item(
                         item_id,
                         type_num,
                         &metadata,
                         &encryption_cipher_text,
                         master_key_id.as_deref(),
                     )
-                    .await;
+                    .await?;
+                    return Ok(Self::item_type_name(type_num));
                 }
                 match e2ee.decrypt_string(&encryption_cipher_text) {
                     Ok(decrypted) => {
@@ -1105,7 +1154,17 @@ impl SyncEngine {
             }
         }
 
-        Ok(())
+        Ok(Self::item_type_name(type_num))
+    }
+
+    fn item_type_name(type_num: i32) -> &'static str {
+        match type_num {
+            1 => "note",
+            2 => "folder",
+            5 => "tag",
+            6 => "note_tag",
+            _ => "item",
+        }
     }
 
     /// Store an encrypted item without decryption (when master key is not available)
@@ -1133,7 +1192,10 @@ impl SyncEngine {
         };
 
         let get_metadata_str = |key: &str, default: &str| -> String {
-            metadata.get(key).cloned().unwrap_or_else(|| default.to_string())
+            metadata
+                .get(key)
+                .cloned()
+                .unwrap_or_else(|| default.to_string())
         };
 
         match type_num {
@@ -1292,14 +1354,12 @@ impl SyncEngine {
             return Ok(note);
         }
 
-        let cipher_text = note
-            .encryption_cipher_text
-            .ok_or_else(|| {
-                DomainError::Unknown(format!(
-                    "Note {} has encryption_applied=1 but no cipher text",
-                    note_id
-                ))
-            })?;
+        let cipher_text = note.encryption_cipher_text.ok_or_else(|| {
+            DomainError::Unknown(format!(
+                "Note {} has encryption_applied=1 but no cipher text",
+                note_id
+            ))
+        })?;
 
         // Decrypt the content
         let decrypted_body = e2ee
@@ -1308,14 +1368,14 @@ impl SyncEngine {
 
         // Parse the decrypted content to get the actual note data
         let mut updated_note = self.deserialize_note(note_id, &decrypted_body)?;
-        
+
         // Preserve the original metadata
         updated_note.id = note.id;
         updated_note.created_time = note.created_time;
         updated_note.updated_time = note.updated_time;
         updated_note.user_created_time = note.user_created_time;
         updated_note.user_updated_time = note.user_updated_time;
-        
+
         // Clear encryption flags
         updated_note.encryption_applied = 0;
         updated_note.encryption_cipher_text = None;
@@ -1339,14 +1399,12 @@ impl SyncEngine {
             return Ok(folder);
         }
 
-        let cipher_text = folder
-            .encryption_cipher_text
-            .ok_or_else(|| {
-                DomainError::Unknown(format!(
-                    "Folder {} has encryption_applied=1 but no cipher text",
-                    folder_id
-                ))
-            })?;
+        let cipher_text = folder.encryption_cipher_text.ok_or_else(|| {
+            DomainError::Unknown(format!(
+                "Folder {} has encryption_applied=1 but no cipher text",
+                folder_id
+            ))
+        })?;
 
         // Decrypt the content
         let decrypted_content = e2ee
@@ -1355,14 +1413,14 @@ impl SyncEngine {
 
         // Parse the decrypted content to get the actual folder data
         let mut updated_folder = self.deserialize_folder(folder_id, &decrypted_content)?;
-        
+
         // Preserve the original metadata
         updated_folder.id = folder.id;
         updated_folder.created_time = folder.created_time;
         updated_folder.updated_time = folder.updated_time;
         updated_folder.user_created_time = folder.user_created_time;
         updated_folder.user_updated_time = folder.user_updated_time;
-        
+
         // Clear encryption flags
         updated_folder.encryption_applied = 0;
         updated_folder.encryption_cipher_text = None;
@@ -1781,8 +1839,12 @@ impl SyncEngine {
                     }
                     "created_time" => tag.created_time = self.iso_to_ms(value).unwrap_or(0),
                     "updated_time" => tag.updated_time = self.iso_to_ms(value).unwrap_or(0),
-                    "user_created_time" => tag.user_created_time = self.iso_to_ms(value).unwrap_or(0),
-                    "user_updated_time" => tag.user_updated_time = self.iso_to_ms(value).unwrap_or(0),
+                    "user_created_time" => {
+                        tag.user_created_time = self.iso_to_ms(value).unwrap_or(0)
+                    }
+                    "user_updated_time" => {
+                        tag.user_updated_time = self.iso_to_ms(value).unwrap_or(0)
+                    }
                     "parent_id" => tag.parent_id = value.to_string(),
                     "is_shared" => tag.is_shared = value.parse().unwrap_or(0),
                     "encryption_applied" => tag.encryption_applied = value.parse().unwrap_or(0),
@@ -1828,6 +1890,10 @@ impl SyncEngine {
     }
 
     fn ms_to_iso(&self, ms: i64) -> String {
+        Self::ms_to_iso_value(ms)
+    }
+
+    fn ms_to_iso_value(ms: i64) -> String {
         if ms == 0 {
             return String::new();
         }
@@ -2140,6 +2206,9 @@ mod tests {
                 sync_info: None,
                 e2ee_service: None,
                 event_tx: tx,
+                cached_remote_items: None,
+                remote_items_cache_time: 0,
+                remote_items_cache_ttl: 30000,
             },
             storage,
         )

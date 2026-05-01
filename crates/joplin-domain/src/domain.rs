@@ -247,6 +247,23 @@ impl Default for NoteTag {
     }
 }
 
+/// Note revision entry from the revisions table.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NoteRevision {
+    pub id: String,
+    pub parent_id: String,
+    pub item_type: i32,
+    pub item_id: String,
+    pub item_updated_time: i64,
+    pub title_diff: String,
+    pub body_diff: String,
+    pub metadata_diff: String,
+    pub encryption_cipher_text: String,
+    pub encryption_applied: i32,
+    pub updated_time: i64,
+    pub created_time: i64,
+}
+
 /// Resource (file attachment) structure matching Joplin schema
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Resource {
@@ -447,6 +464,30 @@ impl sqlx::FromRow<'_, sqlx::sqlite::SqliteRow> for NoteTag {
             encryption_applied: row.try_get("encryption_applied").unwrap_or(0),
             encryption_cipher_text: row.try_get("encryption_cipher_text").ok(),
             master_key_id: row.try_get("master_key_id").ok(),
+        })
+    }
+}
+
+#[cfg(feature = "sqlx")]
+impl sqlx::FromRow<'_, sqlx::sqlite::SqliteRow> for NoteRevision {
+    fn from_row(row: &sqlx::sqlite::SqliteRow) -> sqlx::Result<Self> {
+        Ok(NoteRevision {
+            id: row.try_get("id")?,
+            parent_id: row.try_get("parent_id").unwrap_or_else(|_| String::new()),
+            item_type: row.try_get("item_type")?,
+            item_id: row.try_get("item_id")?,
+            item_updated_time: row.try_get("item_updated_time")?,
+            title_diff: row.try_get("title_diff").unwrap_or_else(|_| String::new()),
+            body_diff: row.try_get("body_diff").unwrap_or_else(|_| String::new()),
+            metadata_diff: row
+                .try_get("metadata_diff")
+                .unwrap_or_else(|_| String::new()),
+            encryption_cipher_text: row
+                .try_get("encryption_cipher_text")
+                .unwrap_or_else(|_| String::new()),
+            encryption_applied: row.try_get("encryption_applied").unwrap_or(0),
+            updated_time: row.try_get("updated_time")?,
+            created_time: row.try_get("created_time")?,
         })
     }
 }

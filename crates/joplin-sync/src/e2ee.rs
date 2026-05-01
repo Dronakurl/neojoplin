@@ -23,8 +23,8 @@ use ccm::{
 };
 use pbkdf2::pbkdf2_hmac;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
 use sha2::Sha256;
+use std::collections::HashMap;
 
 pub const JED_IDENTIFIER: &str = "JED";
 pub const JED_VERSION: &str = "01";
@@ -386,7 +386,7 @@ impl E2eeService {
                 method
             )),
             _ => String::from_utf8(decrypted_bytes)
-                .or_else(|e| Err(anyhow!("Invalid UTF-8 plaintext for {:?}: {}", method, e))),
+                .map_err(|e| anyhow!("Invalid UTF-8 plaintext for {:?}: {}", method, e)),
         }
     }
 

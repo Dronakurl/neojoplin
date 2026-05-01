@@ -1,17 +1,27 @@
 // SQLite storage implementation for NeoJoplin
 
+use serde::Deserialize;
+use serde_json::{Map, Value};
 use sqlx::{sqlite::SqliteConnectOptions, sqlite::SqlitePoolOptions, SqlitePool};
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 
 use joplin_domain::{
-    now_ms, DatabaseError, DeletedItem, Folder, ModelType, Note, NoteTag, Storage, SyncItem,
-    SyncTarget, Tag,
+    now_ms, DatabaseError, DeletedItem, Folder, ModelType, Note, NoteRevision, NoteTag, Storage,
+    SyncItem, SyncTarget, Tag,
 };
 
 /// SQLite storage implementation
 pub struct SqliteStorage {
     pool: SqlitePool,
+}
+
+#[derive(Debug, Clone)]
+pub struct NoteRevisionSnapshot {
+    pub revision: NoteRevision,
+    pub title: String,
+    pub body: String,
+    pub metadata: Map<String, Value>,
 }
 
 impl SqliteStorage {
@@ -110,16 +120,160 @@ impl SqliteStorage {
                         DatabaseError::MigrationFailed(format!("Failed to update version: {}", e))
                     })?;
                 tracing::info!("Database migrated to v42");
+                self.ensure_revision_table().await?;
                 return Ok(());
             }
             if version >= 42 {
                 tracing::info!("Database already initialized at version {}", version);
+                self.ensure_revision_table().await?;
                 return Ok(());
             }
         }
 
         tracing::info!("Initializing database schema v42");
-        self.create_schema().await
+        self.create_schema().await?;
+        self.ensure_revision_table().await?;
+        Ok(())
+    }
+
+    async fn ensure_revision_table(&self) -> Result<(), DatabaseError> {
+        sqlx::query(
+            r#"
+            CREATE TABLE IF NOT EXISTS revisions (
+                id TEXT PRIMARY KEY,
+                parent_id TEXT NOT NULL DEFAULT "",
+                item_type INTEGER NOT NULL,
+                item_id TEXT NOT NULL,
+                item_updated_time INTEGER NOT NULL,
+                title_diff TEXT NOT NULL DEFAULT "",
+                body_diff TEXT NOT NULL DEFAULT "",
+                metadata_diff TEXT NOT NULL DEFAULT "",
+                encryption_cipher_text TEXT NOT NULL DEFAULT "",
+                encryption_applied INTEGER NOT NULL DEFAULT 0,
+                updated_time INTEGER NOT NULL,
+                created_time INTEGER NOT NULL
+            )
+            "#,
+        )
+        .execute(&self.pool)
+        .await
+        .map_err(|e| {
+            DatabaseError::MigrationFailed(format!("Failed to create revisions table: {}", e))
+        })?;
+
+        for index_sql in [
+            "CREATE INDEX IF NOT EXISTS revisions_parent_id ON revisions(parent_id)",
+            "CREATE INDEX IF NOT EXISTS revisions_item_type ON revisions(item_type)",
+            "CREATE INDEX IF NOT EXISTS revisions_item_id ON revisions(item_id)",
+            "CREATE INDEX IF NOT EXISTS revisions_item_updated_time ON revisions(item_updated_time)",
+            "CREATE INDEX IF NOT EXISTS revisions_updated_time ON revisions(updated_time)",
+        ] {
+            sqlx::query(index_sql)
+                .execute(&self.pool)
+                .await
+                .map_err(|e| {
+                    DatabaseError::MigrationFailed(format!(
+                        "Failed to create revisions index: {}",
+                        e
+                    ))
+                })?;
+        }
+
+        Ok(())
+    }
+
+    pub async fn list_note_revisions(
+        &self,
+        note_id: &str,
+    ) -> Result<Vec<NoteRevision>, DatabaseError> {
+        sqlx::query_as::<_, NoteRevision>(
+            r#"
+            SELECT
+                id, parent_id, item_type, item_id, item_updated_time,
+                title_diff, body_diff, metadata_diff, encryption_cipher_text,
+                encryption_applied, updated_time, created_time
+            FROM revisions
+            WHERE item_type = 1 AND item_id = ?
+            ORDER BY item_updated_time DESC, created_time DESC
+            "#,
+        )
+        .bind(note_id)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| DatabaseError::QueryFailed(format!("Failed to list note revisions: {}", e)))
+    }
+
+    pub async fn get_note_revision_snapshot(
+        &self,
+        note_id: &str,
+        revision_id: &str,
+    ) -> Result<NoteRevisionSnapshot, DatabaseError> {
+        let revision = sqlx::query_as::<_, NoteRevision>(
+            r#"
+            SELECT
+                id, parent_id, item_type, item_id, item_updated_time,
+                title_diff, body_diff, metadata_diff, encryption_cipher_text,
+                encryption_applied, updated_time, created_time
+            FROM revisions
+            WHERE id = ? AND item_type = 1 AND item_id = ?
+            LIMIT 1
+            "#,
+        )
+        .bind(revision_id)
+        .bind(note_id)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|e| DatabaseError::QueryFailed(format!("Failed to load revision: {}", e)))?
+        .ok_or_else(|| DatabaseError::NotFound(format!("Revision not found: {}", revision_id)))?;
+
+        if revision.encryption_applied == 1 {
+            return Err(DatabaseError::InvalidData(format!(
+                "Revision is encrypted and cannot be read: {}",
+                revision_id
+            )));
+        }
+
+        let mut revisions = sqlx::query_as::<_, NoteRevision>(
+            r#"
+            SELECT
+                id, parent_id, item_type, item_id, item_updated_time,
+                title_diff, body_diff, metadata_diff, encryption_cipher_text,
+                encryption_applied, updated_time, created_time
+            FROM revisions
+            WHERE item_type = 1 AND item_id = ? AND item_updated_time <= ?
+            ORDER BY item_updated_time ASC, created_time ASC
+            "#,
+        )
+        .bind(note_id)
+        .bind(revision.item_updated_time)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| DatabaseError::QueryFailed(format!("Failed to load revision chain: {}", e)))?;
+
+        if revisions.iter().all(|r| r.id != revision.id) {
+            revisions.push(revision.clone());
+            revisions.sort_by_key(|r| (r.item_updated_time, r.created_time));
+        }
+
+        build_revision_snapshot(revision, revisions)
+    }
+
+    pub async fn restore_note_to_revision(
+        &self,
+        note_id: &str,
+        revision_id: &str,
+    ) -> Result<Note, DatabaseError> {
+        let snapshot = self
+            .get_note_revision_snapshot(note_id, revision_id)
+            .await?;
+        let mut note = self
+            .get_note(note_id)
+            .await?
+            .ok_or_else(|| DatabaseError::NotFound(format!("Note not found: {}", note_id)))?;
+        apply_snapshot_to_note(&mut note, &snapshot);
+        note.updated_time = now_ms();
+        self.update_note(&note).await?;
+        Ok(note)
     }
 
     /// Create the database schema
@@ -389,6 +543,230 @@ impl SqliteStorage {
         .map_err(|e| DatabaseError::QueryFailed(format!("Failed to insert into FTS: {}", e)))?;
 
         Ok(())
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct TextPatchChunk {
+    diffs: Vec<(i32, String)>,
+    start1: usize,
+}
+
+#[derive(Debug, Deserialize)]
+struct MetadataPatch {
+    #[serde(default)]
+    new: Map<String, Value>,
+    #[serde(default)]
+    deleted: Vec<String>,
+}
+
+fn build_revision_snapshot(
+    revision: NoteRevision,
+    revisions: Vec<NoteRevision>,
+) -> Result<NoteRevisionSnapshot, DatabaseError> {
+    let mut revisions_by_id: std::collections::HashMap<&str, &NoteRevision> =
+        std::collections::HashMap::new();
+    for rev in &revisions {
+        revisions_by_id.insert(rev.id.as_str(), rev);
+    }
+
+    let mut chain = Vec::new();
+    let mut current_id = Some(revision.id.clone());
+    while let Some(id) = current_id {
+        let Some(rev) = revisions_by_id.get(id.as_str()) else {
+            break;
+        };
+        chain.push((*rev).clone());
+        current_id = if rev.parent_id.is_empty() {
+            None
+        } else {
+            Some(rev.parent_id.clone())
+        };
+    }
+    chain.reverse();
+
+    let mut title = String::new();
+    let mut body = String::new();
+    let mut metadata = Map::new();
+    for rev in &chain {
+        if rev.encryption_applied == 1 {
+            return Err(DatabaseError::InvalidData(format!(
+                "Revision is encrypted and cannot be read: {}",
+                rev.id
+            )));
+        }
+        title = apply_text_patch(&title, &rev.title_diff)?;
+        body = apply_text_patch(&body, &rev.body_diff)?;
+        apply_metadata_patch(&mut metadata, &rev.metadata_diff)?;
+    }
+
+    Ok(NoteRevisionSnapshot {
+        revision,
+        title,
+        body,
+        metadata,
+    })
+}
+
+fn apply_text_patch(base: &str, patch: &str) -> Result<String, DatabaseError> {
+    if patch.is_empty() || patch == "[]" {
+        return Ok(base.to_string());
+    }
+
+    if patch.starts_with("@@") {
+        return Err(DatabaseError::InvalidData(
+            "Legacy revision patches are not supported yet".to_string(),
+        ));
+    }
+
+    let chunks: Vec<TextPatchChunk> = serde_json::from_str(patch).map_err(|e| {
+        DatabaseError::InvalidData(format!("Invalid revision text patch format: {}", e))
+    })?;
+
+    let mut chars: Vec<char> = base.chars().collect();
+    let mut offset: isize = 0;
+
+    for chunk in chunks {
+        let mut cursor = chunk.start1 as isize + offset;
+        if cursor < 0 {
+            cursor = 0;
+        }
+        let mut cursor = cursor as usize;
+        for (op, text) in chunk.diffs {
+            let diff_chars: Vec<char> = text.chars().collect();
+            cursor = cursor.min(chars.len());
+            match op {
+                0 => {
+                    cursor = cursor.saturating_add(diff_chars.len());
+                }
+                -1 => {
+                    let end = cursor.saturating_add(diff_chars.len()).min(chars.len());
+                    if cursor <= end {
+                        chars.drain(cursor..end);
+                        offset -= (end - cursor) as isize;
+                    }
+                }
+                1 => {
+                    chars.splice(cursor..cursor, diff_chars.clone());
+                    cursor = cursor.saturating_add(diff_chars.len());
+                    offset += diff_chars.len() as isize;
+                }
+                _ => {
+                    return Err(DatabaseError::InvalidData(format!(
+                        "Unknown revision text patch operation: {}",
+                        op
+                    )));
+                }
+            }
+        }
+    }
+
+    Ok(chars.into_iter().collect())
+}
+
+fn apply_metadata_patch(
+    metadata: &mut Map<String, Value>,
+    patch: &str,
+) -> Result<(), DatabaseError> {
+    if patch.is_empty() {
+        return Ok(());
+    }
+
+    let parsed: MetadataPatch =
+        serde_json::from_str(&patch.replace(['\n', '\r'], "")).map_err(|e| {
+            DatabaseError::InvalidData(format!("Invalid revision metadata patch format: {}", e))
+        })?;
+    for (k, v) in parsed.new {
+        metadata.insert(k, v);
+    }
+    for k in parsed.deleted {
+        metadata.remove(&k);
+    }
+    Ok(())
+}
+
+fn apply_snapshot_to_note(note: &mut Note, snapshot: &NoteRevisionSnapshot) {
+    note.title = snapshot.title.clone();
+    note.body = snapshot.body.clone();
+    for (key, value) in &snapshot.metadata {
+        match key.as_str() {
+            "parent_id" => {
+                if let Some(v) = value.as_str() {
+                    note.parent_id = v.to_string();
+                }
+            }
+            "is_todo" => {
+                if let Some(v) = value.as_i64() {
+                    note.is_todo = v as i32;
+                }
+            }
+            "todo_completed" => {
+                if let Some(v) = value.as_i64() {
+                    note.todo_completed = v;
+                }
+            }
+            "todo_due" => {
+                if let Some(v) = value.as_i64() {
+                    note.todo_due = v;
+                }
+            }
+            "source_url" => {
+                if let Some(v) = value.as_str() {
+                    note.source_url = v.to_string();
+                }
+            }
+            "author" => {
+                if let Some(v) = value.as_str() {
+                    note.author = v.to_string();
+                }
+            }
+            "source_application" => {
+                if let Some(v) = value.as_str() {
+                    note.source_application = v.to_string();
+                }
+            }
+            "application_data" => {
+                if let Some(v) = value.as_str() {
+                    note.application_data = v.to_string();
+                }
+            }
+            "markup_language" => {
+                if let Some(v) = value.as_i64() {
+                    note.markup_language = v as i32;
+                }
+            }
+            "user_created_time" => {
+                if let Some(v) = value.as_i64() {
+                    note.user_created_time = v;
+                }
+            }
+            "user_updated_time" => {
+                if let Some(v) = value.as_i64() {
+                    note.user_updated_time = v;
+                }
+            }
+            "latitude" => {
+                if let Some(v) = value.as_i64() {
+                    note.latitude = v;
+                }
+            }
+            "longitude" => {
+                if let Some(v) = value.as_i64() {
+                    note.longitude = v;
+                }
+            }
+            "altitude" => {
+                if let Some(v) = value.as_i64() {
+                    note.altitude = v;
+                }
+            }
+            "order" => {
+                if let Some(v) = value.as_i64() {
+                    note.order = v;
+                }
+            }
+            _ => {}
+        }
     }
 }
 
@@ -732,9 +1110,8 @@ impl Storage for SqliteStorage {
             r#"
             INSERT INTO tags (
                 id, title, created_time, updated_time,
-                user_created_time, user_updated_time, parent_id,
-                is_shared, encryption_applied, encryption_cipher_text, master_key_id
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                user_created_time, user_updated_time, parent_id, is_shared
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             "#,
         )
         .bind(&tag.id)
@@ -745,9 +1122,6 @@ impl Storage for SqliteStorage {
         .bind(tag.user_updated_time)
         .bind(&tag.parent_id)
         .bind(tag.is_shared)
-        .bind(tag.encryption_applied)
-        .bind(&tag.encryption_cipher_text)
-        .bind(&tag.master_key_id)
         .execute(&self.pool)
         .await
         .map_err(|e| DatabaseError::QueryFailed(format!("Failed to create tag: {}", e)))?;
@@ -760,8 +1134,7 @@ impl Storage for SqliteStorage {
             r#"
             SELECT
                 id, title, created_time, updated_time,
-                user_created_time, user_updated_time, parent_id,
-                is_shared, encryption_applied, encryption_cipher_text, master_key_id
+                user_created_time, user_updated_time, parent_id, is_shared
             FROM tags WHERE id = ?
             "#,
         )
@@ -778,8 +1151,7 @@ impl Storage for SqliteStorage {
             r#"
             UPDATE tags SET
                 title = ?, updated_time = ?,
-                user_updated_time = ?, parent_id = ?,
-                encryption_applied = ?, encryption_cipher_text = ?, master_key_id = ?
+                user_updated_time = ?, parent_id = ?
             WHERE id = ?
             "#,
         )
@@ -787,9 +1159,6 @@ impl Storage for SqliteStorage {
         .bind(tag.updated_time)
         .bind(tag.user_updated_time)
         .bind(&tag.parent_id)
-        .bind(tag.encryption_applied)
-        .bind(&tag.encryption_cipher_text)
-        .bind(&tag.master_key_id)
         .bind(&tag.id)
         .execute(&self.pool)
         .await
@@ -840,8 +1209,7 @@ impl Storage for SqliteStorage {
             r#"
             SELECT
                 id, title, created_time, updated_time,
-                user_created_time, user_updated_time, parent_id,
-                is_shared, encryption_applied, encryption_cipher_text, master_key_id
+                user_created_time, user_updated_time, parent_id, is_shared
             FROM tags
             ORDER BY title ASC
             "#,
@@ -858,10 +1226,8 @@ impl Storage for SqliteStorage {
         sqlx::query(
             r#"
             INSERT INTO note_tags (
-                id, note_id, tag_id, created_time, updated_time,
-                user_created_time, user_updated_time, is_shared,
-                encryption_applied, encryption_cipher_text, master_key_id
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                id, note_id, tag_id, created_time, updated_time, is_shared
+            ) VALUES (?, ?, ?, ?, ?, ?)
             "#,
         )
         .bind(&note_tag.id)
@@ -869,12 +1235,7 @@ impl Storage for SqliteStorage {
         .bind(&note_tag.tag_id)
         .bind(note_tag.created_time)
         .bind(note_tag.updated_time)
-        .bind(note_tag.user_created_time)
-        .bind(note_tag.user_updated_time)
         .bind(note_tag.is_shared)
-        .bind(note_tag.encryption_applied)
-        .bind(&note_tag.encryption_cipher_text)
-        .bind(&note_tag.master_key_id)
         .execute(&self.pool)
         .await
         .map_err(|e| DatabaseError::QueryFailed(format!("Failed to add note tag: {}", e)))?;

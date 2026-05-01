@@ -40,10 +40,9 @@ impl WebDavClient for ReqwestWebDavClient {
         &self,
         path: &str,
     ) -> std::result::Result<Box<dyn AsyncRead + Unpin + Send>, WebDavError> {
-        match self.get_impl(path).await {
-            Ok(data) => Ok(Box::new(Cursor::new(data))),
-            Err(e) => Err(WebDavError::RequestFailed(format!("{:?}", e))),
-        }
+        self.get_impl(path)
+            .await
+            .map(|data| Box::new(Cursor::new(data)) as Box<dyn AsyncRead + Unpin + Send>)
     }
 
     async fn put(
@@ -52,38 +51,23 @@ impl WebDavClient for ReqwestWebDavClient {
         body: &[u8],
         _size: u64,
     ) -> std::result::Result<(), WebDavError> {
-        match self.put_impl(path, body).await {
-            Ok(_) => Ok(()),
-            Err(e) => Err(WebDavError::RequestFailed(format!("{:?}", e))),
-        }
+        self.put_impl(path, body).await
     }
 
     async fn delete(&self, path: &str) -> std::result::Result<(), WebDavError> {
-        match self.delete_impl(path).await {
-            Ok(_) => Ok(()),
-            Err(e) => Err(WebDavError::RequestFailed(format!("{:?}", e))),
-        }
+        self.delete_impl(path).await
     }
 
     async fn mkcol(&self, path: &str) -> std::result::Result<(), WebDavError> {
-        match self.mkdir_impl(path).await {
-            Ok(_) => Ok(()),
-            Err(e) => Err(WebDavError::RequestFailed(format!("{:?}", e))),
-        }
+        self.mkdir_impl(path).await
     }
 
     async fn exists(&self, path: &str) -> std::result::Result<bool, WebDavError> {
-        match self.exists_impl(path).await {
-            Ok(result) => Ok(result),
-            Err(e) => Err(WebDavError::RequestFailed(format!("{:?}", e))),
-        }
+        self.exists_impl(path).await
     }
 
     async fn stat(&self, path: &str) -> std::result::Result<DavEntry, WebDavError> {
-        let meta = match self.get_file_meta_impl(path).await {
-            Ok(meta) => meta,
-            Err(e) => return Err(WebDavError::RequestFailed(format!("{:?}", e))),
-        };
+        let meta = self.get_file_meta_impl(path).await?;
 
         Ok(DavEntry {
             path: meta.path.clone(),
@@ -118,10 +102,8 @@ impl WebDavClient for ReqwestWebDavClient {
         let lock_path = format!("{}.lock", path);
 
         // Create lock file with token
-        match self.put_impl(&lock_path, lock_token.as_bytes()).await {
-            Ok(_) => Ok(lock_token),
-            Err(e) => Err(WebDavError::RequestFailed(format!("{:?}", e))),
-        }
+        self.put_impl(&lock_path, lock_token.as_bytes()).await?;
+        Ok(lock_token)
     }
 
     async fn refresh_lock(&self, _lock_token: &str) -> std::result::Result<(), WebDavError> {
@@ -131,43 +113,25 @@ impl WebDavClient for ReqwestWebDavClient {
 
     async fn unlock(&self, path: &str, _lock_token: &str) -> std::result::Result<(), WebDavError> {
         let lock_path = format!("{}.lock", path);
-        match self.delete_impl(&lock_path).await {
-            Ok(_) => Ok(()),
-            Err(e) => Err(WebDavError::RequestFailed(format!("{:?}", e))),
-        }
+        self.delete_impl(&lock_path).await
     }
 
     async fn mv(&self, from: &str, to: &str) -> std::result::Result<(), WebDavError> {
         // Download from source
-        let data = match self.get_impl(from).await {
-            Ok(data) => data,
-            Err(e) => return Err(WebDavError::RequestFailed(format!("{:?}", e))),
-        };
+        let data = self.get_impl(from).await?;
 
         // Upload to destination
-        match self.put_impl(to, &data).await {
-            Ok(_) => {}
-            Err(e) => return Err(WebDavError::RequestFailed(format!("{:?}", e))),
-        }
+        self.put_impl(to, &data).await?;
 
         // Delete source
-        match self.delete_impl(from).await {
-            Ok(_) => Ok(()),
-            Err(e) => Err(WebDavError::RequestFailed(format!("{:?}", e))),
-        }
+        self.delete_impl(from).await
     }
 
     async fn copy(&self, from: &str, to: &str) -> std::result::Result<(), WebDavError> {
         // Download from source
-        let data = match self.get_impl(from).await {
-            Ok(data) => data,
-            Err(e) => return Err(WebDavError::RequestFailed(format!("{:?}", e))),
-        };
+        let data = self.get_impl(from).await?;
 
         // Upload to destination
-        match self.put_impl(to, &data).await {
-            Ok(_) => Ok(()),
-            Err(e) => Err(WebDavError::RequestFailed(format!("{:?}", e))),
-        }
+        self.put_impl(to, &data).await
     }
 }

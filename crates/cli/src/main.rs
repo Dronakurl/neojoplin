@@ -78,6 +78,18 @@ enum Commands {
         note: String,
     },
 
+    /// Restore a note to a previous version from the revisions table
+    Restore {
+        /// Note ID or title
+        note: String,
+        /// List available versions instead of restoring
+        #[arg(long)]
+        list: bool,
+        /// Specific revision ID to restore (defaults to latest revision)
+        #[arg(long)]
+        revision: Option<String>,
+    },
+
     /// Synchronize with WebDAV server
     Sync {
         /// WebDAV base URL (uses the configured target if omitted)
@@ -633,6 +645,59 @@ async fn main() -> Result<()> {
             println!("ID: {}", note_obj.id);
             println!();
             println!("{}", note_obj.body);
+            Ok(())
+        }
+
+        Commands::Restore {
+            note,
+            list,
+            revision,
+        } => {
+            let note_obj = if let Some(found) = storage.get_note(&note).await? {
+                found
+            } else {
+                let notes = storage.list_notes(None).await?;
+                let found = notes
+                    .iter()
+                    .find(|n| n.title == note)
+                    .ok_or_else(|| anyhow::anyhow!("Note not found: {}", note))?;
+                storage.get_note(&found.id).await?.unwrap()
+            };
+
+            let revisions = storage.list_note_revisions(&note_obj.id).await?;
+            if revisions.is_empty() {
+                println!("No revisions found for note: {}", note_obj.title);
+                return Ok(());
+            }
+
+            if list {
+                println!("Revisions for {} ({})", note_obj.title, note_obj.id);
+                for rev in revisions {
+                    let ts = neojoplin_core::timestamp_to_datetime(rev.item_updated_time)
+                        .format("%Y-%m-%d %H:%M")
+                        .to_string();
+                    println!("{}  {}  parent={}", ts, rev.id, rev.parent_id);
+                }
+                return Ok(());
+            }
+
+            let target_revision = if let Some(ref revision_id) = revision {
+                revisions
+                    .iter()
+                    .find(|rev| &rev.id == revision_id)
+                    .cloned()
+                    .ok_or_else(|| anyhow::anyhow!("Revision not found: {}", revision_id))?
+            } else {
+                revisions[0].clone()
+            };
+
+            let restored = storage
+                .restore_note_to_revision(&note_obj.id, &target_revision.id)
+                .await?;
+            println!(
+                "Restored note '{}' ({}) to revision {}",
+                restored.title, restored.id, target_revision.id
+            );
             Ok(())
         }
 
