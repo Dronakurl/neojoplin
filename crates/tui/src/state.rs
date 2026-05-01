@@ -1,5 +1,6 @@
 // Application state management
 
+use serde::{Deserialize, Serialize};
 use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
 
@@ -75,8 +76,10 @@ impl NotebookSortMode {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
 pub enum NoteFilterMode {
+    #[default]
     TitleOnly,
     FullText,
 }
@@ -850,6 +853,7 @@ impl AppState {
             } else {
                 NoteFilterMode::TitleOnly
             };
+            self.sync_ui_settings();
         }
         self.filter_input = self.current_filter_query().to_string();
         self.filter_completion = None;
@@ -894,7 +898,10 @@ impl AppState {
     pub fn set_filter_query(&mut self, query: String) {
         match self.filter_target {
             FocusPanel::Notebooks => self.notebook_filter_query = query,
-            FocusPanel::Notes | FocusPanel::Content => self.note_filter_query = query,
+            FocusPanel::Notes | FocusPanel::Content => {
+                self.note_filter_query = query;
+                self.sync_ui_settings();
+            }
         }
     }
 
@@ -914,6 +921,7 @@ impl AppState {
         } else {
             self.show_completed_todos = !self.show_completed_todos;
         }
+        self.sync_ui_settings();
     }
 
     pub fn toggle_completed_only_filter(&mut self) {
@@ -925,9 +933,17 @@ impl AppState {
         }
     }
 
+    /// Sync UI settings from state to settings.ui
+    pub fn sync_ui_settings(&mut self) {
+        self.settings.ui.note_filter_query = self.note_filter_query.clone();
+        self.settings.ui.show_completed_todos = self.show_completed_todos;
+        self.settings.ui.note_filter_mode = self.note_filter_mode;
+    }
+
     pub fn clear_note_filters(&mut self) {
         self.note_filter_query.clear();
         self.completed_only_filter = false;
+        self.sync_ui_settings();
     }
 
     /// The active note text filter query and whether it is exact.

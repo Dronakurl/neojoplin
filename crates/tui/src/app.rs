@@ -126,8 +126,14 @@ impl App {
         state.sort_notes(&mut notes);
         state.set_notes(notes);
 
-        // Load all settings (encryption and sync)
+        // Load all settings (encryption, sync, and UI)
         state.settings.load_all_settings(&data_dir).await?;
+        
+        // Apply loaded UI settings to state
+        state.note_filter_query = state.settings.ui.note_filter_query.clone();
+        state.show_completed_todos = state.settings.ui.show_completed_todos;
+        state.note_filter_mode = state.settings.ui.note_filter_mode;
+        
         let auto_sync_scheduler = AutoSyncScheduler::new(state.settings.auto_sync.interval_seconds);
 
         let mut app = Self {
@@ -575,6 +581,8 @@ impl App {
                     self.state
                         .set_status("Hiding completed todos in the notes list");
                 }
+                let data_dir = neojoplin_core::Config::data_dir()?;
+                self.state.settings.save_all_settings(&data_dir).await?;
             }
 
             KeyCode::Char('C') => {
@@ -668,6 +676,7 @@ impl App {
                 } else if self.state.focus == FocusPanel::Notebooks {
                     // Switch to notes panel when Enter is pressed on notebooks
                     self.state.next_panel(); // Switch from Notebooks to Notes
+                    self.reload_notes().await?;
                 } else if self.state.focus == FocusPanel::Content
                     && self.state.content_view_mode == ContentViewMode::VersionList
                 {
@@ -1142,7 +1151,10 @@ impl App {
     /// Create a new note
     async fn create_note(&mut self) -> Result<()> {
         // Determine parent folder for the new note
-        let parent_id = if self.state.all_notebooks_mode {
+        let parent_id = if self.state.orphan_mode {
+            // In orphan mode, create note without a parent (orphaned)
+            String::new()
+        } else if self.state.all_notebooks_mode {
             // In "All Notebooks" mode, use the first available notebook
             if let Some(folder) = self.state.folders.first() {
                 folder.id.clone()
@@ -1216,7 +1228,10 @@ impl App {
 
     /// Create a new todo
     async fn create_todo(&mut self) -> Result<()> {
-        let parent_id = if self.state.all_notebooks_mode {
+        let parent_id = if self.state.orphan_mode {
+            // In orphan mode, create todo without a parent (orphaned)
+            String::new()
+        } else if self.state.all_notebooks_mode {
             if let Some(folder) = self.state.folders.first() {
                 folder.id.clone()
             } else {
@@ -1564,7 +1579,7 @@ impl App {
                 self.auto_sync_scheduler
                     .set_interval_seconds(self.state.settings.auto_sync.interval_seconds);
                 let data_dir = neojoplin_core::Config::data_dir()?;
-                self.state.settings.save_sync_settings(&data_dir).await?;
+                self.state.settings.save_all_settings(&data_dir).await?;
                 self.state
                     .settings
                     .update_runtime_status(self.state.settings.status.current_conflict_count);
@@ -1614,7 +1629,7 @@ impl App {
             KeyCode::Char('b') if self.state.settings.current_tab == SettingsTab::Status => {
                 self.state.settings.show_ribbon = !self.state.settings.show_ribbon;
                 let data_dir = neojoplin_core::Config::data_dir()?;
-                self.state.settings.save_sync_settings(&data_dir).await?;
+                self.state.settings.save_all_settings(&data_dir).await?;
                 self.state.set_status(if self.state.settings.show_ribbon {
                     "Ribbon enabled"
                 } else {
@@ -1736,12 +1751,13 @@ impl App {
         } else if all_notebooks_mode {
             self.state.set_folder(None);
         } else if self.state.orphan_mode && selected_folder_id.is_none() {
+            // Keep orphan_mode active, don't reset it
             self.state.set_orphan_mode(true);
         } else if let Some(folder_id) = selected_folder_id.as_deref() {
             if !self.state.select_folder_by_id(folder_id) && !self.state.folders.is_empty() {
                 self.state.set_folder(Some(0));
             }
-        } else if self.state.folders.is_empty() {
+        } else if self.state.folders.is_empty() && !self.state.orphan_mode {
             self.state.set_folder(None);
         }
 
@@ -2090,7 +2106,7 @@ impl App {
                             sync.selected_target_index = Some(idx);
                         }
                         let data_dir = neojoplin_core::Config::data_dir()?;
-                        let _ = self.state.settings.save_sync_settings(&data_dir).await;
+                        let _ = self.state.settings.save_all_settings(&data_dir).await;
                         self.state.set_status("Target deleted");
                     }
                 }
@@ -2163,6 +2179,8 @@ impl App {
             KeyCode::Enter => {
                 self.state.close_filter_prompt(false);
                 self.refresh_current_lists().await?;
+                let data_dir = neojoplin_core::Config::data_dir()?;
+                self.state.settings.save_all_settings(&data_dir).await?;
             }
             KeyCode::Esc => {
                 if matches!(self.state.filter_target, FocusPanel::Notebooks) {
@@ -2172,6 +2190,8 @@ impl App {
                 }
                 self.state.close_filter_prompt(false);
                 self.refresh_current_lists().await?;
+                let data_dir = neojoplin_core::Config::data_dir()?;
+                self.state.settings.save_all_settings(&data_dir).await?;
             }
             _ => {}
         }
@@ -2876,7 +2896,7 @@ impl App {
 
         // Save to file
         let data_dir = neojoplin_core::Config::data_dir()?;
-        self.state.settings.save_sync_settings(&data_dir).await?;
+        self.state.settings.save_all_settings(&data_dir).await?;
 
         Ok(())
     }
@@ -2892,7 +2912,7 @@ impl App {
         self.state.settings.sync.activate_target_index = None;
 
         let data_dir = neojoplin_core::Config::data_dir()?;
-        self.state.settings.save_sync_settings(&data_dir).await?;
+        self.state.settings.save_all_settings(&data_dir).await?;
 
         let target_name = self
             .state

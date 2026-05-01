@@ -444,6 +444,11 @@ fn render_notes_panel(f: &mut Frame, state: &AppState, area: Rect) {
             vec![ListItem::new("No matching notes").style(theme.dim())]
         } else if state.trash_mode {
             vec![ListItem::new("Trash is empty").style(theme.dim())]
+        } else if state.orphan_mode {
+            vec![
+                ListItem::new("No orphaned notes").style(theme.dim()),
+                ListItem::new("Press n to create one").style(theme.dim()),
+            ]
         } else if state.all_notebooks_mode || state.selected_folder().is_some() {
             vec![
                 ListItem::new("No notes in this notebook").style(theme.dim()),

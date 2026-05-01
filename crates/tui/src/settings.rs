@@ -366,6 +366,26 @@ impl Default for EncryptionSettings {
     }
 }
 
+use crate::state::NoteFilterMode;
+
+/// UI settings for note filtering and display
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct UiSettings {
+    pub note_filter_query: String,
+    pub show_completed_todos: bool,
+    pub note_filter_mode: NoteFilterMode,
+}
+
+impl UiSettings {
+    pub fn new() -> Self {
+        Self {
+            note_filter_query: String::new(),
+            show_completed_todos: false,
+            note_filter_mode: NoteFilterMode::TitleOnly,
+        }
+    }
+}
+
 /// Application settings
 #[derive(Debug, Clone)]
 pub struct Settings {
@@ -374,6 +394,7 @@ pub struct Settings {
     pub auto_sync: AutoSyncSettings,
     pub status: SyncStatusSettings,
     pub encryption: EncryptionSettings,
+    pub ui: UiSettings,
     pub show_ribbon: bool,
 }
 
@@ -385,6 +406,7 @@ impl Default for Settings {
             auto_sync: AutoSyncSettings::default(),
             status: SyncStatusSettings::default(),
             encryption: EncryptionSettings::default(),
+            ui: UiSettings::new(),
             show_ribbon: true,
         }
     }
@@ -421,6 +443,7 @@ impl Settings {
         self.load_encryption_settings(data_dir).await?;
         self.load_sync_settings(data_dir).await?;
         self.load_sync_status(data_dir).await?;
+        self.load_ui_settings(data_dir).await?;
         Ok(())
     }
 
@@ -768,6 +791,35 @@ impl Settings {
         Ok(())
     }
 
+    /// Load UI settings from disk
+    pub async fn load_ui_settings(&mut self, data_dir: &Path) -> Result<()> {
+        let path = ui_settings_path(data_dir);
+        if path.exists() {
+            let content = tokio::fs::read_to_string(&path).await?;
+            self.ui = serde_json::from_str(&content).unwrap_or_default();
+        }
+        Ok(())
+    }
+
+    /// Save UI settings to disk
+    pub async fn save_ui_settings(&self, data_dir: &Path) -> Result<()> {
+        let path = ui_settings_path(data_dir);
+        tokio::fs::write(
+            &path,
+            serde_json::to_string_pretty(&self.ui)?,
+        )
+        .await?;
+        Ok(())
+    }
+
+    /// Save all settings to disk
+    pub async fn save_all_settings(&self, data_dir: &Path) -> Result<()> {
+        self.save_sync_settings(data_dir).await?;
+        self.save_sync_status(data_dir).await?;
+        self.save_ui_settings(data_dir).await?;
+        Ok(())
+    }
+
     pub fn record_sync_result(
         &mut self,
         target_name: String,
@@ -928,6 +980,10 @@ fn sync_targets_path(data_dir: &Path) -> PathBuf {
 
 fn sync_status_path(data_dir: &Path) -> PathBuf {
     data_dir.join("sync-status.json")
+}
+
+fn ui_settings_path(data_dir: &Path) -> PathBuf {
+    data_dir.join("ui-settings.json")
 }
 
 fn split_sync_url(full_url: &str) -> (String, String) {
