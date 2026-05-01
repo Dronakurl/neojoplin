@@ -57,6 +57,12 @@ pub trait Storage: Send + Sync {
         id: &str,
         timestamp: i64,
     ) -> Result<(), DatabaseError>;
+    async fn update_sync_time_for_item_type(
+        &self,
+        item_type: i32,
+        id: &str,
+        timestamp: i64,
+    ) -> Result<(), DatabaseError>;
     async fn purge_sync_item(&self, item_type: i32, item_id: &str) -> Result<(), DatabaseError>;
 
     // Settings

@@ -361,7 +361,7 @@ impl SyncEngine {
             }
 
             let sync_time = now_ms();
-            self.update_sync_times(&folders, &tags, &notes, sync_time)
+            self.update_sync_times(&folders, &tags, &notes, &note_tags, sync_time)
                 .await?;
         }
 
@@ -822,6 +822,7 @@ impl SyncEngine {
         folders: &[Folder],
         tags: &[Tag],
         notes: &[Note],
+        note_tags: &[NoteTag],
         sync_time: i64,
     ) -> Result<()> {
         for folder in folders {
@@ -839,6 +840,12 @@ impl SyncEngine {
         for note in notes {
             self.storage
                 .update_sync_time("notes", &note.id, sync_time)
+                .await
+                .map_err(SyncError::Local)?;
+        }
+        for note_tag in note_tags {
+            self.storage
+                .update_sync_time("note_tags", &note_tag.id, sync_time)
                 .await
                 .map_err(SyncError::Local)?;
         }
@@ -1149,7 +1156,32 @@ impl SyncEngine {
                     .map_err(SyncError::Local)?;
                 tracing::info!("Stored tag: {}", tag.id);
             }
+            6 => {
+                // NoteTag
+                let note_tag = self.deserialize_note_tag(item_id, &actual_content)?;
+                self.storage
+                    .remove_note_tag(&note_tag.note_id, &note_tag.tag_id)
+                    .await
+                    .map_err(SyncError::Local)?;
+                self.storage
+                    .add_note_tag(&note_tag)
+                    .await
+                    .map_err(SyncError::Local)?;
+                self.storage
+                    .update_sync_time("note_tags", &note_tag.id, now_ms())
+                    .await
+                    .map_err(SyncError::Local)?;
+                tracing::info!(
+                    "Stored note-tag: {} ({})",
+                    note_tag.note_id,
+                    note_tag.tag_id
+                );
+            }
             _ => {
+                self.storage
+                    .update_sync_time_for_item_type(type_num, item_id, now_ms())
+                    .await
+                    .map_err(SyncError::Local)?;
                 tracing::warn!("Unsupported item type {} for item {}", type_num, item_id);
             }
         }
@@ -1268,7 +1300,7 @@ impl SyncEngine {
                     .map_err(SyncError::Local)?;
                 tracing::debug!("Stored encrypted folder: {}", folder.id);
             }
-            3 => {
+            5 => {
                 // Tag
                 let tag = Tag {
                     id: item_id.to_string(),
@@ -1302,7 +1334,7 @@ impl SyncEngine {
                     .map_err(SyncError::Local)?;
                 tracing::debug!("Stored encrypted tag: {}", tag.id);
             }
-            5 => {
+            6 => {
                 // NoteTag
                 let note_id = get_metadata_str("note_id", "");
                 let tag_id = get_metadata_str("tag_id", "");
@@ -1321,6 +1353,10 @@ impl SyncEngine {
                 };
 
                 self.storage
+                    .remove_note_tag(&note_tag.note_id, &note_tag.tag_id)
+                    .await
+                    .map_err(SyncError::Local)?;
+                self.storage
                     .add_note_tag(&note_tag)
                     .await
                     .map_err(SyncError::Local)?;
@@ -1331,6 +1367,10 @@ impl SyncEngine {
                 tracing::debug!("Stored encrypted note-tag: {}", note_tag.id);
             }
             _ => {
+                self.storage
+                    .update_sync_time_for_item_type(type_num, item_id, now_ms())
+                    .await
+                    .map_err(SyncError::Local)?;
                 tracing::warn!(
                     "Unsupported encrypted item type {} for item {}",
                     type_num,
@@ -1870,6 +1910,55 @@ impl SyncEngine {
         Ok(tag)
     }
 
+    fn deserialize_note_tag(&self, id: &str, content: &str) -> Result<NoteTag> {
+        let mut note_tag = NoteTag {
+            id: id.to_string(),
+            ..Default::default()
+        };
+
+        let (_, props_part) = self.split_content_and_properties(content);
+
+        for line in props_part.lines() {
+            if let Some((key, value)) = line.split_once(": ") {
+                let value = value.trim();
+                match key.trim() {
+                    "id" => note_tag.id = value.to_string(),
+                    "note_id" => note_tag.note_id = value.to_string(),
+                    "tag_id" => note_tag.tag_id = value.to_string(),
+                    "created_time" => note_tag.created_time = self.iso_to_ms(value).unwrap_or(0),
+                    "updated_time" => note_tag.updated_time = self.iso_to_ms(value).unwrap_or(0),
+                    "user_created_time" => {
+                        note_tag.user_created_time = self.iso_to_ms(value).unwrap_or(0)
+                    }
+                    "user_updated_time" => {
+                        note_tag.user_updated_time = self.iso_to_ms(value).unwrap_or(0)
+                    }
+                    "is_shared" => note_tag.is_shared = value.parse().unwrap_or(0),
+                    "encryption_applied" => {
+                        note_tag.encryption_applied = value.parse().unwrap_or(0)
+                    }
+                    "encryption_cipher_text" => {
+                        note_tag.encryption_cipher_text = if !value.is_empty() {
+                            Some(value.to_string())
+                        } else {
+                            None
+                        }
+                    }
+                    "master_key_id" => {
+                        note_tag.master_key_id = if !value.is_empty() {
+                            Some(value.to_string())
+                        } else {
+                            None
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+
+        Ok(note_tag)
+    }
+
     /// Split Joplin item content into text (title+body) and properties sections.
     /// Properties start after the last sequence of "key: value" lines ending with "type_: N".
     fn split_content_and_properties<'a>(&self, content: &'a str) -> (&'a str, &'a str) {
@@ -2361,6 +2450,14 @@ mod tests {
         async fn update_sync_time(
             &self,
             _: &str,
+            _: &str,
+            _: i64,
+        ) -> std::result::Result<(), joplin_domain::DatabaseError> {
+            Ok(())
+        }
+        async fn update_sync_time_for_item_type(
+            &self,
+            _: i32,
             _: &str,
             _: i64,
         ) -> std::result::Result<(), joplin_domain::DatabaseError> {

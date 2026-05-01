@@ -195,6 +195,15 @@ impl Storage for MockStorage {
         Ok(())
     }
 
+    async fn update_sync_time_for_item_type(
+        &self,
+        _item_type: i32,
+        _id: &str,
+        _timestamp: i64,
+    ) -> Result<(), DatabaseError> {
+        Ok(())
+    }
+
     async fn purge_sync_item(&self, item_type: i32, item_id: &str) -> Result<(), DatabaseError> {
         match item_type {
             1 => {

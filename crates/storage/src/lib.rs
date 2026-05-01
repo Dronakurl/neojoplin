@@ -1631,6 +1631,16 @@ impl Storage for SqliteStorage {
             }
         };
 
+        self.update_sync_time_for_item_type(item_type, id, timestamp)
+            .await
+    }
+
+    async fn update_sync_time_for_item_type(
+        &self,
+        item_type: i32,
+        id: &str,
+        timestamp: i64,
+    ) -> Result<(), DatabaseError> {
         // First, check if the item exists in sync_items
         let existing = sqlx::query_as::<_, SyncItem>(
             "SELECT * FROM sync_items WHERE item_id = ? AND item_type = ?",

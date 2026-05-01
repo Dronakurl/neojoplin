@@ -62,11 +62,62 @@ pub struct App {
 }
 
 #[derive(Default, Debug, Clone, Copy)]
+struct SyncItemBreakdown {
+    notes: usize,
+    folders: usize,
+    tags: usize,
+    note_tags: usize,
+    other: usize,
+}
+
+impl SyncItemBreakdown {
+    fn record(&mut self, item_type: &str) {
+        match item_type {
+            "note" => self.notes += 1,
+            "folder" => self.folders += 1,
+            "tag" => self.tags += 1,
+            "note_tag" => self.note_tags += 1,
+            _ => self.other += 1,
+        }
+    }
+
+    fn total(&self) -> usize {
+        self.notes + self.folders + self.tags + self.note_tags + self.other
+    }
+}
+
+#[derive(Default, Debug, Clone, Copy)]
 struct SyncStats {
-    uploaded_notes: usize,
-    downloaded_notes: usize,
-    uploaded_items: usize,
-    downloaded_items: usize,
+    uploaded: SyncItemBreakdown,
+    downloaded: SyncItemBreakdown,
+}
+
+impl SyncStats {
+    fn record_upload(&mut self, item_type: &str) {
+        self.uploaded.record(item_type);
+    }
+
+    fn record_download(&mut self, item_type: &str) {
+        self.downloaded.record(item_type);
+    }
+
+    fn summary(self) -> String {
+        format!(
+            "↑ total:{} n:{} f:{} t:{} nt:{} o:{} | ↓ total:{} n:{} f:{} t:{} nt:{} o:{}",
+            self.uploaded.total(),
+            self.uploaded.notes,
+            self.uploaded.folders,
+            self.uploaded.tags,
+            self.uploaded.note_tags,
+            self.uploaded.other,
+            self.downloaded.total(),
+            self.downloaded.notes,
+            self.downloaded.folders,
+            self.downloaded.tags,
+            self.downloaded.note_tags,
+            self.downloaded.other
+        )
+    }
 }
 
 impl App {
@@ -128,12 +179,12 @@ impl App {
 
         // Load all settings (encryption, sync, and UI)
         state.settings.load_all_settings(&data_dir).await?;
-        
+
         // Apply loaded UI settings to state
         state.note_filter_query = state.settings.ui.note_filter_query.clone();
         state.show_completed_todos = state.settings.ui.show_completed_todos;
         state.note_filter_mode = state.settings.ui.note_filter_mode;
-        
+
         let auto_sync_scheduler = AutoSyncScheduler::new(state.settings.auto_sync.interval_seconds);
 
         let mut app = Self {
@@ -895,16 +946,10 @@ impl App {
                         let Some(event) = maybe_event else { continue };
                         match event {
                             SyncEvent::ItemUploadComplete { item_type, .. } => {
-                                stats.uploaded_items += 1;
-                                if item_type == "note" {
-                                    stats.uploaded_notes += 1;
-                                }
+                                stats.record_upload(&item_type);
                             }
                             SyncEvent::ItemDownloadComplete { item_type, .. } => {
-                                stats.downloaded_items += 1;
-                                if item_type == "note" {
-                                    stats.downloaded_notes += 1;
-                                }
+                                stats.record_download(&item_type);
                             }
                             _ => {}
                         }
@@ -915,16 +960,10 @@ impl App {
             while let Ok(event) = event_rx.try_recv() {
                 match event {
                     SyncEvent::ItemUploadComplete { item_type, .. } => {
-                        stats.uploaded_items += 1;
-                        if item_type == "note" {
-                            stats.uploaded_notes += 1;
-                        }
+                        stats.record_upload(&item_type);
                     }
                     SyncEvent::ItemDownloadComplete { item_type, .. } => {
-                        stats.downloaded_items += 1;
-                        if item_type == "note" {
-                            stats.downloaded_notes += 1;
-                        }
+                        stats.record_download(&item_type);
                     }
                     _ => {}
                 }
@@ -953,13 +992,8 @@ impl App {
                             encryption_enabled,
                         );
                         self.state.settings.save_sync_status(&data_dir).await?;
-                        self.state.set_status(&format!(
-                            "✓ Sync completed (notes: ↑{} ↓{}, items: ↑{} ↓{})",
-                            stats.uploaded_notes,
-                            stats.downloaded_notes,
-                            stats.uploaded_items,
-                            stats.downloaded_items
-                        ));
+                        self.state
+                            .set_status(&format!("✓ Sync completed ({})", stats.summary()));
                         let selected_folder_id =
                             self.state.selected_folder_id().map(str::to_string);
                         let selected_note_id = self.state.selected_note_id().map(str::to_string);
@@ -3585,12 +3619,12 @@ fn resolve_folder_destination(folders: &[Folder], title: &str) -> Result<(String
         .iter()
         .filter(|folder| folder.title.to_lowercase() == normalized)
         .collect();
-    
+
     if plain_matches.len() == 1 {
         let folder = plain_matches[0];
         return Ok((folder.id.clone(), folder.title.clone()));
     }
-    
+
     // If multiple plain matches, try display names (for disambiguated names from tab completion)
     let display_names = build_folder_display_names(folders);
     if let Some((folder_id, display_name)) = display_names

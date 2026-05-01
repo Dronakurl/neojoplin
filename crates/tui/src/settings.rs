@@ -804,11 +804,7 @@ impl Settings {
     /// Save UI settings to disk
     pub async fn save_ui_settings(&self, data_dir: &Path) -> Result<()> {
         let path = ui_settings_path(data_dir);
-        tokio::fs::write(
-            &path,
-            serde_json::to_string_pretty(&self.ui)?,
-        )
-        .await?;
+        tokio::fs::write(&path, serde_json::to_string_pretty(&self.ui)?).await?;
         Ok(())
     }
 
