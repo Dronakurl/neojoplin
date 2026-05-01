@@ -53,6 +53,12 @@ pub struct SyncEngine {
     context: SyncContext,
     sync_info: Option<SyncInfo>,
     e2ee_service: Option<E2eeService>,
+    /// Cached remote items list for performance optimization
+    cached_remote_items: Option<Vec<RemoteItem>>,
+    /// Timestamp when remote items were last cached
+    remote_items_cache_time: i64,
+    /// Cache TTL in milliseconds (default 30 seconds)
+    remote_items_cache_ttl: i64,
 }
 
 impl SyncEngine {
@@ -68,6 +74,9 @@ impl SyncEngine {
             context: SyncContext::default(),
             sync_info: None,
             e2ee_service: None,
+            cached_remote_items: None,
+            remote_items_cache_time: 0,
+            remote_items_cache_ttl: 30000, // 30 seconds
         }
     }
 
@@ -489,7 +498,7 @@ impl SyncEngine {
     }
 
     /// Phase 3: Download remote changes (delta)
-    async fn phase_delta(&self) -> Result<()> {
+    async fn phase_delta(&mut self) -> Result<()> {
         let _ = self
             .event_tx
             .send(SyncEvent::PhaseStarted(SyncPhase::Delta));
@@ -771,8 +780,23 @@ impl SyncEngine {
         Ok(())
     }
 
+    /// Check if cached remote items are still valid (within TTL)
+    fn is_remote_items_cache_valid(&self) -> bool {
+        if self.cached_remote_items.is_none() {
+            return false;
+        }
+        let now = now_ms();
+        now - self.remote_items_cache_time < self.remote_items_cache_ttl
+    }
+
     /// List all remote items (Joplin stores all at root level as {id}.md)
-    async fn list_remote_items(&self) -> Result<Vec<RemoteItem>> {
+    async fn list_remote_items(&mut self) -> Result<Vec<RemoteItem>> {
+        // Return cached items if still valid
+        if self.is_remote_items_cache_valid() {
+            tracing::debug!("Using cached remote items list");
+            return Ok(self.cached_remote_items.clone().unwrap_or_default());
+        }
+
         let mut remote_items = Vec::new();
 
         match self.webdav.list(&self.context.remote_path).await {
@@ -801,6 +825,10 @@ impl SyncEngine {
                     }
                 }
                 tracing::info!("Found {} remote items", remote_items.len());
+                
+                // Cache the results
+                self.cached_remote_items = Some(remote_items.clone());
+                self.remote_items_cache_time = now_ms();
             }
             Err(e) => {
                 tracing::warn!("Failed to list remote items: {}", e);
