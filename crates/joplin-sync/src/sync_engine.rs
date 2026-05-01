@@ -3,6 +3,7 @@
 use crate::e2ee::E2eeService;
 use crate::sync_info::SyncInfo;
 use futures::io::AsyncReadExt;
+use futures::stream::{self, StreamExt};
 use joplin_domain::{
     now_ms, Folder, Note, NoteTag, Result, Storage, SyncError, SyncEvent, SyncPhase, SyncTarget,
     Tag, WebDavClient,
@@ -523,20 +524,45 @@ impl SyncEngine {
             let total = items_to_download.len();
             tracing::info!("Starting delta download: {} items to download", total);
 
-            for (i, remote_item) in items_to_download.iter().enumerate() {
-                tracing::debug!(
-                    "Downloading item {}/{}: {} ({:?})",
-                    i + 1,
-                    total,
-                    remote_item.id,
-                    remote_item.item_type
-                );
-                if let Err(e) = self
-                    .download_item(&remote_item.id, &remote_item.item_type)
-                    .await
-                {
+            // Download items in parallel with a concurrency limit of 10
+            // This matches Joplin's default sync.maxConcurrentConnections
+            // Clone self components for parallel downloads
+            let storage = self.storage.clone();
+            let webdav = self.webdav.clone();
+            let event_tx = self.event_tx.clone();
+            let context = self.context.clone();
+            let e2ee_opt = self.e2ee_service.clone();
+
+            let download_futures: Vec<_> = items_to_download.iter().map(|remote_item| {
+                let id = remote_item.id.clone();
+                let item_type = remote_item.item_type;
+                let storage = storage.clone();
+                let webdav = webdav.clone();
+                let event_tx = event_tx.clone();
+                let context = context.clone();
+                let e2ee_service = e2ee_opt.clone();
+                async move {
+                    tracing::debug!("Downloading item: {} ({:?})", id, item_type);
+                    // Create a temporary sync engine just for this download
+                    let mut temp_engine = SyncEngine::new(storage, webdav, event_tx)
+                        .with_remote_path(context.remote_path.clone());
+                    if let Some(e2ee) = e2ee_service {
+                        temp_engine = temp_engine.with_e2ee(e2ee);
+                    }
+                    let result = temp_engine.download_item(&id, &item_type).await;
+                    (id, result)
+                }
+            }).collect();
+
+            let results: Vec<_> = stream::iter(download_futures)
+                .buffer_unordered(10) // Parallelize with max 10 concurrent downloads
+                .collect()
+                .await;
+
+            for (i, (id, result)) in results.into_iter().enumerate() {
+                if let Err(e) = result {
                     let _ = self.event_tx.send(SyncEvent::Warning {
-                        message: format!("Failed to download {}: {}", remote_item.id, e),
+                        message: format!("Failed to download {}: {}", id, e),
                     });
                 }
                 self.report_progress(SyncPhase::Delta, i + 1, total, "Downloading remote changes");
