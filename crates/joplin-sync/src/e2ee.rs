@@ -106,9 +106,9 @@ impl EncryptionMethod {
 
 /// JED format header
 #[derive(Debug, Clone)]
-pub struct JedHeader {
-    pub encryption_method: EncryptionMethod,
-    pub master_key_id: String, // 32 hex chars (no dashes)
+struct JedHeader {
+    encryption_method: EncryptionMethod,
+    master_key_id: String, // 32 hex chars (no dashes)
 }
 
 /// Master key information (compatible with info.json format)
@@ -235,6 +235,30 @@ impl E2eeService {
         self.active_master_key_id
             .as_ref()
             .and_then(|id| self.master_keys.get(id))
+    }
+
+    /// Check if a master key is loaded (available for decryption)
+    pub fn has_master_key(&self, key_id: &str) -> bool {
+        if self.master_keys.contains_key(key_id) {
+            return true;
+        }
+        // Try adding dashes to make it a UUID format
+        if key_id.len() == 32 {
+            let with_dashes = format!(
+                "{}-{}-{}-{}-{}",
+                &key_id[0..8],
+                &key_id[8..12],
+                &key_id[12..16],
+                &key_id[16..20],
+                &key_id[20..32]
+            );
+            if self.master_keys.contains_key(&with_dashes) {
+                return true;
+            }
+        }
+        // Try removing dashes
+        let without_dashes = key_id.replace('-', "");
+        self.master_keys.contains_key(&without_dashes)
     }
 
     /// Look up a master key by ID, trying both with and without UUID dashes
@@ -401,6 +425,13 @@ impl E2eeService {
         }
 
         Ok(result)
+    }
+
+    /// Check if a JED-formatted encrypted string can be decrypted with loaded master keys
+    pub fn can_decrypt_jed(&self, jed_data: &str) -> bool {
+        parse_jed_header(jed_data)
+            .map(|(header, _)| self.has_master_key(&header.master_key_id))
+            .unwrap_or(false)
     }
 
     /// Decrypt a JED-formatted encrypted string

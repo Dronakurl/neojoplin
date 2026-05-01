@@ -561,9 +561,13 @@ impl SyncEngine {
 
             for (i, (id, result)) in results.into_iter().enumerate() {
                 if let Err(e) = result {
-                    let _ = self.event_tx.send(SyncEvent::Warning {
-                        message: format!("Failed to download {}: {}", id, e),
-                    });
+                    let error_msg = format!("{}", e);
+                    // Only send warning if it's not a master key not loaded error (which is expected)
+                    if !error_msg.contains("Master key not loaded") {
+                        let _ = self.event_tx.send(SyncEvent::Warning {
+                            message: format!("Failed to download {}: {}", id, e),
+                        });
+                    }
                 }
                 self.report_progress(SyncPhase::Delta, i + 1, total, "Downloading remote changes");
             }
@@ -985,8 +989,21 @@ impl SyncEngine {
 
         // Determine actual content to parse
         let actual_content = if encryption_applied == 1 && !encryption_cipher_text.is_empty() {
-            // Item is encrypted — decrypt the cipher text to get the real content
+            // Item is encrypted — check if we can decrypt it before attempting
             if let Some(ref e2ee) = self.e2ee_service {
+                // Check if we have the master key needed for decryption
+                if !e2ee.can_decrypt_jed(&encryption_cipher_text) {
+                    tracing::debug!(
+                        "Skipping decryption of item {} - master key not loaded",
+                        item_id
+                    );
+                    // Return a specific error that can be handled gracefully
+                    return Err(SyncError::Server(format!(
+                        "Master key not loaded for item {}",
+                        item_id
+                    ))
+                    .into());
+                }
                 match e2ee.decrypt_string(&encryption_cipher_text) {
                     Ok(decrypted) => {
                         tracing::info!("Decrypted item {} (type {})", item_id, type_num);
