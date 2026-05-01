@@ -561,13 +561,9 @@ impl SyncEngine {
 
             for (i, (id, result)) in results.into_iter().enumerate() {
                 if let Err(e) = result {
-                    let error_msg = format!("{}", e);
-                    // Only send warning if it's not a master key not loaded error (which is expected)
-                    if !error_msg.contains("Master key not loaded") {
-                        let _ = self.event_tx.send(SyncEvent::Warning {
-                            message: format!("Failed to download {}: {}", id, e),
-                        });
-                    }
+                    let _ = self.event_tx.send(SyncEvent::Warning {
+                        message: format!("Failed to download {}: {}", id, e),
+                    });
                 }
                 self.report_progress(SyncPhase::Delta, i + 1, total, "Downloading remote changes");
             }
@@ -987,6 +983,8 @@ impl SyncEngine {
             .cloned()
             .unwrap_or_default();
 
+        let master_key_id = metadata.get("master_key_id").cloned();
+
         // Determine actual content to parse
         let actual_content = if encryption_applied == 1 && !encryption_cipher_text.is_empty() {
             // Item is encrypted — check if we can decrypt it before attempting
@@ -994,15 +992,18 @@ impl SyncEngine {
                 // Check if we have the master key needed for decryption
                 if !e2ee.can_decrypt_jed(&encryption_cipher_text) {
                     tracing::debug!(
-                        "Skipping decryption of item {} - master key not loaded",
+                        "Storing encrypted item {} without decryption - master key not loaded",
                         item_id
                     );
-                    // Return a specific error that can be handled gracefully
-                    return Err(SyncError::Server(format!(
-                        "Master key not loaded for item {}",
-                        item_id
-                    ))
-                    .into());
+                    // Store the encrypted item with its metadata
+                    return self.store_encrypted_item(
+                        item_id,
+                        type_num,
+                        &metadata,
+                        &encryption_cipher_text,
+                        master_key_id.as_deref(),
+                    )
+                    .await;
                 }
                 match e2ee.decrypt_string(&encryption_cipher_text) {
                     Ok(decrypted) => {
@@ -1101,6 +1102,178 @@ impl SyncEngine {
             }
             _ => {
                 tracing::warn!("Unsupported item type {} for item {}", type_num, item_id);
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Store an encrypted item without decryption (when master key is not available)
+    /// This allows storing the item for later decryption when the key becomes available
+    async fn store_encrypted_item(
+        &self,
+        item_id: &str,
+        type_num: i32,
+        metadata: &std::collections::HashMap<String, String>,
+        encryption_cipher_text: &str,
+        master_key_id: Option<&str>,
+    ) -> Result<()> {
+        tracing::debug!(
+            "Storing encrypted item {} (type {}) without decryption",
+            item_id,
+            type_num
+        );
+
+        // Helper to extract metadata fields
+        let get_metadata = |key: &str, default: i64| -> i64 {
+            metadata
+                .get(key)
+                .and_then(|v| self.iso_to_ms(v).ok())
+                .unwrap_or(default)
+        };
+
+        let get_metadata_str = |key: &str, default: &str| -> String {
+            metadata.get(key).cloned().unwrap_or_else(|| default.to_string())
+        };
+
+        match type_num {
+            1 => {
+                // Note
+                let note = Note {
+                    id: item_id.to_string(),
+                    title: get_metadata_str("title", ""),
+                    body: String::new(), // Empty body for encrypted items
+                    parent_id: get_metadata_str("parent_id", ""),
+                    created_time: get_metadata("created_time", 0),
+                    updated_time: get_metadata("updated_time", 0),
+                    user_created_time: get_metadata("user_created_time", 0),
+                    user_updated_time: get_metadata("user_updated_time", 0),
+                    encryption_applied: 1,
+                    encryption_cipher_text: Some(encryption_cipher_text.to_string()),
+                    master_key_id: master_key_id.map(|s| s.to_string()),
+                    ..Default::default()
+                };
+
+                let exists = matches!(self.storage.get_note(&note.id).await, Ok(Some(_)));
+                if exists {
+                    self.storage
+                        .update_note(&note)
+                        .await
+                        .map_err(SyncError::Local)?;
+                } else {
+                    self.storage
+                        .create_note(&note)
+                        .await
+                        .map_err(SyncError::Local)?;
+                }
+                self.storage
+                    .update_sync_time("notes", &note.id, now_ms())
+                    .await
+                    .map_err(SyncError::Local)?;
+                tracing::debug!("Stored encrypted note: {}", note.id);
+            }
+            2 => {
+                // Folder
+                let folder = Folder {
+                    id: item_id.to_string(),
+                    title: get_metadata_str("title", ""),
+                    parent_id: get_metadata_str("parent_id", ""),
+                    created_time: get_metadata("created_time", 0),
+                    updated_time: get_metadata("updated_time", 0),
+                    user_created_time: get_metadata("user_created_time", 0),
+                    user_updated_time: get_metadata("user_updated_time", 0),
+                    encryption_applied: 1,
+                    encryption_cipher_text: Some(encryption_cipher_text.to_string()),
+                    master_key_id: master_key_id.map(|s| s.to_string()),
+                    ..Default::default()
+                };
+
+                let exists = matches!(self.storage.get_folder(&folder.id).await, Ok(Some(_)));
+                if exists {
+                    self.storage
+                        .update_folder(&folder)
+                        .await
+                        .map_err(SyncError::Local)?;
+                } else {
+                    self.storage
+                        .create_folder(&folder)
+                        .await
+                        .map_err(SyncError::Local)?;
+                }
+                self.storage
+                    .update_sync_time("folders", &folder.id, now_ms())
+                    .await
+                    .map_err(SyncError::Local)?;
+                tracing::debug!("Stored encrypted folder: {}", folder.id);
+            }
+            3 => {
+                // Tag
+                let tag = Tag {
+                    id: item_id.to_string(),
+                    title: get_metadata_str("title", ""),
+                    parent_id: get_metadata_str("parent_id", ""),
+                    created_time: get_metadata("created_time", 0),
+                    updated_time: get_metadata("updated_time", 0),
+                    user_created_time: get_metadata("user_created_time", 0),
+                    user_updated_time: get_metadata("user_updated_time", 0),
+                    encryption_applied: 1,
+                    encryption_cipher_text: Some(encryption_cipher_text.to_string()),
+                    master_key_id: master_key_id.map(|s| s.to_string()),
+                    ..Default::default()
+                };
+
+                let exists = matches!(self.storage.get_tag(&tag.id).await, Ok(Some(_)));
+                if exists {
+                    self.storage
+                        .update_tag(&tag)
+                        .await
+                        .map_err(SyncError::Local)?;
+                } else {
+                    self.storage
+                        .create_tag(&tag)
+                        .await
+                        .map_err(SyncError::Local)?;
+                }
+                self.storage
+                    .update_sync_time("tags", &tag.id, now_ms())
+                    .await
+                    .map_err(SyncError::Local)?;
+                tracing::debug!("Stored encrypted tag: {}", tag.id);
+            }
+            5 => {
+                // NoteTag
+                let note_id = get_metadata_str("note_id", "");
+                let tag_id = get_metadata_str("tag_id", "");
+                let note_tag = NoteTag {
+                    id: item_id.to_string(),
+                    note_id,
+                    tag_id,
+                    created_time: get_metadata("created_time", 0),
+                    updated_time: get_metadata("updated_time", 0),
+                    user_created_time: get_metadata("user_created_time", 0),
+                    user_updated_time: get_metadata("user_updated_time", 0),
+                    is_shared: get_metadata("is_shared", 0) as i32,
+                    encryption_applied: 1,
+                    encryption_cipher_text: Some(encryption_cipher_text.to_string()),
+                    master_key_id: master_key_id.map(|s| s.to_string()),
+                };
+
+                self.storage
+                    .add_note_tag(&note_tag)
+                    .await
+                    .map_err(SyncError::Local)?;
+                self.storage
+                    .update_sync_time("note_tags", &note_tag.id, now_ms())
+                    .await
+                    .map_err(SyncError::Local)?;
+                tracing::debug!("Stored encrypted note-tag: {}", note_tag.id);
+            }
+            _ => {
+                tracing::warn!(
+                    "Unsupported encrypted item type {} for item {}",
+                    type_num,
+                    item_id
+                );
             }
         }
 

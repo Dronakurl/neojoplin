@@ -190,6 +190,9 @@ pub struct Tag {
     pub user_updated_time: i64,
     pub parent_id: String,
     pub is_shared: i32,
+    pub encryption_applied: i32,
+    pub encryption_cipher_text: Option<String>,
+    pub master_key_id: Option<String>,
 }
 
 impl Default for Tag {
@@ -203,6 +206,9 @@ impl Default for Tag {
             user_updated_time: 0,
             parent_id: String::new(),
             is_shared: 0,
+            encryption_applied: 0,
+            encryption_cipher_text: None,
+            master_key_id: None,
         }
     }
 }
@@ -215,7 +221,12 @@ pub struct NoteTag {
     pub tag_id: String,
     pub created_time: i64,
     pub updated_time: i64,
+    pub user_created_time: i64,
+    pub user_updated_time: i64,
     pub is_shared: i32,
+    pub encryption_applied: i32,
+    pub encryption_cipher_text: Option<String>,
+    pub master_key_id: Option<String>,
 }
 
 impl Default for NoteTag {
@@ -226,7 +237,12 @@ impl Default for NoteTag {
             tag_id: String::new(),
             created_time: now_ms(),
             updated_time: now_ms(),
+            user_created_time: 0,
+            user_updated_time: 0,
             is_shared: 0,
+            encryption_applied: 0,
+            encryption_cipher_text: None,
+            master_key_id: None,
         }
     }
 }
@@ -409,6 +425,9 @@ impl sqlx::FromRow<'_, sqlx::sqlite::SqliteRow> for Tag {
             user_updated_time: row.try_get("user_updated_time")?,
             parent_id: row.try_get("parent_id").unwrap_or_else(|_| String::new()),
             is_shared: row.try_get("is_shared").unwrap_or(0),
+            encryption_applied: row.try_get("encryption_applied").unwrap_or(0),
+            encryption_cipher_text: row.try_get("encryption_cipher_text").ok(),
+            master_key_id: row.try_get("master_key_id").ok(),
         })
     }
 }
@@ -422,7 +441,12 @@ impl sqlx::FromRow<'_, sqlx::sqlite::SqliteRow> for NoteTag {
             tag_id: row.try_get("tag_id")?,
             created_time: row.try_get("created_time")?,
             updated_time: row.try_get("updated_time")?,
-            is_shared: row.try_get("is_shared")?,
+            user_created_time: row.try_get("user_created_time").unwrap_or(0),
+            user_updated_time: row.try_get("user_updated_time").unwrap_or(0),
+            is_shared: row.try_get("is_shared").unwrap_or(0),
+            encryption_applied: row.try_get("encryption_applied").unwrap_or(0),
+            encryption_cipher_text: row.try_get("encryption_cipher_text").ok(),
+            master_key_id: row.try_get("master_key_id").ok(),
         })
     }
 }

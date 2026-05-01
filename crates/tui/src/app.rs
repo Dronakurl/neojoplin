@@ -2160,6 +2160,9 @@ impl App {
                 user_updated_time: 0,
                 parent_id: String::new(),
                 is_shared: 0,
+                encryption_applied: 0,
+                encryption_cipher_text: None,
+                master_key_id: None,
             };
             self.storage.create_tag(&tag).await?;
             tag
@@ -3056,6 +3059,9 @@ impl App {
                 user_updated_time: 0,
                 parent_id: String::new(),
                 is_shared: 0,
+                encryption_applied: 0,
+                encryption_cipher_text: None,
+                master_key_id: None,
             };
             self.storage.create_tag(&tag).await?;
             tag
@@ -3090,7 +3096,12 @@ impl App {
             tag_id: tag_id.to_string(),
             created_time: now_ms(),
             updated_time: now_ms(),
+            user_created_time: 0,
+            user_updated_time: 0,
             is_shared: 0,
+            encryption_applied: 0,
+            encryption_cipher_text: None,
+            master_key_id: None,
         };
         self.storage.add_note_tag(&note_tag).await?;
         Ok(())

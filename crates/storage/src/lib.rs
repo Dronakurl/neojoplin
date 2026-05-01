@@ -733,8 +733,8 @@ impl Storage for SqliteStorage {
             INSERT INTO tags (
                 id, title, created_time, updated_time,
                 user_created_time, user_updated_time, parent_id,
-                is_shared
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                is_shared, encryption_applied, encryption_cipher_text, master_key_id
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             "#,
         )
         .bind(&tag.id)
@@ -745,6 +745,9 @@ impl Storage for SqliteStorage {
         .bind(tag.user_updated_time)
         .bind(&tag.parent_id)
         .bind(tag.is_shared)
+        .bind(tag.encryption_applied)
+        .bind(&tag.encryption_cipher_text)
+        .bind(&tag.master_key_id)
         .execute(&self.pool)
         .await
         .map_err(|e| DatabaseError::QueryFailed(format!("Failed to create tag: {}", e)))?;
@@ -758,7 +761,7 @@ impl Storage for SqliteStorage {
             SELECT
                 id, title, created_time, updated_time,
                 user_created_time, user_updated_time, parent_id,
-                is_shared
+                is_shared, encryption_applied, encryption_cipher_text, master_key_id
             FROM tags WHERE id = ?
             "#,
         )
@@ -775,7 +778,8 @@ impl Storage for SqliteStorage {
             r#"
             UPDATE tags SET
                 title = ?, updated_time = ?,
-                user_updated_time = ?, parent_id = ?
+                user_updated_time = ?, parent_id = ?,
+                encryption_applied = ?, encryption_cipher_text = ?, master_key_id = ?
             WHERE id = ?
             "#,
         )
@@ -783,6 +787,9 @@ impl Storage for SqliteStorage {
         .bind(tag.updated_time)
         .bind(tag.user_updated_time)
         .bind(&tag.parent_id)
+        .bind(tag.encryption_applied)
+        .bind(&tag.encryption_cipher_text)
+        .bind(&tag.master_key_id)
         .bind(&tag.id)
         .execute(&self.pool)
         .await
@@ -834,7 +841,7 @@ impl Storage for SqliteStorage {
             SELECT
                 id, title, created_time, updated_time,
                 user_created_time, user_updated_time, parent_id,
-                is_shared
+                is_shared, encryption_applied, encryption_cipher_text, master_key_id
             FROM tags
             ORDER BY title ASC
             "#,
@@ -851,8 +858,10 @@ impl Storage for SqliteStorage {
         sqlx::query(
             r#"
             INSERT INTO note_tags (
-                id, note_id, tag_id, created_time, updated_time, is_shared
-            ) VALUES (?, ?, ?, ?, ?, ?)
+                id, note_id, tag_id, created_time, updated_time,
+                user_created_time, user_updated_time, is_shared,
+                encryption_applied, encryption_cipher_text, master_key_id
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             "#,
         )
         .bind(&note_tag.id)
@@ -860,7 +869,12 @@ impl Storage for SqliteStorage {
         .bind(&note_tag.tag_id)
         .bind(note_tag.created_time)
         .bind(note_tag.updated_time)
+        .bind(note_tag.user_created_time)
+        .bind(note_tag.user_updated_time)
         .bind(note_tag.is_shared)
+        .bind(note_tag.encryption_applied)
+        .bind(&note_tag.encryption_cipher_text)
+        .bind(&note_tag.master_key_id)
         .execute(&self.pool)
         .await
         .map_err(|e| DatabaseError::QueryFailed(format!("Failed to add note tag: {}", e)))?;
