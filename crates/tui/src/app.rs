@@ -10,6 +10,8 @@ use ratatui::{backend::CrosstermBackend, Terminal};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Duration;
+use tokio::sync::mpsc;
+use tokio::task::JoinHandle;
 
 use joplin_domain::{now_ms, Folder, Note, NoteTag, Storage, Tag};
 use neojoplin_core::AutoSyncScheduler;
@@ -40,6 +42,8 @@ pub struct App {
     command_history_index: Option<usize>,
     command_history_draft: String,
     auto_sync_scheduler: AutoSyncScheduler,
+    /// Background sync task handle
+    sync_task: Option<JoinHandle<Result<(String, bool, std::path::PathBuf), joplin_domain::DomainError>>>,
 }
 
 impl App {
@@ -116,6 +120,7 @@ impl App {
             command_history_index: None,
             command_history_draft: String::new(),
             auto_sync_scheduler,
+            sync_task: None,
         };
         app.refresh_sync_status().await?;
         Ok(app)
@@ -157,6 +162,7 @@ impl App {
     {
         loop {
             self.run_auto_sync_if_due().await?;
+            self.check_sync_task().await?;
             self.state
                 .settings
                 .set_next_auto_sync_in_seconds(self.auto_sync_scheduler.seconds_until_next_run());
@@ -613,14 +619,17 @@ impl App {
         Ok(false)
     }
 
-    /// Sync with WebDAV server
+    /// Sync with WebDAV server - spawns a background task
     async fn sync(&mut self) -> Result<()> {
-        self.sync_with_context(false).await
+        self.start_sync(false).await
     }
 
-    async fn sync_with_context(&mut self, automatic: bool) -> Result<()> {
-        if !automatic {
-            self.state.set_status("Starting sync...");
+    /// Start a sync operation in the background
+    async fn start_sync(&mut self, automatic: bool) -> Result<()> {
+        // Check if sync is already in progress
+        if self.state.sync_in_progress {
+            self.state.set_status("Sync already in progress...");
+            return Ok(());
         }
 
         let data_dir = neojoplin_core::Config::data_dir()?;
@@ -657,12 +666,10 @@ impl App {
         let (base_url, remote_path) = split_webdav_url(&target.url);
 
         if !automatic {
-            self.state
-                .set_status(&format!("Syncing to {}{}...", base_url, remote_path));
+            self.state.set_status(&format!("Starting sync to {}{}...", base_url, remote_path));
         }
 
         use joplin_sync::{ReqwestWebDavClient, SyncEngine, WebDavConfig};
-        use tokio::sync::mpsc;
 
         let webdav_config = WebDavConfig {
             base_url: base_url.clone(),
@@ -670,65 +677,86 @@ impl App {
             password: target.password.clone(),
         };
 
-        let webdav_client = Arc::new(ReqwestWebDavClient::new(webdav_config)?);
-        let (event_tx, mut event_rx) = mpsc::unbounded_channel();
-
-        let mut sync_engine = SyncEngine::new(self.storage.clone(), webdav_client, event_tx)
-            .with_remote_path(remote_path.clone());
-
         // Load E2EE service from .env / encryption.json (same logic as CLI)
         let e2ee = load_e2ee_service(&data_dir).await?;
         let encryption_enabled = e2ee.is_enabled();
-        if e2ee.is_enabled() || e2ee.get_master_password().is_some() {
-            sync_engine = sync_engine.with_e2ee(e2ee);
-        }
+        let use_e2ee = encryption_enabled || e2ee.get_master_password().is_some();
 
-        // Consume sync events without printing (avoids TUI rendering issues)
-        tokio::spawn(async move { while let Some(_event) = event_rx.recv().await {} });
-
-        match sync_engine.sync().await {
-            Ok(_) => {
-                self.state.settings.record_sync_result(
-                    target.name.clone(),
-                    true,
-                    None,
-                    encryption_enabled,
-                );
-                self.state.settings.save_sync_status(&data_dir).await?;
-                if automatic {
-                    self.state.set_status("✓ Auto-sync completed successfully");
-                } else {
-                    self.state.set_status("✓ Sync completed successfully");
-                }
-                let selected_folder_id = self.state.selected_folder_id().map(str::to_string);
-                let selected_note_id = self.state.selected_note_id().map(str::to_string);
-                let all_notebooks_mode = self.state.all_notebooks_mode;
-                self.refresh_lists(all_notebooks_mode, selected_folder_id, selected_note_id)
-                    .await?;
-                self.refresh_sync_status().await?;
-            }
-            Err(e) => {
-                let error_message = e.to_string();
-                self.state.settings.record_sync_result(
-                    target.name.clone(),
-                    false,
-                    Some(error_message.clone()),
-                    encryption_enabled,
-                );
-                self.state.settings.save_sync_status(&data_dir).await?;
-                self.refresh_sync_status().await?;
-                if automatic {
-                    self.state
-                        .set_status(&format!("Auto-sync failed: {}", error_message));
-                } else {
-                    self.state
-                        .show_error(&format!("Sync failed: {}", error_message));
-                }
-            }
-        }
-
+        // Set sync in progress flag
+        self.state.set_sync_in_progress(true);
         self.auto_sync_scheduler.reset();
 
+        // Clone all needed data for the background task
+        let storage = self.storage.clone();
+        let webdav_config_clone = webdav_config.clone();
+        let remote_path_clone = remote_path.clone();
+        let e2ee_clone = if use_e2ee { Some(e2ee) } else { None };
+        let encryption_enabled_clone = encryption_enabled;
+        let target_name = target.name.clone();
+        let data_dir_clone = data_dir.clone();
+
+        // Spawn the sync in a background task
+        let task = tokio::spawn(async move {
+            let webdav_client = Arc::new(ReqwestWebDavClient::new(webdav_config_clone)?);
+            let (event_tx, mut event_rx) = mpsc::unbounded_channel();
+            
+            let mut sync_engine = SyncEngine::new(storage, webdav_client, event_tx)
+                .with_remote_path(remote_path_clone);
+            
+            if let Some(e2ee) = e2ee_clone {
+                sync_engine = sync_engine.with_e2ee(e2ee);
+            }
+            
+            // Consume sync events without printing
+            tokio::spawn(async move { while let Some(_event) = event_rx.recv().await {} });
+            
+            sync_engine.sync().await.map(|_| (target_name, encryption_enabled_clone, data_dir_clone))
+        });
+
+        self.sync_task = Some(task);
+
+        Ok(())
+    }
+
+    /// Check if a background sync task has completed and handle the result
+    async fn check_sync_task(&mut self) -> Result<()> {
+        if let Some(task) = self.sync_task.take() {
+            if task.is_finished() {
+                // Task completed, get the result
+                match task.await {
+                    Ok(Ok((target_name, encryption_enabled, data_dir))) => {
+                        // Record successful sync
+                        self.state.settings.record_sync_result(
+                            target_name,
+                            true,
+                            None,
+                            encryption_enabled,
+                        );
+                        self.state.settings.save_sync_status(&data_dir).await?;
+                        self.state.set_status("✓ Sync completed successfully");
+                        let selected_folder_id = self.state.selected_folder_id().map(str::to_string);
+                        let selected_note_id = self.state.selected_note_id().map(str::to_string);
+                        let all_notebooks_mode = self.state.all_notebooks_mode;
+                        self.refresh_lists(all_notebooks_mode, selected_folder_id, selected_note_id)
+                            .await?;
+                        self.refresh_sync_status().await?;
+                    }
+                    Ok(Err(e)) => {
+                        let error_message = e.to_string();
+                        // We don't have target info here, so just show error
+                        self.state.show_error(&format!("Sync failed: {}", error_message));
+                        self.refresh_sync_status().await?;
+                    }
+                    Err(join_err) => {
+                        self.state.show_error(&format!("Sync task error: {}", join_err));
+                    }
+                }
+                self.state.set_sync_in_progress(false);
+            } else {
+                // Task still running, put it back
+                self.sync_task = Some(task);
+            }
+        }
         Ok(())
     }
 
@@ -759,7 +787,7 @@ impl App {
         }
 
         if self.auto_sync_scheduler.consume_due() {
-            self.sync_with_context(true).await?;
+            self.start_sync(true).await?;
         }
 
         Ok(())
@@ -777,6 +805,7 @@ impl App {
             && !self.state.show_error_dialog
             && !self.state.show_quit_confirmation
             && self.state.pending_delete.is_none()
+            && !self.state.sync_in_progress
     }
 
     /// Edit note in external editor

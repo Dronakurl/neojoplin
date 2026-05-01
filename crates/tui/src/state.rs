@@ -238,6 +238,8 @@ pub struct AppState {
     pub show_error_dialog: bool,
     /// Current error message to display
     pub error_message: String,
+    /// Whether a sync operation is currently in progress
+    pub sync_in_progress: bool,
 }
 
 impl Default for AppState {
@@ -283,6 +285,7 @@ impl Default for AppState {
             theme: crate::theme::default_theme(),
             show_error_dialog: false,
             error_message: String::new(),
+            sync_in_progress: false,
         }
     }
 }
@@ -674,6 +677,11 @@ impl AppState {
     /// Set status message
     pub fn set_status(&mut self, message: &str) {
         self.status_message = message.to_string();
+    }
+
+    /// Set sync in progress status
+    pub fn set_sync_in_progress(&mut self, in_progress: bool) {
+        self.sync_in_progress = in_progress;
     }
 
     /// Show quit confirmation
