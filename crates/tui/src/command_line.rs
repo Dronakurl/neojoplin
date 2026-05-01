@@ -354,9 +354,7 @@ fn parse_tag_command(arg: Option<&str>) -> Result<CommandAction, String> {
         "add" => required_arg(subarg, "tag add <tag>").map(CommandAction::TagAdd),
         "remove" => required_arg(subarg, "tag remove <tag>").map(CommandAction::TagRemove),
         "list" => no_arg(subarg, "tag list").map(|_| CommandAction::TagList),
-        _ => Err(format!(
-            "Usage: :tag add <tag> | :tag remove <tag> | :tag list"
-        )),
+        _ => Err("Usage: :tag add <tag> | :tag remove <tag> | :tag list".to_string()),
     }
 }
 

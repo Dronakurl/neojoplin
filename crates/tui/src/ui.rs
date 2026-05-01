@@ -108,9 +108,7 @@ fn help_lines_for_query(query: Option<&str>) -> Vec<&'static str> {
     let mut filtered = Vec::new();
     for &line in HELP_LINES {
         let is_heading = !line.is_empty() && !line.starts_with(' ');
-        if is_heading {
-            filtered.push(line);
-        } else if !line.is_empty() && line.to_lowercase().contains(&needle) {
+        if is_heading || (!line.is_empty() && line.to_lowercase().contains(&needle)) {
             filtered.push(line);
         }
     }
@@ -684,7 +682,6 @@ fn termimad_to_ratatui_lines(text: &str, width: usize) -> Vec<Line<'static>> {
         match fmt_line {
             termimad::FmtLine::Normal(composite) => {
                 let spans: Vec<Span<'static>> = composite
-                    .composite
                     .compounds
                     .iter()
                     .map(|c| {
@@ -705,9 +702,9 @@ fn termimad_to_ratatui_lines(text: &str, width: usize) -> Vec<Line<'static>> {
                     })
                     .collect();
                 // Apply heading style based on composite type
-                use minimad::CompositeStyle;
-                let line_spans = match composite.composite.style {
-                    CompositeStyle::Header(level) => {
+                use termimad::CompositeKind;
+                let line_spans = match composite.kind {
+                    CompositeKind::Header(level) => {
                         let color = match level {
                             1 => Color::Yellow,
                             2 => Color::Green,
@@ -723,7 +720,7 @@ fn termimad_to_ratatui_lines(text: &str, width: usize) -> Vec<Line<'static>> {
                             })
                             .collect()
                     }
-                    CompositeStyle::Quote => {
+                    CompositeKind::Quote => {
                         let mut result = vec![Span::styled(
                             "▌ ".to_string(),
                             Style::default().fg(Color::DarkGray),
@@ -733,7 +730,7 @@ fn termimad_to_ratatui_lines(text: &str, width: usize) -> Vec<Line<'static>> {
                         }));
                         result
                     }
-                    CompositeStyle::ListItem(..) => {
+                    CompositeKind::ListItem(_) => {
                         let mut result = vec![Span::styled(
                             "  • ".to_string(),
                             Style::default().fg(Color::Yellow),
@@ -784,7 +781,6 @@ fn render_keybinding_ribbon(f: &mut Frame, state: &AppState, area: Rect) {
 
     // Always available
     bindings.push(("q".to_string(), "QUIT".to_string(), false));
-    bindings.push(("hjkl".to_string(), "NAV".to_string(), false));
 
     // Contextual bindings
     if state.trash_mode {
@@ -804,7 +800,9 @@ fn render_keybinding_ribbon(f: &mut Frame, state: &AppState, area: Rect) {
             bindings.push(("a".to_string(), "TAGS".to_string(), false));
         }
         bindings.push(("d".to_string(), "DELETE".to_string(), false));
-        bindings.push(("t".to_string(), "TODO".to_string(), false));
+        if matches!(state.focus, FocusPanel::Notebooks | FocusPanel::Notes) {
+            bindings.push(("t".to_string(), "TODO".to_string(), false));
+        }
         if matches!(state.focus, FocusPanel::Notebooks | FocusPanel::Notes) {
             bindings.push((",".to_string(), "SORT".to_string(), false));
         }
@@ -827,15 +825,12 @@ fn render_keybinding_ribbon(f: &mut Frame, state: &AppState, area: Rect) {
     }
 
     // Filter available when focus is list-based or preview
-    if matches!(
-        state.focus,
-        FocusPanel::Notebooks | FocusPanel::Notes | FocusPanel::Content
-    ) || state.trash_mode
-    {
+    if matches!(state.focus, FocusPanel::Notebooks | FocusPanel::Notes) {
         bindings.push(("f".to_string(), "FILTER".to_string(), filters_active));
     }
 
     // Settings always available
+    bindings.push(("hjkl".to_string(), "NAV".to_string(), false));
     bindings.push(("S".to_string(), "SETTINGS".to_string(), false));
     bindings.push(("?".to_string(), "HELP".to_string(), false));
 

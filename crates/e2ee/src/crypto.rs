@@ -7,7 +7,7 @@ use aes_gcm::{
     Aes256Gcm, Nonce,
 };
 use pbkdf2::pbkdf2_hmac;
-use rand::RngCore;
+use rand_core::RngCore;
 use sha2::Sha512;
 
 /// Encryption method identifiers (matching Joplin)
@@ -107,11 +107,11 @@ impl CryptoService {
     ) -> E2eeResult<EncryptedData> {
         // Generate random salt (32 bytes)
         let mut salt = [0u8; 32];
-        rand::thread_rng().fill_bytes(&mut salt);
+        rand_core::OsRng.fill_bytes(&mut salt);
 
         // Generate random IV (12 bytes for GCM)
         let mut iv = [0u8; 12];
-        rand::thread_rng().fill_bytes(&mut iv);
+        rand_core::OsRng.fill_bytes(&mut iv);
 
         // Derive data key from master key using PBKDF2
         let data_key = Self::derive_key(key, &salt, method.iteration_count())?;
@@ -201,14 +201,14 @@ impl CryptoService {
     /// Generate a random nonce for encryption
     pub fn generate_nonce() -> [u8; 12] {
         let mut nonce = [0u8; 12];
-        rand::thread_rng().fill_bytes(&mut nonce);
+        rand_core::OsRng.fill_bytes(&mut nonce);
         nonce
     }
 
     /// Generate a random salt (32 bytes)
     pub fn generate_salt() -> [u8; 32] {
         let mut salt = [0u8; 32];
-        rand::thread_rng().fill_bytes(&mut salt);
+        rand_core::OsRng.fill_bytes(&mut salt);
         salt
     }
 }

@@ -28,6 +28,21 @@ use crate::state::{
 };
 use crate::ui;
 
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+struct PersistedUiState {
+    #[serde(default)]
+    note_sort: String,
+    #[serde(default)]
+    notebook_sort: String,
+    selected_folder_id: Option<String>,
+    selected_note_id: Option<String>,
+    #[serde(default)]
+    all_notebooks_mode: bool,
+}
+
+type SyncTaskResult =
+    Result<(String, bool, std::path::PathBuf, SyncStats), joplin_domain::DomainError>;
+
 /// Main TUI application
 pub struct App {
     state: AppState,
@@ -43,11 +58,7 @@ pub struct App {
     command_history_draft: String,
     auto_sync_scheduler: AutoSyncScheduler,
     /// Background sync task handle
-    sync_task: Option<
-        JoinHandle<
-            Result<(String, bool, std::path::PathBuf, SyncStats), joplin_domain::DomainError>,
-        >,
-    >,
+    sync_task: Option<JoinHandle<SyncTaskResult>>,
 }
 
 #[derive(Default, Debug, Clone, Copy)]
@@ -134,8 +145,106 @@ impl App {
             auto_sync_scheduler,
             sync_task: None,
         };
+        app.restore_ui_state(&data_dir).await?;
         app.refresh_sync_status().await?;
         Ok(app)
+    }
+
+    async fn restore_ui_state(&mut self, data_dir: &Path) -> Result<()> {
+        let config_path = data_dir.join("settings.json");
+        if !config_path.exists() {
+            return Ok(());
+        }
+        let content = tokio::fs::read_to_string(&config_path).await?;
+        let value: serde_json::Value = serde_json::from_str(&content)?;
+
+        let persisted = PersistedUiState {
+            note_sort: value
+                .get("ui.note_sort")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string(),
+            notebook_sort: value
+                .get("ui.notebook_sort")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string(),
+            selected_folder_id: value
+                .get("ui.selected_folder_id")
+                .and_then(|v| v.as_str())
+                .map(|v| v.to_string()),
+            selected_note_id: value
+                .get("ui.selected_note_id")
+                .and_then(|v| v.as_str())
+                .map(|v| v.to_string()),
+            all_notebooks_mode: value
+                .get("ui.all_notebooks_mode")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false),
+        };
+
+        self.state.note_sort = match persisted.note_sort.as_str() {
+            "time_desc" => NoteSortMode::TimeDesc,
+            "name_asc" => NoteSortMode::NameAsc,
+            _ => NoteSortMode::TimeAsc,
+        };
+        self.state.notebook_sort = match persisted.notebook_sort.as_str() {
+            "time_desc" => NotebookSortMode::TimeDesc,
+            "name_asc" => NotebookSortMode::NameAsc,
+            "recent_note" => NotebookSortMode::RecentNote,
+            _ => NotebookSortMode::TimeAsc,
+        };
+
+        self.refresh_lists(
+            persisted.all_notebooks_mode,
+            persisted.selected_folder_id,
+            persisted.selected_note_id,
+        )
+        .await?;
+        Ok(())
+    }
+
+    async fn persist_ui_state(&self) -> Result<()> {
+        let data_dir = neojoplin_core::Config::data_dir()?;
+        let config_path = data_dir.join("settings.json");
+
+        let mut config = if config_path.exists() {
+            let content = tokio::fs::read_to_string(&config_path).await?;
+            serde_json::from_str::<serde_json::Value>(&content)?
+        } else {
+            serde_json::json!({
+                "$schema": "https://joplinapp.org/schema/settings.json",
+            })
+        };
+
+        let note_sort = match self.state.note_sort {
+            NoteSortMode::TimeAsc => "time_asc",
+            NoteSortMode::TimeDesc => "time_desc",
+            NoteSortMode::NameAsc => "name_asc",
+        };
+        let notebook_sort = match self.state.notebook_sort {
+            NotebookSortMode::TimeAsc => "time_asc",
+            NotebookSortMode::TimeDesc => "time_desc",
+            NotebookSortMode::NameAsc => "name_asc",
+            NotebookSortMode::RecentNote => "recent_note",
+        };
+
+        config["ui.note_sort"] = serde_json::json!(note_sort);
+        config["ui.notebook_sort"] = serde_json::json!(notebook_sort);
+        config["ui.selected_folder_id"] = self
+            .state
+            .selected_folder_id()
+            .map(|id| serde_json::json!(id))
+            .unwrap_or(serde_json::Value::Null);
+        config["ui.selected_note_id"] = self
+            .state
+            .selected_note_id()
+            .map(|id| serde_json::json!(id))
+            .unwrap_or(serde_json::Value::Null);
+        config["ui.all_notebooks_mode"] = serde_json::json!(self.state.all_notebooks_mode);
+
+        tokio::fs::write(&config_path, serde_json::to_string_pretty(&config)?).await?;
+        Ok(())
     }
 
     /// Run the application
@@ -150,6 +259,10 @@ impl App {
 
         // Run main loop
         let res = self.run_main_loop(&mut terminal).await;
+
+        if let Err(err) = self.persist_ui_state().await {
+            tracing::warn!("Failed to persist UI state: {}", err);
+        }
 
         // Restore terminal
         disable_raw_mode().context("Failed to disable raw mode")?;
@@ -3436,27 +3549,9 @@ fn starts_with_ignore_case(text: &str, prefix: &str) -> bool {
     text.to_lowercase().starts_with(&prefix.to_lowercase())
 }
 
-fn resolve_folder_by_title<'a>(folders: &'a [Folder], title: &str) -> Result<&'a Folder> {
-    let normalized = title.trim().to_lowercase();
-    if normalized.is_empty() {
-        anyhow::bail!("Usage: :move <notebook>");
-    }
-
-    let mut matches = folders
-        .iter()
-        .filter(|folder| folder.title.to_lowercase() == normalized);
-    match (matches.next(), matches.next()) {
-        (Some(folder), None) => Ok(folder),
-        (Some(_), Some(_)) => Err(anyhow::anyhow!(
-            "Multiple notebooks are named {}. Rename one or use tab completion.",
-            title.trim()
-        )),
-        _ => Err(anyhow::anyhow!("No notebook named {}", title.trim())),
-    }
-}
-
 fn resolve_folder_destination(folders: &[Folder], title: &str) -> Result<(String, String)> {
-    let normalized = title.trim().to_lowercase();
+    let original = title.trim();
+    let normalized = original.to_lowercase();
     if normalized.is_empty() {
         anyhow::bail!("Usage: :move <notebook>");
     }
@@ -3465,6 +3560,18 @@ fn resolve_folder_destination(folders: &[Folder], title: &str) -> Result<(String
         return Ok((String::new(), "root".to_string()));
     }
 
+    // First, try exact match on plain folder titles (case-insensitive)
+    let plain_matches: Vec<&Folder> = folders
+        .iter()
+        .filter(|folder| folder.title.to_lowercase() == normalized)
+        .collect();
+    
+    if plain_matches.len() == 1 {
+        let folder = plain_matches[0];
+        return Ok((folder.id.clone(), folder.title.clone()));
+    }
+    
+    // If multiple plain matches, try display names (for disambiguated names from tab completion)
     let display_names = build_folder_display_names(folders);
     if let Some((folder_id, display_name)) = display_names
         .iter()
@@ -3473,8 +3580,31 @@ fn resolve_folder_destination(folders: &[Folder], title: &str) -> Result<(String
         return Ok((folder_id.clone(), display_name.clone()));
     }
 
-    let folder = resolve_folder_by_title(folders, title)?;
-    Ok((folder.id.clone(), folder.title.clone()))
+    // If multiple plain matches and no display name match, show helpful error
+    if plain_matches.len() > 1 {
+        let names: Vec<String> = plain_matches.iter().map(|f| f.title.clone()).collect();
+        anyhow::bail!(
+            "Multiple notebooks match '{}': {}. Use tab completion to select the correct one.",
+            original,
+            names.join(", ")
+        );
+    }
+
+    // Try partial match on display names as fallback
+    if let Some((folder_id, display_name)) = display_names
+        .iter()
+        .find(|(_, display_name)| display_name.to_lowercase().contains(&normalized))
+    {
+        return Ok((folder_id.clone(), display_name.clone()));
+    }
+
+    // No match found
+    let available: Vec<String> = folders.iter().map(|f| f.title.clone()).collect();
+    anyhow::bail!(
+        "Notebook '{}' not found. Available notebooks: {}",
+        original,
+        available.join(", ")
+    );
 }
 
 fn resolve_tag_by_title<'a>(tags: &'a [Tag], title: &str) -> Option<&'a Tag> {

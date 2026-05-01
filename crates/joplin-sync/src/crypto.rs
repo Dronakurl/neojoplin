@@ -11,6 +11,7 @@ use aes_gcm::{
 use anyhow::{anyhow, Result};
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 use pbkdf2::pbkdf2_hmac;
+use rand_core::RngCore;
 use sha2::{Digest, Sha256, Sha512};
 
 /// Joplin-compatible chunk encryption result (JSON serializable)
@@ -117,8 +118,7 @@ pub fn generate_key() -> [u8; 32] {
 /// Generate a random salt (256-bit)
 pub fn generate_salt() -> [u8; 32] {
     let mut salt = [0u8; 32];
-    use rand::Rng;
-    rand::thread_rng().fill(&mut salt);
+    rand_core::OsRng.fill_bytes(&mut salt);
     salt
 }
 

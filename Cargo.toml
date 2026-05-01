@@ -29,15 +29,19 @@ uuid = { version = "1.10", features = ["v4", "serde"] }
 chrono = { version = "0.4", features = ["serde"] }
 tracing = "0.1"
 anyhow = "1.0"
-thiserror = "1.0"
+thiserror = "2.0"
 
 [workspace.dependencies.sqlx]
 version = "0.8"
 features = ["runtime-tokio", "sqlite"]
 
 [workspace.dependencies.reqwest]
-version = "0.12"
+version = "0.13"
 features = ["json", "stream"]
 
 [workspace.dependencies.async-trait]
 version = "0.1"
+
+[workspace.dependencies.toml]
+version = "1.1"
+features = ["parse", "display"]

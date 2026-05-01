@@ -1,6 +1,8 @@
 // End-to-end encryption (E2EE) support for NeoJoplin
 // Joplin-compatible encryption implementation
 
+use rand_core::RngCore;
+
 pub mod crypto;
 pub mod encryption;
 pub mod jed_format;
@@ -174,9 +176,8 @@ impl E2eeManager {
 
     /// Generate a new master key
     pub fn generate_master_key(&mut self) -> Vec<u8> {
-        use rand::RngCore;
         let mut key = [0u8; 32]; // 256-bit key
-        rand::thread_rng().fill_bytes(&mut key);
+        rand_core::OsRng.fill_bytes(&mut key);
         key.to_vec()
     }
 

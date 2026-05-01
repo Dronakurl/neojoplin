@@ -90,6 +90,15 @@ enum Commands {
         revision: Option<String>,
     },
 
+    /// Display available note versions (and optionally show one)
+    Versions {
+        /// Note ID or title
+        note: String,
+        /// Show full content of a specific revision ID
+        #[arg(long)]
+        revision: Option<String>,
+    },
+
     /// Synchronize with WebDAV server
     Sync {
         /// WebDAV base URL (uses the configured target if omitted)
@@ -698,6 +707,46 @@ async fn main() -> Result<()> {
                 "Restored note '{}' ({}) to revision {}",
                 restored.title, restored.id, target_revision.id
             );
+            Ok(())
+        }
+
+        Commands::Versions { note, revision } => {
+            let note_obj = if let Some(found) = storage.get_note(&note).await? {
+                found
+            } else {
+                let notes = storage.list_notes(None).await?;
+                let found = notes
+                    .iter()
+                    .find(|n| n.title == note)
+                    .ok_or_else(|| anyhow::anyhow!("Note not found: {}", note))?;
+                storage.get_note(&found.id).await?.unwrap()
+            };
+
+            let revisions = storage.list_note_revisions(&note_obj.id).await?;
+            if revisions.is_empty() {
+                println!("No revisions found for note: {}", note_obj.title);
+                return Ok(());
+            }
+
+            println!("Versions for {} ({})", note_obj.title, note_obj.id);
+            for rev in &revisions {
+                let ts = neojoplin_core::timestamp_to_datetime(rev.item_updated_time)
+                    .format("%Y-%m-%d %H:%M")
+                    .to_string();
+                println!("{}  {}  parent={}", ts, rev.id, rev.parent_id);
+            }
+
+            if let Some(revision_id) = revision {
+                let snapshot = storage
+                    .get_note_revision_snapshot(&note_obj.id, &revision_id)
+                    .await?;
+                println!();
+                println!("Revision: {}", snapshot.revision.id);
+                println!("Title: {}", snapshot.title);
+                println!();
+                println!("{}", snapshot.body);
+            }
+
             Ok(())
         }
 

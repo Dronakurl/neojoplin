@@ -276,6 +276,46 @@ impl SqliteStorage {
         Ok(note)
     }
 
+    async fn insert_note_revision(
+        &self,
+        note: &Note,
+        item_updated_time: i64,
+    ) -> Result<(), DatabaseError> {
+        let now = now_ms();
+        let title_diff = revision_text_patch(&note.title)?;
+        let body_diff = revision_text_patch(&note.body)?;
+        let metadata_diff = note_metadata_diff(note)?;
+
+        sqlx::query(
+            r#"
+            INSERT INTO revisions (
+                id, parent_id, item_type, item_id, item_updated_time,
+                title_diff, body_diff, metadata_diff, encryption_cipher_text,
+                encryption_applied, updated_time, created_time
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            "#,
+        )
+        .bind(joplin_domain::joplin_id())
+        .bind("")
+        .bind(1)
+        .bind(&note.id)
+        .bind(item_updated_time)
+        .bind(title_diff)
+        .bind(body_diff)
+        .bind(metadata_diff)
+        .bind("")
+        .bind(0)
+        .bind(now)
+        .bind(now)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| {
+            DatabaseError::QueryFailed(format!("Failed to insert note revision: {}", e))
+        })?;
+
+        Ok(())
+    }
+
     /// Create the database schema
     async fn create_schema(&self) -> Result<(), DatabaseError> {
         let mut tx = self.pool.begin().await.map_err(|e| {
@@ -770,6 +810,47 @@ fn apply_snapshot_to_note(note: &mut Note, snapshot: &NoteRevisionSnapshot) {
     }
 }
 
+fn revision_text_patch(text: &str) -> Result<String, DatabaseError> {
+    if text.is_empty() {
+        return Ok("[]".to_string());
+    }
+
+    let patch = serde_json::json!([{
+        "diffs": [[1, text]],
+        "start1": 0,
+        "start2": 0,
+        "length1": 0,
+        "length2": text.chars().count(),
+    }]);
+    serde_json::to_string(&patch)
+        .map_err(|e| DatabaseError::InvalidData(format!("Failed to serialize patch: {}", e)))
+}
+
+fn note_metadata_diff(note: &Note) -> Result<String, DatabaseError> {
+    let patch = serde_json::json!({
+        "new": {
+            "parent_id": note.parent_id,
+            "is_todo": note.is_todo,
+            "todo_completed": note.todo_completed,
+            "todo_due": note.todo_due,
+            "source_url": note.source_url,
+            "author": note.author,
+            "source_application": note.source_application,
+            "application_data": note.application_data,
+            "markup_language": note.markup_language,
+            "user_created_time": note.user_created_time,
+            "user_updated_time": note.user_updated_time,
+            "latitude": note.latitude,
+            "longitude": note.longitude,
+            "altitude": note.altitude,
+            "order": note.order
+        },
+        "deleted": []
+    });
+    serde_json::to_string(&patch)
+        .map_err(|e| DatabaseError::InvalidData(format!("Failed to serialize metadata: {}", e)))
+}
+
 #[async_trait::async_trait]
 impl Storage for SqliteStorage {
     // Note operations
@@ -824,6 +905,7 @@ impl Storage for SqliteStorage {
 
         // Update full-text search
         self.update_note_fts(note).await?;
+        self.insert_note_revision(note, note.updated_time).await?;
 
         Ok(())
     }
@@ -852,6 +934,7 @@ impl Storage for SqliteStorage {
     }
 
     async fn update_note(&self, note: &Note) -> Result<(), DatabaseError> {
+        let updated_time = now_ms();
         sqlx::query(
             r#"
             UPDATE notes SET
@@ -872,7 +955,7 @@ impl Storage for SqliteStorage {
         )
         .bind(&note.title)
         .bind(&note.body)
-        .bind(now_ms())
+        .bind(updated_time)
         .bind(note.user_updated_time)
         .bind(&note.parent_id)
         .bind(note.is_conflict)
@@ -904,6 +987,10 @@ impl Storage for SqliteStorage {
 
         // Update full-text search
         self.update_note_fts(note).await?;
+        let mut revision_note = note.clone();
+        revision_note.updated_time = updated_time;
+        self.insert_note_revision(&revision_note, updated_time)
+            .await?;
 
         Ok(())
     }

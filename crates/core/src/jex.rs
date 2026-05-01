@@ -107,7 +107,7 @@ pub async fn import_jex<S: Storage>(storage: &S, path: &Path) -> Result<JexSumma
 
         match parse_item(&content)? {
             ParsedItem::Folder(item) => folders.push(item),
-            ParsedItem::Note(item) => notes.push(item),
+            ParsedItem::Note(item) => notes.push(*item),
             ParsedItem::Tag(item) => tags.push(item),
             ParsedItem::NoteTag(item) => note_tags.push(item),
         }
@@ -365,7 +365,7 @@ fn unescape_prop_value(value: &str) -> String {
 }
 
 enum ParsedItem {
-    Note(Note),
+    Note(Box<Note>),
     Folder(Folder),
     Tag(Tag),
     NoteTag(NoteTag),
@@ -408,11 +408,11 @@ fn parse_item(content: &str) -> Result<ParsedItem> {
     };
 
     Ok(match type_ {
-        x if x == ModelType::Note as i32 => ParsedItem::Note(Note {
+        x if x == ModelType::Note as i32 => ParsedItem::Note(Box::new(Note {
             title,
             body,
             ..parse_note_props(&props)?
-        }),
+        })),
         x if x == ModelType::Folder as i32 => ParsedItem::Folder(Folder {
             title,
             ..parse_folder_props(&props)?
@@ -427,76 +427,80 @@ fn parse_item(content: &str) -> Result<ParsedItem> {
 }
 
 fn parse_note_props(props: &HashMap<String, String>) -> Result<Note> {
-    let mut note = Note::default();
-    note.id = required(props, "id")?;
-    note.parent_id = string_prop(props, "parent_id");
-    note.created_time = int_prop(props, "created_time")?;
-    note.updated_time = int_prop(props, "updated_time")?;
-    note.user_created_time = int_prop(props, "user_created_time")?;
-    note.user_updated_time = int_prop(props, "user_updated_time")?;
-    note.is_shared = int_prop_i32(props, "is_shared")?;
-    note.share_id = optional_string_prop(props, "share_id");
-    note.master_key_id = optional_string_prop(props, "master_key_id");
-    note.encryption_applied = int_prop_i32(props, "encryption_applied")?;
-    note.encryption_cipher_text = optional_string_prop(props, "encryption_cipher_text");
-    note.is_conflict = int_prop_i32(props, "is_conflict")?;
-    note.is_todo = int_prop_i32(props, "is_todo")?;
-    note.todo_completed = int_prop(props, "todo_completed")?;
-    note.todo_due = int_prop(props, "todo_due")?;
-    note.source = string_prop(props, "source");
-    note.source_application = string_prop(props, "source_application");
-    note.order = int_prop(props, "order")?;
-    note.latitude = int_prop(props, "latitude")?;
-    note.longitude = int_prop(props, "longitude")?;
-    note.altitude = int_prop(props, "altitude")?;
-    note.author = string_prop(props, "author");
-    note.source_url = string_prop(props, "source_url");
-    note.application_data = string_prop(props, "application_data");
-    note.markup_language = int_prop_i32(props, "markup_language")?;
-    note.encryption_blob_encrypted = int_prop_i32(props, "encryption_blob_encrypted")?;
-    note.conflict_original_id = string_prop(props, "conflict_original_id");
-    note.deleted_time = int_prop(props, "deleted_time")?;
-    Ok(note)
+    Ok(Note {
+        id: required(props, "id")?,
+        parent_id: string_prop(props, "parent_id"),
+        created_time: int_prop(props, "created_time")?,
+        updated_time: int_prop(props, "updated_time")?,
+        user_created_time: int_prop(props, "user_created_time")?,
+        user_updated_time: int_prop(props, "user_updated_time")?,
+        is_shared: int_prop_i32(props, "is_shared")?,
+        share_id: optional_string_prop(props, "share_id"),
+        master_key_id: optional_string_prop(props, "master_key_id"),
+        encryption_applied: int_prop_i32(props, "encryption_applied")?,
+        encryption_cipher_text: optional_string_prop(props, "encryption_cipher_text"),
+        is_conflict: int_prop_i32(props, "is_conflict")?,
+        is_todo: int_prop_i32(props, "is_todo")?,
+        todo_completed: int_prop(props, "todo_completed")?,
+        todo_due: int_prop(props, "todo_due")?,
+        source: string_prop(props, "source"),
+        source_application: string_prop(props, "source_application"),
+        order: int_prop(props, "order")?,
+        latitude: int_prop(props, "latitude")?,
+        longitude: int_prop(props, "longitude")?,
+        altitude: int_prop(props, "altitude")?,
+        author: string_prop(props, "author"),
+        source_url: string_prop(props, "source_url"),
+        application_data: string_prop(props, "application_data"),
+        markup_language: int_prop_i32(props, "markup_language")?,
+        encryption_blob_encrypted: int_prop_i32(props, "encryption_blob_encrypted")?,
+        conflict_original_id: string_prop(props, "conflict_original_id"),
+        deleted_time: int_prop(props, "deleted_time")?,
+        ..Default::default()
+    })
 }
 
 fn parse_folder_props(props: &HashMap<String, String>) -> Result<Folder> {
-    let mut folder = Folder::default();
-    folder.id = required(props, "id")?;
-    folder.parent_id = string_prop(props, "parent_id");
-    folder.created_time = int_prop(props, "created_time")?;
-    folder.updated_time = int_prop(props, "updated_time")?;
-    folder.user_created_time = int_prop(props, "user_created_time")?;
-    folder.user_updated_time = int_prop(props, "user_updated_time")?;
-    folder.is_shared = int_prop_i32(props, "is_shared")?;
-    folder.share_id = optional_string_prop(props, "share_id");
-    folder.master_key_id = optional_string_prop(props, "master_key_id");
-    folder.encryption_applied = int_prop_i32(props, "encryption_applied")?;
-    folder.encryption_cipher_text = optional_string_prop(props, "encryption_cipher_text");
-    folder.icon = string_prop(props, "icon");
-    Ok(folder)
+    Ok(Folder {
+        id: required(props, "id")?,
+        parent_id: string_prop(props, "parent_id"),
+        created_time: int_prop(props, "created_time")?,
+        updated_time: int_prop(props, "updated_time")?,
+        user_created_time: int_prop(props, "user_created_time")?,
+        user_updated_time: int_prop(props, "user_updated_time")?,
+        is_shared: int_prop_i32(props, "is_shared")?,
+        share_id: optional_string_prop(props, "share_id"),
+        master_key_id: optional_string_prop(props, "master_key_id"),
+        encryption_applied: int_prop_i32(props, "encryption_applied")?,
+        encryption_cipher_text: optional_string_prop(props, "encryption_cipher_text"),
+        icon: string_prop(props, "icon"),
+        ..Default::default()
+    })
 }
 
 fn parse_tag_props(props: &HashMap<String, String>) -> Result<Tag> {
-    let mut tag = Tag::default();
-    tag.id = required(props, "id")?;
-    tag.created_time = int_prop(props, "created_time")?;
-    tag.updated_time = int_prop(props, "updated_time")?;
-    tag.user_created_time = int_prop(props, "user_created_time")?;
-    tag.user_updated_time = int_prop(props, "user_updated_time")?;
-    tag.parent_id = string_prop(props, "parent_id");
-    tag.is_shared = int_prop_i32(props, "is_shared")?;
-    Ok(tag)
+    Ok(Tag {
+        id: required(props, "id")?,
+        created_time: int_prop(props, "created_time")?,
+        updated_time: int_prop(props, "updated_time")?,
+        user_created_time: int_prop(props, "user_created_time")?,
+        user_updated_time: int_prop(props, "user_updated_time")?,
+        parent_id: string_prop(props, "parent_id"),
+        is_shared: int_prop_i32(props, "is_shared")?,
+        ..Default::default()
+    })
 }
 
 fn parse_note_tag_props(props: &HashMap<String, String>) -> Result<NoteTag> {
-    let mut note_tag = NoteTag::default();
-    note_tag.id = required(props, "id")?;
-    note_tag.note_id = required(props, "note_id")?;
-    note_tag.tag_id = required(props, "tag_id")?;
-    note_tag.created_time = int_prop(props, "created_time")?;
-    note_tag.updated_time = int_prop(props, "updated_time")?;
-    note_tag.is_shared = int_prop_i32(props, "is_shared")?;
-    Ok(note_tag)
+    Ok(NoteTag {
+        id: required(props, "id")?,
+        note_id: required(props, "note_id")?,
+        tag_id: required(props, "tag_id")?,
+        created_time: int_prop(props, "created_time")?,
+        updated_time: int_prop(props, "updated_time")?,
+        is_shared: int_prop_i32(props, "is_shared")?,
+        ..Default::default()
+    })
 }
 
 fn required(props: &HashMap<String, String>, key: &str) -> Result<String> {
@@ -515,19 +519,19 @@ fn optional_string_prop(props: &HashMap<String, String>, key: &str) -> Option<St
 }
 
 fn int_prop(props: &HashMap<String, String>, key: &str) -> Result<i64> {
-    Ok(props
+    props
         .get(key)
         .map(String::as_str)
         .unwrap_or("0")
         .parse::<i64>()
-        .with_context(|| format!("Invalid {} in JEX item", key))?)
+        .with_context(|| format!("Invalid {} in JEX item", key))
 }
 
 fn int_prop_i32(props: &HashMap<String, String>, key: &str) -> Result<i32> {
-    Ok(props
+    props
         .get(key)
         .map(String::as_str)
         .unwrap_or("0")
         .parse::<i32>()
-        .with_context(|| format!("Invalid {} in JEX item", key))?)
+        .with_context(|| format!("Invalid {} in JEX item", key))
 }

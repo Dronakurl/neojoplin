@@ -660,7 +660,7 @@ impl AppState {
         );
 
         move_folder_vec_to_end(&mut ordered, self.new_folder_id.as_deref());
-        for (target, source) in folders.iter_mut().zip(ordered.into_iter()) {
+        for (target, source) in folders.iter_mut().zip(ordered) {
             *target = source;
         }
     }

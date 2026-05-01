@@ -1,6 +1,7 @@
 // Master key management for E2EE
 
 use crate::{crypto::CryptoService, E2eeError, E2eeResult};
+use rand_core::RngCore;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use tokio::fs;
@@ -26,7 +27,7 @@ impl MasterKey {
     /// Create a new master key
     pub fn new() -> Self {
         let mut key_data = vec![0u8; 32]; // 256-bit key
-        rand::RngCore::fill_bytes(&mut rand::thread_rng(), &mut key_data);
+        rand_core::OsRng.fill_bytes(&mut key_data);
 
         let now = chrono::Utc::now().timestamp_millis();
 
@@ -72,7 +73,7 @@ impl MasterKey {
 
         // Generate random IV
         let mut iv = [0u8; 12];
-        rand::RngCore::fill_bytes(&mut rand::thread_rng(), &mut iv);
+        rand_core::OsRng.fill_bytes(&mut iv);
 
         // Encrypt the master key data directly (no second PBKDF2)
         let cipher = Aes256Gcm::new_from_slice(&password_key)

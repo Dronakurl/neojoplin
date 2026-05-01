@@ -191,7 +191,7 @@ impl AutoSyncSettings {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct SyncStatusSettings {
     pub last_sync_time: Option<i64>,
     pub last_sync_success: bool,
@@ -204,25 +204,9 @@ pub struct SyncStatusSettings {
     pub next_auto_sync_in_seconds: Option<u64>,
 }
 
-impl Default for SyncStatusSettings {
-    fn default() -> Self {
-        Self {
-            last_sync_time: None,
-            last_sync_success: false,
-            last_sync_error: None,
-            last_sync_target_name: None,
-            last_sync_encryption_enabled: false,
-            current_conflict_count: 0,
-            current_encryption_enabled: false,
-            current_auto_sync_interval_seconds: 0,
-            next_auto_sync_in_seconds: None,
-        }
-    }
-}
-
 impl SyncSettings {
     pub fn sync_selection_to_active(&mut self) {
-        self.selected_target_index = self.current_target_index.or_else(|| {
+        self.selected_target_index = self.current_target_index.or({
             if self.targets.is_empty() {
                 None
             } else {
@@ -665,9 +649,7 @@ impl Settings {
                     });
                 }
             }
-            self.encryption
-                .master_keys
-                .sort_by(|a, b| a.created_time.cmp(&b.created_time));
+            self.encryption.master_keys.sort_by_key(|a| a.created_time);
         }
         self.encryption.master_key_count = self.encryption.master_keys.len();
 

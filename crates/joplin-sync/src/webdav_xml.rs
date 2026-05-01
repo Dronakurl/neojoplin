@@ -57,7 +57,7 @@ pub fn parse_propfind_entries(xml_body: &str, _base_url: &str) -> Result<Vec<Pro
                 }
             }
             Ok(Event::Text(e)) if in_response => {
-                if let Ok(text) = e.unescape() {
+                if let Ok(text) = e.xml_content() {
                     let text_string = text.into_owned();
                     match current_tag.as_str() {
                         "D:href" | "href" => {
@@ -133,7 +133,7 @@ pub fn parse_file_metadata(xml_body: &str, path: &str) -> Result<FileMetadata> {
                 }
             }
             Ok(Event::Text(e)) if in_prop => {
-                if let Ok(text) = e.unescape() {
+                if let Ok(text) = e.xml_content() {
                     let text_string = text.into_owned();
 
                     match current_tag_name.as_str() {

@@ -25,6 +25,12 @@ install:
 check:
     cargo clippy -- -D warnings
 
+# Strict project validation (fmt, lint with no warnings, tests)
+verify:
+    cargo fmt --check
+    cargo clippy --all-targets --all-features -- -D warnings
+    cargo test --all
+
 # Format code
 fmt:
     cargo fmt

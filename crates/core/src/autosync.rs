@@ -1,18 +1,9 @@
 use std::time::{Duration, Instant};
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct AutoSyncScheduler {
     interval: Option<Duration>,
     next_run_at: Option<Instant>,
-}
-
-impl Default for AutoSyncScheduler {
-    fn default() -> Self {
-        Self {
-            interval: None,
-            next_run_at: None,
-        }
-    }
 }
 
 impl AutoSyncScheduler {
