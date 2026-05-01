@@ -85,7 +85,16 @@ impl SyncEngine {
     pub async fn sync(&mut self) -> Result<()> {
         let start = std::time::Instant::now();
 
-        self.check_locks().await?;
+        // Parallelize initial immutable setup operations: check locks and ensure remote dir
+        let (lock_result, dir_result) = tokio::join!(
+            self.check_locks(),
+            self.ensure_remote_directory(),
+        );
+
+        lock_result?;
+        dir_result?;
+
+        // Load sync info (requires mutable self for updating context)
         self.load_sync_info().await?;
 
         // Load master keys from remote info.json if E2EE is available
@@ -96,8 +105,6 @@ impl SyncEngine {
         // Remote keys need to be loaded first so a fresh profile can attach to an
         // already-encrypted target without being mistaken for "encryption disabled".
         self.handle_encryption_state_change().await?;
-
-        self.ensure_remote_directory().await?;
 
         // Phase 1: Upload local changes
         self.phase_upload().await?;
