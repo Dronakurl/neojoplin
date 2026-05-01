@@ -5,8 +5,8 @@ use crate::sync_info::SyncInfo;
 use futures::io::AsyncReadExt;
 use futures::stream::{self, StreamExt};
 use joplin_domain::{
-    now_ms, Folder, Note, NoteTag, Result, Storage, SyncError, SyncEvent, SyncPhase, SyncTarget,
-    Tag, WebDavClient,
+    now_ms, DomainError, E2eeError, Folder, Note, NoteTag, Result, Storage, SyncError, SyncEvent,
+    SyncPhase, SyncTarget, Tag, WebDavClient,
 };
 use serde_json;
 use std::collections::HashSet;
@@ -1280,6 +1280,100 @@ impl SyncEngine {
         Ok(())
     }
 
+    /// Decrypt an encrypted note and update it in storage
+    pub async fn decrypt_note(&self, note_id: &str, e2ee: &E2eeService) -> Result<Note> {
+        let note = self
+            .storage
+            .get_note(note_id)
+            .await?
+            .ok_or_else(|| DomainError::Unknown(format!("Note {} not found", note_id)))?;
+
+        if note.encryption_applied != 1 {
+            return Ok(note);
+        }
+
+        let cipher_text = note
+            .encryption_cipher_text
+            .ok_or_else(|| {
+                DomainError::Unknown(format!(
+                    "Note {} has encryption_applied=1 but no cipher text",
+                    note_id
+                ))
+            })?;
+
+        // Decrypt the content
+        let decrypted_body = e2ee
+            .decrypt_string(&cipher_text)
+            .map_err(|e| DomainError::E2EE(E2eeError::DecryptionFailed(e.to_string())))?;
+
+        // Parse the decrypted content to get the actual note data
+        let mut updated_note = self.deserialize_note(note_id, &decrypted_body)?;
+        
+        // Preserve the original metadata
+        updated_note.id = note.id;
+        updated_note.created_time = note.created_time;
+        updated_note.updated_time = note.updated_time;
+        updated_note.user_created_time = note.user_created_time;
+        updated_note.user_updated_time = note.user_updated_time;
+        
+        // Clear encryption flags
+        updated_note.encryption_applied = 0;
+        updated_note.encryption_cipher_text = None;
+        updated_note.master_key_id = None;
+
+        // Update in storage
+        self.storage.update_note(&updated_note).await?;
+
+        Ok(updated_note)
+    }
+
+    /// Decrypt an encrypted folder and update it in storage
+    pub async fn decrypt_folder(&self, folder_id: &str, e2ee: &E2eeService) -> Result<Folder> {
+        let folder = self
+            .storage
+            .get_folder(folder_id)
+            .await?
+            .ok_or_else(|| DomainError::Unknown(format!("Folder {} not found", folder_id)))?;
+
+        if folder.encryption_applied != 1 {
+            return Ok(folder);
+        }
+
+        let cipher_text = folder
+            .encryption_cipher_text
+            .ok_or_else(|| {
+                DomainError::Unknown(format!(
+                    "Folder {} has encryption_applied=1 but no cipher text",
+                    folder_id
+                ))
+            })?;
+
+        // Decrypt the content
+        let decrypted_content = e2ee
+            .decrypt_string(&cipher_text)
+            .map_err(|e| DomainError::E2EE(E2eeError::DecryptionFailed(e.to_string())))?;
+
+        // Parse the decrypted content to get the actual folder data
+        let mut updated_folder = self.deserialize_folder(folder_id, &decrypted_content)?;
+        
+        // Preserve the original metadata
+        updated_folder.id = folder.id;
+        updated_folder.created_time = folder.created_time;
+        updated_folder.updated_time = folder.updated_time;
+        updated_folder.user_created_time = folder.user_created_time;
+        updated_folder.user_updated_time = folder.user_updated_time;
+        
+        // Clear encryption flags
+        updated_folder.encryption_applied = 0;
+        updated_folder.encryption_cipher_text = None;
+        updated_folder.master_key_id = None;
+
+        // Update in storage
+        self.storage.update_folder(&updated_folder).await?;
+
+        Ok(updated_folder)
+    }
+
     /// Parse metadata fields from a Joplin item file
     fn parse_item_metadata(&self, content: &str) -> std::collections::HashMap<String, String> {
         let mut metadata = std::collections::HashMap::new();
@@ -1325,8 +1419,18 @@ impl SyncEngine {
             "user_updated_time: {}\n",
             self.ms_to_iso(folder.user_updated_time)
         ));
-        content.push_str("encryption_cipher_text: \n");
-        content.push_str("encryption_applied: 0\n");
+        // Handle encrypted items - output cipher text
+        if folder.encryption_applied == 1 {
+            if let Some(ref cipher_text) = folder.encryption_cipher_text {
+                content.push_str(&format!("encryption_cipher_text: {}\n", cipher_text));
+            } else {
+                content.push_str("encryption_cipher_text: \n");
+            }
+            content.push_str("encryption_applied: 1\n");
+        } else {
+            content.push_str("encryption_cipher_text: \n");
+            content.push_str("encryption_applied: 0\n");
+        }
         content.push_str(&format!("is_shared: {}\n", folder.is_shared));
         content.push_str(&format!(
             "share_id: {}\n",
@@ -1362,8 +1466,18 @@ impl SyncEngine {
             "user_updated_time: {}\n",
             self.ms_to_iso(tag.user_updated_time)
         ));
-        content.push_str("encryption_cipher_text: \n");
-        content.push_str("encryption_applied: 0\n");
+        // Handle encrypted items - output cipher text
+        if tag.encryption_applied == 1 {
+            if let Some(ref cipher_text) = tag.encryption_cipher_text {
+                content.push_str(&format!("encryption_cipher_text: {}\n", cipher_text));
+            } else {
+                content.push_str("encryption_cipher_text: \n");
+            }
+            content.push_str("encryption_applied: 1\n");
+        } else {
+            content.push_str("encryption_cipher_text: \n");
+            content.push_str("encryption_applied: 0\n");
+        }
         content.push_str(&format!("is_shared: {}\n", tag.is_shared));
         content.push_str(&format!("parent_id: {}\n", tag.parent_id));
         content.push_str("user_data: \n");
@@ -1393,8 +1507,18 @@ impl SyncEngine {
             "user_updated_time: {}\n",
             self.ms_to_iso(note_tag.updated_time)
         ));
-        content.push_str("encryption_cipher_text: \n");
-        content.push_str("encryption_applied: 0\n");
+        // Handle encrypted items - output cipher text
+        if note_tag.encryption_applied == 1 {
+            if let Some(ref cipher_text) = note_tag.encryption_cipher_text {
+                content.push_str(&format!("encryption_cipher_text: {}\n", cipher_text));
+            } else {
+                content.push_str("encryption_cipher_text: \n");
+            }
+            content.push_str("encryption_applied: 1\n");
+        } else {
+            content.push_str("encryption_cipher_text: \n");
+            content.push_str("encryption_applied: 0\n");
+        }
         content.push_str(&format!("is_shared: {}\n", note_tag.is_shared));
         content.push_str("user_data: \n");
         content.push_str("deleted_time: 0\n");
@@ -1444,8 +1568,18 @@ impl SyncEngine {
             "user_updated_time: {}\n",
             self.ms_to_iso(note.user_updated_time)
         ));
-        content.push_str("encryption_cipher_text: \n");
-        content.push_str("encryption_applied: 0\n");
+        // Handle encrypted items - output cipher text instead of body
+        if note.encryption_applied == 1 {
+            if let Some(ref cipher_text) = note.encryption_cipher_text {
+                content.push_str(&format!("encryption_cipher_text: {}\n", cipher_text));
+            } else {
+                content.push_str("encryption_cipher_text: \n");
+            }
+            content.push_str("encryption_applied: 1\n");
+        } else {
+            content.push_str("encryption_cipher_text: \n");
+            content.push_str("encryption_applied: 0\n");
+        }
         content.push_str(&format!("markup_language: {}\n", note.markup_language));
         content.push_str(&format!("is_shared: {}\n", note.is_shared));
         content.push_str(&format!(
@@ -1547,6 +1681,13 @@ impl SyncEngine {
                             None
                         }
                     }
+                    "encryption_cipher_text" => {
+                        note.encryption_cipher_text = if !value.is_empty() {
+                            Some(value.to_string())
+                        } else {
+                            None
+                        }
+                    }
                     _ => {}
                 }
             }
@@ -1601,6 +1742,14 @@ impl SyncEngine {
                             None
                         }
                     }
+                    "encryption_cipher_text" => {
+                        folder.encryption_cipher_text = if !value.is_empty() {
+                            Some(value.to_string())
+                        } else {
+                            None
+                        }
+                    }
+                    "encryption_applied" => folder.encryption_applied = value.parse().unwrap_or(0),
                     _ => {}
                 }
             }
@@ -1632,7 +1781,25 @@ impl SyncEngine {
                     }
                     "created_time" => tag.created_time = self.iso_to_ms(value).unwrap_or(0),
                     "updated_time" => tag.updated_time = self.iso_to_ms(value).unwrap_or(0),
+                    "user_created_time" => tag.user_created_time = self.iso_to_ms(value).unwrap_or(0),
+                    "user_updated_time" => tag.user_updated_time = self.iso_to_ms(value).unwrap_or(0),
                     "parent_id" => tag.parent_id = value.to_string(),
+                    "is_shared" => tag.is_shared = value.parse().unwrap_or(0),
+                    "encryption_applied" => tag.encryption_applied = value.parse().unwrap_or(0),
+                    "encryption_cipher_text" => {
+                        tag.encryption_cipher_text = if !value.is_empty() {
+                            Some(value.to_string())
+                        } else {
+                            None
+                        }
+                    }
+                    "master_key_id" => {
+                        tag.master_key_id = if !value.is_empty() {
+                            Some(value.to_string())
+                        } else {
+                            None
+                        }
+                    }
                     _ => {}
                 }
             }
