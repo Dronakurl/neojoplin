@@ -402,7 +402,18 @@ impl SyncEngine {
                 // Encrypt the full content and produce Joplin encrypted format
                 match e2ee.encrypt_string(&plaintext_content) {
                     Ok(encrypted) => {
-                        let now = Self::ms_to_iso_value(now_ms());
+                        let created_time =
+                            Self::extract_metadata_value(&plaintext_content, "created_time")
+                                .unwrap_or_default();
+                        let updated_time =
+                            Self::extract_metadata_value(&plaintext_content, "updated_time")
+                                .unwrap_or_else(|| Self::ms_to_iso_value(now_ms()));
+                        let user_created_time =
+                            Self::extract_metadata_value(&plaintext_content, "user_created_time")
+                                .unwrap_or_default();
+                        let user_updated_time =
+                            Self::extract_metadata_value(&plaintext_content, "user_updated_time")
+                                .unwrap_or_default();
                         let parent_id =
                             Self::extract_metadata_value(&plaintext_content, "parent_id")
                                 .unwrap_or_default();
@@ -410,13 +421,29 @@ impl SyncEngine {
                             .unwrap_or_default();
                         let tag_id = Self::extract_metadata_value(&plaintext_content, "tag_id")
                             .unwrap_or_default();
+                        let is_shared =
+                            Self::extract_metadata_value(&plaintext_content, "is_shared")
+                                .unwrap_or_default();
+                        let share_id = Self::extract_metadata_value(&plaintext_content, "share_id")
+                            .unwrap_or_default();
+                        let master_key_id =
+                            Self::extract_metadata_value(&plaintext_content, "master_key_id")
+                                .unwrap_or_default();
+                        let user_data =
+                            Self::extract_metadata_value(&plaintext_content, "user_data")
+                                .unwrap_or_default();
+                        let deleted_time =
+                            Self::extract_metadata_value(&plaintext_content, "deleted_time")
+                                .unwrap_or_else(|| "0".to_string());
                         // Build the encrypted item metadata wrapper
                         let mut enc_content = String::new();
                         enc_content.push_str(&format!("id: {}\n", item_id));
-                        enc_content.push_str("created_time: \n");
-                        enc_content.push_str(&format!("updated_time: {}\n", now));
-                        enc_content.push_str("user_created_time: \n");
-                        enc_content.push_str("user_updated_time: \n");
+                        enc_content.push_str(&format!("created_time: {}\n", created_time));
+                        enc_content.push_str(&format!("updated_time: {}\n", updated_time));
+                        enc_content
+                            .push_str(&format!("user_created_time: {}\n", user_created_time));
+                        enc_content
+                            .push_str(&format!("user_updated_time: {}\n", user_updated_time));
                         enc_content.push_str(&format!("encryption_cipher_text: {}\n", encrypted));
                         enc_content.push_str("encryption_applied: 1\n");
                         if item_type == ItemType::NoteTag {
@@ -425,11 +452,11 @@ impl SyncEngine {
                         } else {
                             enc_content.push_str(&format!("parent_id: {}\n", parent_id));
                         }
-                        enc_content.push_str("is_shared: \n");
-                        enc_content.push_str("share_id: \n");
-                        enc_content.push_str("master_key_id: \n");
-                        enc_content.push_str("user_data: \n");
-                        enc_content.push_str("deleted_time: 0\n");
+                        enc_content.push_str(&format!("is_shared: {}\n", is_shared));
+                        enc_content.push_str(&format!("share_id: {}\n", share_id));
+                        enc_content.push_str(&format!("master_key_id: {}\n", master_key_id));
+                        enc_content.push_str(&format!("user_data: {}\n", user_data));
+                        enc_content.push_str(&format!("deleted_time: {}\n", deleted_time));
                         // No trailing newline — Joplin's parser interprets trailing \n as body separator
                         enc_content.push_str(&format!("type_: {}", type_num));
                         tracing::info!("Encrypted {} {} for upload", type_name, item_id);
