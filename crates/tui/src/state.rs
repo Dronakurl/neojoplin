@@ -1,8 +1,10 @@
 // Application state management
 
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 
 use crate::command_line::{CommandPromptState, CompletionState};
 use crate::settings::Settings;
@@ -10,6 +12,7 @@ use crate::theme::Theme;
 use fuzzy_matcher::skim::SkimMatcherV2;
 use fuzzy_matcher::FuzzyMatcher;
 use joplin_domain::{Folder, Note, NoteRevision};
+use joplin_sync::E2eeService;
 
 /// Which panel has focus
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -184,6 +187,8 @@ pub struct AppState {
     pub content_view_mode: ContentViewMode,
     /// Content scroll offset
     pub content_scroll_offset: usize,
+    /// E2EE service for decrypting encrypted notes (lazy decryption)
+    pub e2ee_service: Option<Arc<E2eeService>>,
     /// Loaded revisions for the selected note.
     pub note_versions: Vec<NoteRevision>,
     /// Selected revision index in version list mode.
@@ -277,6 +282,7 @@ impl Default for AppState {
             current_note_content: String::new(),
             content_view_mode: ContentViewMode::Note,
             content_scroll_offset: 0,
+            e2ee_service: None,
             note_versions: Vec::new(),
             selected_note_version: None,
             version_preview_title: String::new(),
@@ -517,10 +523,64 @@ impl AppState {
     }
 
     /// Load content of currently selected note
+    /// This handles lazy decryption for encrypted notes if E2EE service is available
     pub fn load_note_content(&mut self) {
         if let Some(idx) = self.selected_note {
             if idx < self.notes.len() {
-                self.current_note_content = self.notes[idx].body.clone();
+                let note = &self.notes[idx];
+
+                // Try to decrypt if E2EE service is available and note is encrypted
+                if let Some(e2ee) = &self.e2ee_service {
+                    if note.encryption_applied == 1 {
+                        // Try to decrypt the encryption_cipher_text field first
+                        if let Some(cipher_text) = &note.encryption_cipher_text {
+                            if !cipher_text.is_empty() {
+                                if let Ok(decrypted) = e2ee.decrypt_string(cipher_text) {
+                                    // For encrypted notes, the decrypted content is a JSON string
+                                    // containing the note object. Extract the body field.
+                                    if let Ok(json) = serde_json::from_str::<Value>(&decrypted) {
+                                        if let Some(body) =
+                                            json.get("body").and_then(|v| v.as_str())
+                                        {
+                                            self.current_note_content = body.to_string();
+                                            self.content_scroll_offset = 0;
+                                            self.clear_version_view();
+                                            return;
+                                        }
+                                    }
+                                    // If JSON parsing failed, use the decrypted string as-is
+                                    self.current_note_content = decrypted;
+                                    self.content_scroll_offset = 0;
+                                    self.clear_version_view();
+                                    return;
+                                }
+                            }
+                        }
+
+                        // If encryption_cipher_text decryption failed, try the body field
+                        // (handles case where encrypted data was incorrectly stored in body)
+                        if !note.body.is_empty() {
+                            if let Ok(decrypted) = e2ee.decrypt_string(&note.body) {
+                                // Try to parse as JSON first
+                                if let Ok(json) = serde_json::from_str::<Value>(&decrypted) {
+                                    if let Some(body) = json.get("body").and_then(|v| v.as_str()) {
+                                        self.current_note_content = body.to_string();
+                                        self.content_scroll_offset = 0;
+                                        self.clear_version_view();
+                                        return;
+                                    }
+                                }
+                                self.current_note_content = decrypted;
+                                self.content_scroll_offset = 0;
+                                self.clear_version_view();
+                                return;
+                            }
+                        }
+                    }
+                }
+
+                // If not encrypted or decryption failed/not available, use the plain body
+                self.current_note_content = note.body.clone();
                 self.content_scroll_offset = 0;
                 self.clear_version_view();
             }

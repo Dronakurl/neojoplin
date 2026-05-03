@@ -1,15 +1,16 @@
 # NeoJoplin
 
-A native Rust terminal client for [Joplin](https://joplinapp.org/) note-taking with 100% sync compatibility.
+A native Rust terminal client for [Joplin](https://joplinapp.org/) note-taking with sync compatibility.
 
 ## Features
 
 - ✅ **Sync Compatible** - Bidirectional sync with Joplin Desktop/CLI
 - ✅ **CLI Interface** - Fast, scriptable command-line interface
 - ✅ **TUI** - Interactive terminal user interface with vim-style navigation
-- ✅ **WebDAV Sync** - Three-phase sync with any WebDAV server (GMX, Nextcloud, etc.)
+- ✅ **WebDAV Sync** - Three-phase sync With any WebDAV server (GMX, Nextcloud, etc.)
+- ❌ **Other sync targets** - Filesystem, OneDrive, Dropbox, Amazon S3, WebDAV, Joplin Server 
 - ✅ **External Editor** - Edit notes with your favorite editor (helix, nvim, etc.)
-- ✅ **Emoji Support** - Beautiful folder icons and UI elements
+- ✅ **Emoji Support** - Folder icons and UI elements
 
 ## Installation
 
@@ -20,20 +21,21 @@ A native Rust terminal client for [Joplin](https://joplinapp.org/) note-taking w
 git clone https://github.com/Dronakurl/neojoplin.git
 cd neojoplin
 
-# Install the unified binary
-cargo build --release
-# Then copy to a folder in your path.
+cargo install --path crates/cli --force
 ```
 
 ### Prerequisites
 
 - Rust toolchain (1.70+)
 - SQLite
-- WebDAV server (or use Joplin Cloud, Dropbox, OneDrive, etc.)
+- WebDAV server 
+
+> [!TIP]
+> There is a configuration for a local WebDAV server in the `docker` folder, which you can use for testing. It is based on `caddy`
 
 ## Quick Start
 
-NeoJoplin provides a single binary that works as both a CLI tool and launches the TUI by default.
+NeoJoplin provides a binary that works as both a CLI tool and launches the TUI by default.
 
 ### TUI (Default)
 
@@ -119,7 +121,7 @@ neojoplin config editor hx
 
 - `neojoplin ls [pattern]` - List notes in current notebook
 - `neojoplin cat <note>` - Display note content
-- `neojoplin mknote <title> [body]` - Create new note
+- `neojoplin mknote <title> [body]` - Create a new note
 - `neojoplin edit <note>` - Edit note with external editor
 - `neojoplin rmnote <note>` - Delete note
 
@@ -170,10 +172,10 @@ just build
 just test
 ```
 
-### Development Mode
+### Install
 
 ```bash
-just dev
+just install
 ```
 
 ### Code Quality
@@ -189,7 +191,7 @@ just fmt      # format
 - **TUI**: Three-panel layout, vim navigation, interactive editing
 - **Sync**: Three-phase protocol, configurable remote path, WebDAV support
 - **Editor**: External editor integration with terminal handling
-- **Database**: Full SQLite with FTS5 search, exact Joplin schema
+- **Database**: SQLite with FTS5 search, exact Joplin schema
 
 ## Contributing
 

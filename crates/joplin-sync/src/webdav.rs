@@ -15,8 +15,11 @@ static DEPTH: header::HeaderName = header::HeaderName::from_static("depth");
 
 // Custom Engine trait import for base64
 use base64::Engine;
+use tokio::time::sleep;
 
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(30);
+const PUT_RETRY_ATTEMPTS: usize = 5;
+const PUT_RETRY_BASE_DELAY_MS: u64 = 300;
 
 /// WebDAV configuration
 #[derive(Debug, Clone)]
@@ -112,18 +115,61 @@ impl ReqwestWebDavClient {
     }
 
     pub async fn put_impl(&self, path: &str, data: &[u8]) -> Result<()> {
-        let response = self
-            .request(reqwest::Method::PUT, path, Some(data.to_vec()))
-            .await?;
+        for attempt in 1..=PUT_RETRY_ATTEMPTS {
+            match self
+                .request(reqwest::Method::PUT, path, Some(data.to_vec()))
+                .await
+            {
+                Ok(response) => {
+                    if response.status().is_success() {
+                        return Ok(());
+                    }
 
-        if response.status().is_success() {
-            Ok(())
-        } else {
-            Err(WebDavError::RequestFailed(format!(
-                "PUT failed with status: {}",
-                response.status()
-            )))
+                    let status = response.status();
+                    if attempt < PUT_RETRY_ATTEMPTS && is_retryable_put_status(status) {
+                        let delay_ms = PUT_RETRY_BASE_DELAY_MS * (1u64 << (attempt - 1));
+                        tracing::warn!(
+                            "WebDAV PUT {} returned {} (attempt {}/{}), retrying in {}ms",
+                            path,
+                            status,
+                            attempt,
+                            PUT_RETRY_ATTEMPTS,
+                            delay_ms
+                        );
+                        sleep(Duration::from_millis(delay_ms)).await;
+                        continue;
+                    }
+
+                    return Err(WebDavError::RequestFailed(format!(
+                        "PUT failed with status: {}",
+                        status
+                    )));
+                }
+                Err(err) => {
+                    let retryable_connection_error =
+                        matches!(err, WebDavError::ConnectionFailed(_));
+                    if attempt < PUT_RETRY_ATTEMPTS && retryable_connection_error {
+                        let delay_ms = PUT_RETRY_BASE_DELAY_MS * (1u64 << (attempt - 1));
+                        tracing::warn!(
+                            "WebDAV PUT {} failed with connection error (attempt {}/{}): {}. Retrying in {}ms",
+                            path,
+                            attempt,
+                            PUT_RETRY_ATTEMPTS,
+                            err,
+                            delay_ms
+                        );
+                        sleep(Duration::from_millis(delay_ms)).await;
+                        continue;
+                    }
+
+                    return Err(err);
+                }
+            }
         }
+
+        Err(WebDavError::RequestFailed(
+            "PUT failed after exhausting retries".to_string(),
+        ))
     }
 
     pub async fn delete_impl(&self, path: &str) -> Result<()> {
@@ -206,9 +252,54 @@ impl ReqwestWebDavClient {
             .map_err(|e| {
                 WebDavError::RequestFailed(format!("Failed to parse PROPFIND response: {}", e))
             })?;
+
+        // Build the absolute path of the directory being listed (as it appears in hrefs)
+        // The PROPFIND was sent to base_url + path, and hrefs are absolute paths on the server
+        let full_url = self.build_url(path);
+        let request_path = {
+            // Extract the path part from the full URL (everything after the protocol and host)
+            if let Some(scheme_end) = full_url.find("://") {
+                let rest = &full_url[scheme_end + 3..];
+                if let Some(first_slash) = rest.find('/') {
+                    &rest[first_slash..]
+                } else {
+                    "/"
+                }
+            } else {
+                // No scheme, assume full_url is already a path
+                if full_url.starts_with('/') {
+                    full_url.as_str()
+                } else {
+                    &format!("/{}", full_url)
+                }
+            }
+        };
+
+        let normalized_request_path = request_path.trim_end_matches('/');
+
         Ok(entries
             .into_iter()
-            .map(|e| (e.filename, e.modified))
+            .filter_map(|e| {
+                // For each entry, extract the path relative to the directory being listed
+                let href_trimmed = e.href.trim_end_matches('/');
+
+                // Skip the directory itself
+                if href_trimmed == normalized_request_path || href_trimmed == request_path {
+                    return None;
+                }
+
+                // Check if href starts with request_path + "/"
+                let prefix = format!("{}/", normalized_request_path);
+                if href_trimmed.starts_with(&prefix) {
+                    let relative_path = &href_trimmed[prefix.len()..];
+                    if !relative_path.is_empty() {
+                        return Some((relative_path.to_string(), e.modified));
+                    }
+                }
+
+                // If the href doesn't start with the request path, it's not in this directory
+                None
+            })
             .collect())
     }
 
@@ -270,6 +361,10 @@ impl ReqwestWebDavClient {
             is_dir: metadata.is_dir,
         })
     }
+}
+
+fn is_retryable_put_status(status: reqwest::StatusCode) -> bool {
+    matches!(status.as_u16(), 429 | 500 | 502 | 503 | 504)
 }
 
 #[cfg(test)]

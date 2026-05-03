@@ -1,4 +1,5 @@
 use anyhow::{Context, Result};
+use chrono::DateTime;
 use joplin_domain::{joplin_id, Folder, ModelType, Note, NoteTag, Storage, Tag};
 use std::collections::HashMap;
 use std::fs::File;
@@ -374,22 +375,38 @@ enum ParsedItem {
 fn parse_item(content: &str) -> Result<ParsedItem> {
     let lines: Vec<&str> = content.lines().collect();
     let mut props = HashMap::new();
-    let mut prelude = &lines[..];
+    let mut property_start_idx = lines.len(); // Default: properties start at end (no prelude)
 
+    // Find the boundary between prelude (title/body) and properties
+    // Properties are lines with colons that look like "key: value"
+    // We scan from the end backwards to find the first property line
     for idx in (0..lines.len()).rev() {
         let trimmed = lines[idx].trim();
         if trimmed.is_empty() {
-            prelude = &lines[..idx];
+            // Empty line marks the boundary - properties start after this
+            property_start_idx = idx + 1;
             break;
         }
 
-        let Some(colon_idx) = trimmed.find(':') else {
-            anyhow::bail!("Invalid JEX property line: {}", trimmed);
-        };
-        let key = trimmed[..colon_idx].trim().to_string();
-        let value = unescape_prop_value(trimmed[colon_idx + 1..].trim());
-        props.insert(key, value);
+        // Check if this line is a property (contains colon)
+        if let Some(colon_idx) = trimmed.find(':') {
+            let key = trimmed[..colon_idx].trim();
+            // Only treat as property if key looks valid (not empty, not a markdown header, etc.)
+            if !key.is_empty() && !key.starts_with('#') {
+                let value = unescape_prop_value(trimmed[colon_idx + 1..].trim());
+                props.insert(key.to_string(), value);
+                // This line is a property, so properties start at or before this index
+                property_start_idx = idx;
+                continue;
+            }
+        }
+
+        // If this line doesn't look like a property, it's part of the prelude
+        // and properties start after the last property we found
+        break;
     }
+
+    let prelude = &lines[..property_start_idx];
 
     let type_ = props
         .get("type_")
@@ -407,7 +424,18 @@ fn parse_item(content: &str) -> Result<ParsedItem> {
         String::new()
     };
 
-    Ok(match type_ {
+    // Handle Joplin Desktop export bug: Resources may be exported as type 4 (NoteTag)
+    // instead of type 5. Check if this is actually a Resource by looking for mime/size fields.
+    let actual_type = if type_ == ModelType::NoteTag as i32
+        && (props.contains_key("mime") || props.contains_key("size"))
+    {
+        // This is a Resource mislabeled as NoteTag
+        ModelType::Resource as i32
+    } else {
+        type_
+    };
+
+    Ok(match actual_type {
         x if x == ModelType::Note as i32 => ParsedItem::Note(Box::new(Note {
             title,
             body,
@@ -417,12 +445,30 @@ fn parse_item(content: &str) -> Result<ParsedItem> {
             title,
             ..parse_folder_props(&props)?
         }),
-        x if x == ModelType::Tag as i32 => ParsedItem::Tag(Tag {
+        // Handle both ModelType::Tag (3) and Joplin Desktop export Tag type (13)
+        x if x == ModelType::Tag as i32 || x == 13 => ParsedItem::Tag(Tag {
             title,
             ..parse_tag_props(&props)?
         }),
-        x if x == ModelType::NoteTag as i32 => ParsedItem::NoteTag(parse_note_tag_props(&props)?),
-        _ => anyhow::bail!("Unsupported JEX item type: {}", type_),
+        x if x == ModelType::NoteTag as i32 => {
+            // Only parse as NoteTag if it has the required fields
+            if props.contains_key("note_id") && props.contains_key("tag_id") {
+                ParsedItem::NoteTag(parse_note_tag_props(&props)?)
+            } else {
+                // Skip malformed NoteTag entries (Joplin Desktop export bug)
+                tracing::warn!("Skipping malformed NoteTag entry (missing note_id or tag_id)");
+                return Ok(ParsedItem::Note(Box::new(Note::default())));
+            }
+        }
+        x if x == ModelType::Resource as i32 => {
+            // Parse as Resource - need to add Resource support
+            // For now, skip resources as they require additional handling
+            tracing::warn!(
+                "Skipping Resource entry (type 5) - Resource import not yet implemented"
+            );
+            return Ok(ParsedItem::Note(Box::new(Note::default())));
+        }
+        _ => anyhow::bail!("Unsupported JEX item type: {}", actual_type),
     })
 }
 
@@ -445,10 +491,10 @@ fn parse_note_props(props: &HashMap<String, String>) -> Result<Note> {
         todo_due: int_prop(props, "todo_due")?,
         source: string_prop(props, "source"),
         source_application: string_prop(props, "source_application"),
-        order: int_prop(props, "order")?,
-        latitude: int_prop(props, "latitude")?,
-        longitude: int_prop(props, "longitude")?,
-        altitude: int_prop(props, "altitude")?,
+        order: numeric_prop(props, "order")?,
+        latitude: numeric_prop(props, "latitude")?,
+        longitude: numeric_prop(props, "longitude")?,
+        altitude: numeric_prop(props, "altitude")?,
         author: string_prop(props, "author"),
         source_url: string_prop(props, "source_url"),
         application_data: string_prop(props, "application_data"),
@@ -519,19 +565,66 @@ fn optional_string_prop(props: &HashMap<String, String>, key: &str) -> Option<St
 }
 
 fn int_prop(props: &HashMap<String, String>, key: &str) -> Result<i64> {
-    props
-        .get(key)
-        .map(String::as_str)
-        .unwrap_or("0")
-        .parse::<i64>()
-        .with_context(|| format!("Invalid {} in JEX item", key))
+    let value = props.get(key).map(String::as_str).unwrap_or("0");
+
+    // Handle empty string
+    if value.is_empty() {
+        return Ok(0);
+    }
+
+    // Try parsing as integer first (milliseconds since epoch, coordinates in microdegrees)
+    if let Ok(parsed) = value.parse::<i64>() {
+        return Ok(parsed);
+    }
+
+    // Try parsing as ISO 8601 timestamp (e.g., "2025-04-06T15:47:47.008Z")
+    if let Ok(dt) = DateTime::parse_from_rfc3339(value) {
+        return Ok(dt.timestamp_millis());
+    }
+
+    // Try parsing without timezone (treat as UTC)
+    if let Ok(dt) = DateTime::parse_from_rfc2822(value) {
+        return Ok(dt.timestamp_millis());
+    }
+
+    Err(anyhow::anyhow!("Invalid {} in JEX item: '{}'", key, value))
+}
+
+/// Parse a coordinate or numeric value that can be a float string
+/// Joplin stores coordinates as floats in JEX but as integers (microdegrees * 1e6) in database
+/// This function handles both integer and float string formats
+fn numeric_prop(props: &HashMap<String, String>, key: &str) -> Result<i64> {
+    let value = props.get(key).map(String::as_str).unwrap_or("0");
+
+    // Handle empty string
+    if value.is_empty() {
+        return Ok(0);
+    }
+
+    // Try parsing as integer first
+    if let Ok(parsed) = value.parse::<i64>() {
+        return Ok(parsed);
+    }
+
+    // Try parsing as float and convert to integer (for coordinates stored as microdegrees)
+    // JEX format: latitude/longitude as decimal degrees (e.g., "50.11092210")
+    // Database: stored as numeric (INTEGER in SQLite, but can store floats)
+    // For compatibility, we'll multiply by 1e6 and round to get microdegrees as integer
+    if let Ok(parsed_float) = value.parse::<f64>() {
+        return Ok((parsed_float * 1_000_000.0) as i64);
+    }
+
+    Err(anyhow::anyhow!("Invalid {} in JEX item: '{}'", key, value))
 }
 
 fn int_prop_i32(props: &HashMap<String, String>, key: &str) -> Result<i32> {
-    props
-        .get(key)
-        .map(String::as_str)
-        .unwrap_or("0")
+    let value = props.get(key).map(String::as_str).unwrap_or("0");
+
+    if value.is_empty() {
+        return Ok(0);
+    }
+
+    value
         .parse::<i32>()
         .with_context(|| format!("Invalid {} in JEX item", key))
 }

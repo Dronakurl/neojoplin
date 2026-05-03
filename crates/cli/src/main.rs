@@ -323,6 +323,7 @@ async fn load_e2ee_service(password_override: Option<String>) -> Result<E2eeServ
                 Ok(encrypted_master_key) => match e2ee.load_master_key(&encrypted_master_key) {
                     Ok(()) => e2ee.set_active_master_key(active_key_id.to_string()),
                     Err(e) => {
+                        eprintln!("WARNING: Skipping local master key {} because it could not be loaded: {}", active_key_id, e);
                         tracing::warn!(
                             "Skipping local master key {} because it could not be loaded: {}",
                             active_key_id,
@@ -331,6 +332,10 @@ async fn load_e2ee_service(password_override: Option<String>) -> Result<E2eeServ
                     }
                 },
                 Err(e) => {
+                    eprintln!(
+                        "WARNING: Skipping local master key {} because it could not be parsed: {}",
+                        active_key_id, e
+                    );
                     tracing::warn!(
                         "Skipping local master key {} because it could not be parsed: {}",
                         active_key_id,
@@ -593,6 +598,7 @@ async fn main() -> Result<()> {
                 master_key_id: None,
                 encryption_applied: 0,
                 encryption_cipher_text: None,
+                encryption_blob_encrypted: 0,
                 icon: String::new(),
             };
 
@@ -653,6 +659,53 @@ async fn main() -> Result<()> {
             println!("Title: {}", note_obj.title);
             println!("ID: {}", note_obj.id);
             println!();
+
+            // Try to display decrypted content if note is encrypted
+            if note_obj.encryption_applied == 1 {
+                // Load E2EE service
+                let e2ee_service = load_e2ee_service(None).await?;
+
+                if let Some(cipher_text) = &note_obj.encryption_cipher_text {
+                    if !cipher_text.is_empty() {
+                        match e2ee_service.decrypt_string(cipher_text) {
+                            Ok(decrypted) => {
+                                // Try to parse as JSON to extract body
+                                if let Ok(json) =
+                                    serde_json::from_str::<serde_json::Value>(&decrypted)
+                                {
+                                    if let Some(body) = json.get("body").and_then(|v| v.as_str()) {
+                                        println!("{}", body);
+                                        return Ok(());
+                                    }
+                                }
+                                // If JSON parsing failed, print the decrypted string
+                                println!("{}", decrypted);
+                                return Ok(());
+                            }
+                            Err(e) => {
+                                eprintln!("Decryption error: {}", e);
+                            }
+                        }
+                    }
+                }
+
+                // If decryption failed, try the body field
+                if !note_obj.body.is_empty() {
+                    let e2ee_service = load_e2ee_service(None).await?;
+                    if let Ok(decrypted) = e2ee_service.decrypt_string(&note_obj.body) {
+                        // Try to parse as JSON to extract body
+                        if let Ok(json) = serde_json::from_str::<serde_json::Value>(&decrypted) {
+                            if let Some(body) = json.get("body").and_then(|v| v.as_str()) {
+                                println!("{}", body);
+                                return Ok(());
+                            }
+                        }
+                        println!("{}", decrypted);
+                        return Ok(());
+                    }
+                }
+            }
+
             println!("{}", note_obj.body);
             Ok(())
         }
@@ -1185,11 +1238,13 @@ fn resolve_sync_target(
     configured_target: Option<SyncTarget>,
 ) -> Result<(String, String, String, String)> {
     if let Some(url) = url {
+        // If URL is provided, split it to extract base URL and remote path
+        let (base_url, configured_remote) = split_webdav_url(&url);
         return Ok((
-            url,
+            base_url,
             username.unwrap_or_default(),
             password.unwrap_or_default(),
-            remote.unwrap_or_else(|| "/neojoplin".to_string()),
+            remote.unwrap_or(configured_remote),
         ));
     }
 

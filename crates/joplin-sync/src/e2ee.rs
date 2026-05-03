@@ -193,7 +193,7 @@ impl MasterKey {
 }
 
 /// E2EE service for encryption and decryption operations
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct E2eeService {
     master_keys: HashMap<String, String>, // key_id -> decrypted hex key
     master_key_objects: HashMap<String, MasterKey>, // key_id -> full encrypted MasterKey object

@@ -126,7 +126,11 @@ impl App {
         let storage = Arc::new(SqliteStorage::new().await?);
         let data_dir = neojoplin_core::Config::data_dir()?;
 
+        // Load E2EE service
+        let e2ee_service = Arc::new(load_e2ee_service(&data_dir).await?);
+
         let mut state = AppState::new();
+        state.e2ee_service = Some(e2ee_service);
 
         // Create default sync config if it doesn't exist
         let sync_config_path = data_dir.join("sync-config.json");
@@ -161,6 +165,7 @@ impl App {
                 master_key_id: None,
                 encryption_applied: 0,
                 encryption_cipher_text: None,
+                encryption_blob_encrypted: 0,
                 icon: String::new(),
             };
 
@@ -1388,6 +1393,7 @@ impl App {
             master_key_id: None,
             encryption_applied: 0,
             encryption_cipher_text: None,
+            encryption_blob_encrypted: 0,
             icon: String::new(),
         };
 
@@ -2026,6 +2032,7 @@ impl App {
             master_key_id: None,
             encryption_applied: 0,
             encryption_cipher_text: None,
+            encryption_blob_encrypted: 0,
             icon: String::new(),
         };
         self.storage.create_folder(&folder).await?;
@@ -2512,6 +2519,7 @@ impl App {
                 is_shared: 0,
                 encryption_applied: 0,
                 encryption_cipher_text: None,
+                encryption_blob_encrypted: 0,
                 master_key_id: None,
             };
             self.storage.create_tag(&tag).await?;
@@ -3420,6 +3428,7 @@ impl App {
                 user_created_time: 0,
                 user_updated_time: 0,
                 parent_id: String::new(),
+                encryption_blob_encrypted: 0,
                 is_shared: 0,
                 encryption_applied: 0,
                 encryption_cipher_text: None,
@@ -3463,6 +3472,7 @@ impl App {
             is_shared: 0,
             encryption_applied: 0,
             encryption_cipher_text: None,
+            encryption_blob_encrypted: 0,
             master_key_id: None,
         };
         self.storage.add_note_tag(&note_tag).await?;

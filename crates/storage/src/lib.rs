@@ -123,7 +123,129 @@ impl SqliteStorage {
                 self.ensure_revision_table().await?;
                 return Ok(());
             }
-            if version >= 42 {
+            if version == 42 {
+                tracing::info!("Migrating database from v42 to v43");
+                // Add encryption fields to folders table
+                sqlx::query("ALTER TABLE folders ADD COLUMN encryption_cipher_text TEXT")
+                    .execute(&self.pool)
+                    .await
+                    .map_err(|e| {
+                        DatabaseError::MigrationFailed(format!(
+                            "Failed to add encryption_cipher_text to folders: {}",
+                            e
+                        ))
+                    })?;
+                sqlx::query("ALTER TABLE folders ADD COLUMN encryption_applied INTEGER DEFAULT 0")
+                    .execute(&self.pool)
+                    .await
+                    .map_err(|e| {
+                        DatabaseError::MigrationFailed(format!(
+                            "Failed to add encryption_applied to folders: {}",
+                            e
+                        ))
+                    })?;
+                sqlx::query(
+                    "ALTER TABLE folders ADD COLUMN encryption_blob_encrypted INTEGER DEFAULT 0",
+                )
+                .execute(&self.pool)
+                .await
+                .map_err(|e| {
+                    DatabaseError::MigrationFailed(format!(
+                        "Failed to add encryption_blob_encrypted to folders: {}",
+                        e
+                    ))
+                })?;
+                // Add encryption fields to tags table
+                sqlx::query("ALTER TABLE tags ADD COLUMN encryption_cipher_text TEXT")
+                    .execute(&self.pool)
+                    .await
+                    .map_err(|e| {
+                        DatabaseError::MigrationFailed(format!(
+                            "Failed to add encryption_cipher_text to tags: {}",
+                            e
+                        ))
+                    })?;
+                sqlx::query("ALTER TABLE tags ADD COLUMN encryption_applied INTEGER DEFAULT 0")
+                    .execute(&self.pool)
+                    .await
+                    .map_err(|e| {
+                        DatabaseError::MigrationFailed(format!(
+                            "Failed to add encryption_applied to tags: {}",
+                            e
+                        ))
+                    })?;
+                sqlx::query(
+                    "ALTER TABLE tags ADD COLUMN encryption_blob_encrypted INTEGER DEFAULT 0",
+                )
+                .execute(&self.pool)
+                .await
+                .map_err(|e| {
+                    DatabaseError::MigrationFailed(format!(
+                        "Failed to add encryption_blob_encrypted to tags: {}",
+                        e
+                    ))
+                })?;
+                sqlx::query("ALTER TABLE tags ADD COLUMN master_key_id TEXT")
+                    .execute(&self.pool)
+                    .await
+                    .map_err(|e| {
+                        DatabaseError::MigrationFailed(format!(
+                            "Failed to add master_key_id to tags: {}",
+                            e
+                        ))
+                    })?;
+                // Add encryption fields to note_tags table
+                sqlx::query("ALTER TABLE note_tags ADD COLUMN encryption_cipher_text TEXT")
+                    .execute(&self.pool)
+                    .await
+                    .map_err(|e| {
+                        DatabaseError::MigrationFailed(format!(
+                            "Failed to add encryption_cipher_text to note_tags: {}",
+                            e
+                        ))
+                    })?;
+                sqlx::query(
+                    "ALTER TABLE note_tags ADD COLUMN encryption_applied INTEGER DEFAULT 0",
+                )
+                .execute(&self.pool)
+                .await
+                .map_err(|e| {
+                    DatabaseError::MigrationFailed(format!(
+                        "Failed to add encryption_applied to note_tags: {}",
+                        e
+                    ))
+                })?;
+                sqlx::query(
+                    "ALTER TABLE note_tags ADD COLUMN encryption_blob_encrypted INTEGER DEFAULT 0",
+                )
+                .execute(&self.pool)
+                .await
+                .map_err(|e| {
+                    DatabaseError::MigrationFailed(format!(
+                        "Failed to add encryption_blob_encrypted to note_tags: {}",
+                        e
+                    ))
+                })?;
+                sqlx::query("ALTER TABLE note_tags ADD COLUMN master_key_id TEXT")
+                    .execute(&self.pool)
+                    .await
+                    .map_err(|e| {
+                        DatabaseError::MigrationFailed(format!(
+                            "Failed to add master_key_id to note_tags: {}",
+                            e
+                        ))
+                    })?;
+                sqlx::query("UPDATE version SET version = 43")
+                    .execute(&self.pool)
+                    .await
+                    .map_err(|e| {
+                        DatabaseError::MigrationFailed(format!("Failed to update version: {}", e))
+                    })?;
+                tracing::info!("Database migrated to v43");
+                self.ensure_revision_table().await?;
+                return Ok(());
+            }
+            if version >= 43 {
                 tracing::info!("Database already initialized at version {}", version);
                 self.ensure_revision_table().await?;
                 return Ok(());
@@ -394,7 +516,10 @@ impl SqliteStorage {
                 icon TEXT,
                 share_id TEXT,
                 master_key_id TEXT,
-                is_shared INTEGER DEFAULT 0
+                is_shared INTEGER DEFAULT 0,
+                encryption_cipher_text TEXT,
+                encryption_applied INTEGER DEFAULT 0,
+                encryption_blob_encrypted INTEGER DEFAULT 0
             )
             "#,
         )
@@ -415,7 +540,11 @@ impl SqliteStorage {
                 user_created_time INTEGER DEFAULT 0,
                 user_updated_time INTEGER DEFAULT 0,
                 parent_id TEXT,
-                is_shared INTEGER DEFAULT 0
+                is_shared INTEGER DEFAULT 0,
+                encryption_cipher_text TEXT,
+                encryption_applied INTEGER DEFAULT 0,
+                encryption_blob_encrypted INTEGER DEFAULT 0,
+                master_key_id TEXT
             )
             "#,
         )
@@ -435,6 +564,10 @@ impl SqliteStorage {
                 created_time INTEGER NOT NULL,
                 updated_time INTEGER NOT NULL,
                 is_shared INTEGER DEFAULT 0,
+                encryption_cipher_text TEXT,
+                encryption_applied INTEGER DEFAULT 0,
+                encryption_blob_encrypted INTEGER DEFAULT 0,
+                master_key_id TEXT,
                 FOREIGN KEY (note_id) REFERENCES notes(id) ON DELETE CASCADE,
                 FOREIGN KEY (tag_id) REFERENCES tags(id) ON DELETE CASCADE
             )
@@ -546,7 +679,7 @@ impl SqliteStorage {
         })?;
 
         // Set database version
-        sqlx::query("INSERT INTO version (version) VALUES (42)")
+        sqlx::query("INSERT INTO version (version) VALUES (43)")
             .execute(&mut *tx)
             .await
             .map_err(|e| DatabaseError::MigrationFailed(format!("Failed to set version: {}", e)))?;
@@ -1078,8 +1211,9 @@ impl Storage for SqliteStorage {
             INSERT INTO folders (
                 id, title, created_time, updated_time,
                 user_created_time, user_updated_time, parent_id,
-                icon, share_id, master_key_id, is_shared
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                icon, share_id, master_key_id, is_shared,
+                encryption_cipher_text, encryption_applied, encryption_blob_encrypted
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             "#,
         )
         .bind(&folder.id)
@@ -1093,6 +1227,9 @@ impl Storage for SqliteStorage {
         .bind(&folder.share_id)
         .bind(&folder.master_key_id)
         .bind(folder.is_shared)
+        .bind(&folder.encryption_cipher_text)
+        .bind(folder.encryption_applied)
+        .bind(folder.encryption_blob_encrypted)
         .execute(&self.pool)
         .await
         .map_err(|e| DatabaseError::QueryFailed(format!("Failed to create folder: {}", e)))?;
@@ -1106,7 +1243,8 @@ impl Storage for SqliteStorage {
             SELECT
                 id, title, created_time, updated_time,
                 user_created_time, user_updated_time, parent_id,
-                icon, share_id, master_key_id, is_shared
+                icon, share_id, master_key_id, is_shared,
+                encryption_cipher_text, encryption_applied, encryption_blob_encrypted
             FROM folders WHERE id = ?
             "#,
         )
@@ -1124,7 +1262,8 @@ impl Storage for SqliteStorage {
             UPDATE folders SET
                 title = ?, updated_time = ?,
                 user_updated_time = ?, parent_id = ?,
-                icon = ?, share_id = ?, master_key_id = ?, is_shared = ?
+                icon = ?, share_id = ?, master_key_id = ?, is_shared = ?,
+                encryption_cipher_text = ?, encryption_applied = ?, encryption_blob_encrypted = ?
             WHERE id = ?
             "#,
         )
@@ -1136,6 +1275,9 @@ impl Storage for SqliteStorage {
         .bind(&folder.share_id)
         .bind(&folder.master_key_id)
         .bind(folder.is_shared)
+        .bind(&folder.encryption_cipher_text)
+        .bind(folder.encryption_applied)
+        .bind(folder.encryption_blob_encrypted)
         .bind(&folder.id)
         .execute(&self.pool)
         .await
@@ -1179,7 +1321,8 @@ impl Storage for SqliteStorage {
             SELECT
                 id, title, created_time, updated_time,
                 user_created_time, user_updated_time, parent_id,
-                icon, share_id, master_key_id, is_shared
+                icon, share_id, master_key_id, is_shared,
+                encryption_cipher_text, encryption_applied, encryption_blob_encrypted
             FROM folders
             ORDER BY title ASC
             "#,
@@ -1197,8 +1340,9 @@ impl Storage for SqliteStorage {
             r#"
             INSERT INTO tags (
                 id, title, created_time, updated_time,
-                user_created_time, user_updated_time, parent_id, is_shared
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                user_created_time, user_updated_time, parent_id, is_shared,
+                encryption_cipher_text, encryption_applied, encryption_blob_encrypted, master_key_id
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             "#,
         )
         .bind(&tag.id)
@@ -1209,6 +1353,10 @@ impl Storage for SqliteStorage {
         .bind(tag.user_updated_time)
         .bind(&tag.parent_id)
         .bind(tag.is_shared)
+        .bind(&tag.encryption_cipher_text)
+        .bind(tag.encryption_applied)
+        .bind(tag.encryption_blob_encrypted)
+        .bind(&tag.master_key_id)
         .execute(&self.pool)
         .await
         .map_err(|e| DatabaseError::QueryFailed(format!("Failed to create tag: {}", e)))?;
@@ -1221,7 +1369,8 @@ impl Storage for SqliteStorage {
             r#"
             SELECT
                 id, title, created_time, updated_time,
-                user_created_time, user_updated_time, parent_id, is_shared
+                user_created_time, user_updated_time, parent_id, is_shared,
+                encryption_cipher_text, encryption_applied, encryption_blob_encrypted, master_key_id
             FROM tags WHERE id = ?
             "#,
         )
@@ -1238,7 +1387,9 @@ impl Storage for SqliteStorage {
             r#"
             UPDATE tags SET
                 title = ?, updated_time = ?,
-                user_updated_time = ?, parent_id = ?
+                user_updated_time = ?, parent_id = ?,
+                encryption_cipher_text = ?, encryption_applied = ?, encryption_blob_encrypted = ?,
+                master_key_id = ?
             WHERE id = ?
             "#,
         )
@@ -1246,6 +1397,10 @@ impl Storage for SqliteStorage {
         .bind(tag.updated_time)
         .bind(tag.user_updated_time)
         .bind(&tag.parent_id)
+        .bind(&tag.encryption_cipher_text)
+        .bind(tag.encryption_applied)
+        .bind(tag.encryption_blob_encrypted)
+        .bind(&tag.master_key_id)
         .bind(&tag.id)
         .execute(&self.pool)
         .await
@@ -1313,8 +1468,9 @@ impl Storage for SqliteStorage {
         sqlx::query(
             r#"
             INSERT INTO note_tags (
-                id, note_id, tag_id, created_time, updated_time, is_shared
-            ) VALUES (?, ?, ?, ?, ?, ?)
+                id, note_id, tag_id, created_time, updated_time, is_shared,
+                encryption_cipher_text, encryption_applied, encryption_blob_encrypted, master_key_id
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             "#,
         )
         .bind(&note_tag.id)
@@ -1323,6 +1479,10 @@ impl Storage for SqliteStorage {
         .bind(note_tag.created_time)
         .bind(note_tag.updated_time)
         .bind(note_tag.is_shared)
+        .bind(&note_tag.encryption_cipher_text)
+        .bind(note_tag.encryption_applied)
+        .bind(note_tag.encryption_blob_encrypted)
+        .bind(&note_tag.master_key_id)
         .execute(&self.pool)
         .await
         .map_err(|e| DatabaseError::QueryFailed(format!("Failed to add note tag: {}", e)))?;
@@ -1742,6 +1902,11 @@ impl Storage for SqliteStorage {
                     .map_err(|e| {
                         DatabaseError::QueryFailed(format!("Failed to purge resource: {}", e))
                     })?;
+            }
+            13 => {
+                // Type 13 is for item_changes (Joplin sync metadata)
+                // neojoplin doesn't have an item_changes table, so just skip content deletion
+                // The sync_items record will be deleted below
             }
             _ => {
                 return Err(DatabaseError::InvalidData(format!(

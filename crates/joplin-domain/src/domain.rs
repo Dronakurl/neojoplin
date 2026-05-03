@@ -153,6 +153,7 @@ pub struct Folder {
     pub master_key_id: Option<String>,
     pub encryption_applied: i32,
     pub encryption_cipher_text: Option<String>,
+    pub encryption_blob_encrypted: i32,
 
     // Folder-specific fields
     pub parent_id: String,
@@ -173,6 +174,7 @@ impl Default for Folder {
             master_key_id: None,
             encryption_applied: 0,
             encryption_cipher_text: None,
+            encryption_blob_encrypted: 0,
             parent_id: String::new(),
             icon: String::new(),
         }
@@ -192,6 +194,7 @@ pub struct Tag {
     pub is_shared: i32,
     pub encryption_applied: i32,
     pub encryption_cipher_text: Option<String>,
+    pub encryption_blob_encrypted: i32,
     pub master_key_id: Option<String>,
 }
 
@@ -208,6 +211,7 @@ impl Default for Tag {
             is_shared: 0,
             encryption_applied: 0,
             encryption_cipher_text: None,
+            encryption_blob_encrypted: 0,
             master_key_id: None,
         }
     }
@@ -226,6 +230,7 @@ pub struct NoteTag {
     pub is_shared: i32,
     pub encryption_applied: i32,
     pub encryption_cipher_text: Option<String>,
+    pub encryption_blob_encrypted: i32,
     pub master_key_id: Option<String>,
 }
 
@@ -242,6 +247,7 @@ impl Default for NoteTag {
             is_shared: 0,
             encryption_applied: 0,
             encryption_cipher_text: None,
+            encryption_blob_encrypted: 0,
             master_key_id: None,
         }
     }
@@ -422,8 +428,9 @@ impl sqlx::FromRow<'_, sqlx::sqlite::SqliteRow> for Folder {
             is_shared: row.try_get("is_shared").unwrap_or(0),
             share_id: row.try_get("share_id").ok(),
             master_key_id: row.try_get("master_key_id").ok(),
-            encryption_applied: 0,
-            encryption_cipher_text: None,
+            encryption_applied: row.try_get("encryption_applied").unwrap_or(0),
+            encryption_cipher_text: row.try_get("encryption_cipher_text").ok(),
+            encryption_blob_encrypted: row.try_get("encryption_blob_encrypted").unwrap_or(0),
             parent_id: row.try_get("parent_id").unwrap_or_else(|_| String::new()),
             icon: row.try_get("icon").unwrap_or_else(|_| String::new()),
         })
@@ -444,6 +451,7 @@ impl sqlx::FromRow<'_, sqlx::sqlite::SqliteRow> for Tag {
             is_shared: row.try_get("is_shared").unwrap_or(0),
             encryption_applied: row.try_get("encryption_applied").unwrap_or(0),
             encryption_cipher_text: row.try_get("encryption_cipher_text").ok(),
+            encryption_blob_encrypted: row.try_get("encryption_blob_encrypted").unwrap_or(0),
             master_key_id: row.try_get("master_key_id").ok(),
         })
     }
@@ -463,6 +471,7 @@ impl sqlx::FromRow<'_, sqlx::sqlite::SqliteRow> for NoteTag {
             is_shared: row.try_get("is_shared").unwrap_or(0),
             encryption_applied: row.try_get("encryption_applied").unwrap_or(0),
             encryption_cipher_text: row.try_get("encryption_cipher_text").ok(),
+            encryption_blob_encrypted: row.try_get("encryption_blob_encrypted").unwrap_or(0),
             master_key_id: row.try_get("master_key_id").ok(),
         })
     }

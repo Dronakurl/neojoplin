@@ -46,7 +46,7 @@ struct RemoteItem {
     modified: Option<i64>,
 }
 
-const MAX_CONCURRENT_TRANSFERS: usize = 10;
+const MAX_CONCURRENT_TRANSFERS: usize = 5;
 
 /// Main sync engine
 pub struct SyncEngine {
@@ -403,6 +403,13 @@ impl SyncEngine {
                 match e2ee.encrypt_string(&plaintext_content) {
                     Ok(encrypted) => {
                         let now = Self::ms_to_iso_value(now_ms());
+                        let parent_id =
+                            Self::extract_metadata_value(&plaintext_content, "parent_id")
+                                .unwrap_or_default();
+                        let note_id = Self::extract_metadata_value(&plaintext_content, "note_id")
+                            .unwrap_or_default();
+                        let tag_id = Self::extract_metadata_value(&plaintext_content, "tag_id")
+                            .unwrap_or_default();
                         // Build the encrypted item metadata wrapper
                         let mut enc_content = String::new();
                         enc_content.push_str(&format!("id: {}\n", item_id));
@@ -412,7 +419,12 @@ impl SyncEngine {
                         enc_content.push_str("user_updated_time: \n");
                         enc_content.push_str(&format!("encryption_cipher_text: {}\n", encrypted));
                         enc_content.push_str("encryption_applied: 1\n");
-                        enc_content.push_str("parent_id: \n");
+                        if item_type == ItemType::NoteTag {
+                            enc_content.push_str(&format!("note_id: {}\n", note_id));
+                            enc_content.push_str(&format!("tag_id: {}\n", tag_id));
+                        } else {
+                            enc_content.push_str(&format!("parent_id: {}\n", parent_id));
+                        }
                         enc_content.push_str("is_shared: \n");
                         enc_content.push_str("share_id: \n");
                         enc_content.push_str("master_key_id: \n");
@@ -642,6 +654,13 @@ impl SyncEngine {
 
     fn remote_item_path_from(remote_path: &str, item_id: &str) -> String {
         format!("{}/{}.md", remote_path.trim_end_matches('/'), item_id)
+    }
+
+    fn extract_metadata_value(content: &str, key: &str) -> Option<String> {
+        let prefix = format!("{key}: ");
+        content
+            .lines()
+            .find_map(|line| line.strip_prefix(&prefix).map(str::to_string))
     }
 
     async fn check_locks(&self) -> Result<()> {
@@ -1349,6 +1368,7 @@ impl SyncEngine {
                     is_shared: get_metadata("is_shared", 0) as i32,
                     encryption_applied: 1,
                     encryption_cipher_text: Some(encryption_cipher_text.to_string()),
+                    encryption_blob_encrypted: 0,
                     master_key_id: master_key_id.map(|s| s.to_string()),
                 };
 
