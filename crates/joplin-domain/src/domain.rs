@@ -1,6 +1,6 @@
 // Domain types matching Joplin database schema v41
 
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, Local, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -368,9 +368,16 @@ pub fn now_ms() -> i64 {
         .as_millis() as i64
 }
 
-/// Helper function to convert timestamp to DateTime
+/// Helper function to convert timestamp to DateTime in UTC
 pub fn timestamp_to_datetime(ts: i64) -> DateTime<Utc> {
     DateTime::from_timestamp(ts / 1000, (ts % 1000) as u32 * 1_000_000).unwrap_or_default()
+}
+
+/// Helper function to convert timestamp to DateTime in local timezone
+pub fn timestamp_to_local_datetime(ts: i64) -> DateTime<Local> {
+    DateTime::from_timestamp(ts / 1000, (ts % 1000) as u32 * 1_000_000)
+        .unwrap_or_default()
+        .with_timezone(&Local)
 }
 
 // Implement sqlx::FromRow for domain types (needed by storage implementations)

@@ -11,6 +11,7 @@ pub use joplin_domain::{
     // Helpers
     now_ms,
     timestamp_to_datetime,
+    timestamp_to_local_datetime,
     AuthError,
     ConflictInfo,
     ConflictResolution,
