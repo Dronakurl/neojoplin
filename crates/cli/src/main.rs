@@ -24,6 +24,12 @@ struct Cli {
     /// Launch TUI interface (default when no command specified)
     #[arg(short, long)]
     tui: bool,
+
+    /// Enable test mode - uses isolated configuration and data directories
+    /// This prevents messing with your actual notes during development/testing
+    /// Can also be set via NEOJOPLIN_TEST_MODE environment variable
+    #[arg(long)]
+    test_mode: bool,
 }
 
 #[derive(Subcommand)]
@@ -353,7 +359,18 @@ async fn load_e2ee_service(password_override: Option<String>) -> Result<E2eeServ
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    // Check for environment variable first (before parsing CLI args)
+    // This allows the env var to work even without the flag
+    if std::env::var("NEOJOPLIN_TEST_MODE").is_ok() {
+        std::env::set_var("NEOJOPLIN_TEST_MODE", "1");
+    }
+
     let cli = Cli::parse();
+
+    // Enable test mode if flag is set
+    if cli.test_mode {
+        std::env::set_var("NEOJOPLIN_TEST_MODE", "1");
+    }
 
     // Launch TUI if no command specified or --tui flag is used
     if cli.command.is_none() || cli.tui {

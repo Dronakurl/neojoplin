@@ -169,6 +169,21 @@ impl Config {
 
     /// Get default configuration directory
     pub fn config_dir() -> Result<PathBuf, crate::ConfigError> {
+        // Check for environment variable to use a different config directory
+        if let Ok(custom_dir) = std::env::var("NEOJOPLIN_CONFIG_DIR") {
+            return Ok(PathBuf::from(custom_dir));
+        }
+
+        // Check for test mode environment variable
+        if std::env::var("NEOJOPLIN_TEST_MODE").is_ok() {
+            let dir = dirs::home_dir()
+                .map(|p| p.join(".config/neojoplin-test"))
+                .ok_or_else(|| {
+                    ConfigError::NotFound("Could not determine home directory".to_string())
+                })?;
+            return Ok(dir);
+        }
+
         let dir = dirs::home_dir()
             .map(|p| p.join(".config/neojoplin"))
             .ok_or_else(|| {
@@ -197,6 +212,22 @@ impl Config {
 
     /// Get data directory
     pub fn data_dir() -> Result<PathBuf, crate::ConfigError> {
+        // Check for environment variable to use a different data directory
+        // This is useful for testing/development to isolate configurations
+        if let Ok(custom_dir) = std::env::var("NEOJOPLIN_DATA_DIR") {
+            return Ok(PathBuf::from(custom_dir));
+        }
+
+        // Check for test mode environment variable
+        if std::env::var("NEOJOPLIN_TEST_MODE").is_ok() {
+            let dir = dirs::home_dir()
+                .map(|p| p.join(".local/share/neojoplin-test"))
+                .ok_or_else(|| {
+                    ConfigError::NotFound("Could not determine home directory".to_string())
+                })?;
+            return Ok(dir);
+        }
+
         let dir = dirs::home_dir()
             .map(|p| p.join(".local/share/neojoplin"))
             .ok_or_else(|| {
