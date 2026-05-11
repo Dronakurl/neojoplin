@@ -1,6 +1,6 @@
 // UI rendering for NeoJoplin TUI
 
-use neojoplin_core::timestamp_to_datetime;
+use neojoplin_core::{timestamp_to_datetime, timestamp_to_local_datetime};
 use ratatui::{
     layout::{Alignment, Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style, Stylize},
@@ -1946,7 +1946,7 @@ fn render_sync_status_settings(f: &mut Frame, state: &AppState, area: Rect) {
     let last_sync = status
         .last_sync_time
         .map(|value| {
-            timestamp_to_datetime(value)
+            timestamp_to_local_datetime(value)
                 .format("%Y-%m-%d %H:%M:%S")
                 .to_string()
         })
