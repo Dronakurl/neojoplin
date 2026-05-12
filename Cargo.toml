@@ -9,7 +9,7 @@ members = [
   "crates/e2ee",
   "crates/tui",
   "crates/cli",
-  "crates/test-utils",
+  "crates/test-utils", "crates/plugin", "crates/plugins/ai-ollama",
 ]
 resolver = "2"
 
