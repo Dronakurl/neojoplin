@@ -30,7 +30,7 @@ pub struct OllamaConfig {
 }
 
 fn default_model() -> String {
-    "llama3:8b".to_string()
+    "gemma2:2b".to_string()  // Model already downloaded in Docker volumes
 }
 
 fn default_api_url() -> String {

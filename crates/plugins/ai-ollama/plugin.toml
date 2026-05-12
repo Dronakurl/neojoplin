@@ -13,8 +13,9 @@ license = "MIT"
 enabled = ["AiProvider", "CliCommands"]
 
 # Default settings for the plugin
+# Uses gemma2:2b which is already downloaded in the Docker volumes
 [settings]
-model = "llama3:8b"
+model = "gemma2:2b"
 api_url = "http://localhost:11434"
 timeout_seconds = 120
 # api_key = ""  # Optional, if your Ollama instance requires authentication
