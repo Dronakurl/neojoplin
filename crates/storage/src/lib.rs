@@ -988,6 +988,19 @@ fn note_metadata_diff(note: &Note) -> Result<String, DatabaseError> {
 impl Storage for SqliteStorage {
     // Note operations
     async fn create_note(&self, note: &Note) -> Result<(), DatabaseError> {
+        let user_created_time = if note.user_created_time > 0 {
+            note.user_created_time
+        } else {
+            note.created_time
+        };
+        let user_updated_time = if note.user_updated_time > 0 {
+            note.user_updated_time
+        } else if note.updated_time > 0 {
+            note.updated_time
+        } else {
+            note.created_time
+        };
+
         sqlx::query(
             r#"
             INSERT INTO notes (
@@ -1007,8 +1020,8 @@ impl Storage for SqliteStorage {
         .bind(&note.body)
         .bind(note.created_time)
         .bind(note.updated_time)
-        .bind(note.user_created_time)
-        .bind(note.user_updated_time)
+        .bind(user_created_time)
+        .bind(user_updated_time)
         .bind(&note.parent_id)
         .bind(note.is_conflict)
         .bind(note.is_todo)
@@ -1068,6 +1081,11 @@ impl Storage for SqliteStorage {
 
     async fn update_note(&self, note: &Note) -> Result<(), DatabaseError> {
         let updated_time = now_ms();
+        let user_updated_time = if note.user_updated_time > 0 {
+            note.user_updated_time
+        } else {
+            updated_time
+        };
         sqlx::query(
             r#"
             UPDATE notes SET
@@ -1089,7 +1107,7 @@ impl Storage for SqliteStorage {
         .bind(&note.title)
         .bind(&note.body)
         .bind(updated_time)
-        .bind(note.user_updated_time)
+        .bind(user_updated_time)
         .bind(&note.parent_id)
         .bind(note.is_conflict)
         .bind(note.is_todo)
@@ -1723,7 +1741,7 @@ impl Storage for SqliteStorage {
 
     async fn get_notes_updated_since(&self, timestamp: i64) -> Result<Vec<Note>, DatabaseError> {
         let notes = sqlx::query_as::<_, Note>(
-            "SELECT * FROM notes WHERE updated_time > ? AND COALESCE(deleted_time, 0) = 0 ORDER BY updated_time ASC",
+            "SELECT * FROM notes WHERE updated_time > ? ORDER BY updated_time ASC",
         )
         .bind(timestamp)
         .fetch_all(&self.pool)
@@ -1973,8 +1991,13 @@ impl Storage for SqliteStorage {
     }
 
     async fn trash_note(&self, id: &str) -> Result<(), DatabaseError> {
-        sqlx::query("UPDATE notes SET deleted_time = ? WHERE id = ?")
-            .bind(now_ms())
+        let trash_time = now_ms();
+        sqlx::query(
+            "UPDATE notes SET deleted_time = ?, updated_time = ?, user_updated_time = ? WHERE id = ?",
+        )
+            .bind(trash_time)
+            .bind(trash_time)
+            .bind(trash_time)
             .bind(id)
             .execute(&self.pool)
             .await
@@ -1983,7 +2006,12 @@ impl Storage for SqliteStorage {
     }
 
     async fn restore_note(&self, id: &str) -> Result<(), DatabaseError> {
-        sqlx::query("UPDATE notes SET deleted_time = 0 WHERE id = ?")
+        let restored_time = now_ms();
+        sqlx::query(
+            "UPDATE notes SET deleted_time = 0, updated_time = ?, user_updated_time = ? WHERE id = ?",
+        )
+            .bind(restored_time)
+            .bind(restored_time)
             .bind(id)
             .execute(&self.pool)
             .await
@@ -2039,11 +2067,16 @@ mod tests {
     #[tokio::test]
     async fn test_create_note() {
         let db = setup_test_db().await;
+        let created_time = now_ms();
 
         let note = Note {
             title: "Test Note".to_string(),
             body: "Test content".to_string(),
             parent_id: String::new(),
+            created_time,
+            updated_time: created_time,
+            user_created_time: 0,
+            user_updated_time: 0,
             ..Default::default()
         };
 
@@ -2052,6 +2085,8 @@ mod tests {
         let retrieved = db.get_note(&note.id).await.unwrap().unwrap();
         assert_eq!(retrieved.title, "Test Note");
         assert_eq!(retrieved.body, "Test content");
+        assert_eq!(retrieved.user_created_time, created_time);
+        assert_eq!(retrieved.user_updated_time, created_time);
     }
 
     #[tokio::test]
@@ -2118,5 +2153,31 @@ mod tests {
         assert_eq!(deleted.len(), 1);
         assert_eq!(deleted[0].item_id, folder.id);
         assert_eq!(deleted[0].item_type, ModelType::Folder as i32);
+    }
+
+    #[tokio::test]
+    async fn test_trash_note_updates_sync_timestamp_and_is_returned() {
+        let db = setup_test_db().await;
+        let base_time = now_ms() - 60_000;
+
+        let note = Note {
+            title: "Trash me".to_string(),
+            created_time: base_time,
+            updated_time: base_time,
+            user_created_time: base_time,
+            user_updated_time: base_time,
+            ..Default::default()
+        };
+        db.create_note(&note).await.unwrap();
+
+        db.trash_note(&note.id).await.unwrap();
+
+        let trashed = db.get_note(&note.id).await.unwrap().unwrap();
+        assert!(trashed.deleted_time > 0);
+        assert!(trashed.updated_time >= trashed.deleted_time);
+        assert_eq!(trashed.user_updated_time, trashed.updated_time);
+
+        let changed = db.get_notes_updated_since(base_time).await.unwrap();
+        assert!(changed.iter().any(|n| n.id == note.id));
     }
 }
