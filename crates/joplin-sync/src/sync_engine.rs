@@ -2030,13 +2030,10 @@ impl SyncEngine {
     }
 
     fn ms_to_iso_value(ms: i64) -> String {
-        if ms == 0 {
-            return String::new();
-        }
         use chrono::DateTime;
         let secs = ms / 1000;
-        let millis = (ms % 1000) as u32;
-        DateTime::from_timestamp(secs, millis * 1_000_000)
+        let nsecs = ((ms % 1000).unsigned_abs() as u32) * 1_000_000;
+        DateTime::from_timestamp(secs, nsecs)
             .map(|dt| dt.format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string())
             .unwrap_or_default()
     }
@@ -2260,6 +2257,16 @@ mod tests {
         let ts = 1700000000000i64;
         let iso = engine.ms_to_iso(ts);
         assert!(iso.contains("2023-11-14"), "Expected 2023-11-14 in {}", iso);
+        let back = engine.iso_to_ms(&iso).unwrap();
+        assert_eq!(back, ts);
+    }
+
+    #[test]
+    fn test_timestamp_conversion_zero() {
+        let engine = make_test_engine();
+        let ts = 0i64;
+        let iso = engine.ms_to_iso(ts);
+        assert_eq!(iso, "1970-01-01T00:00:00.000Z");
         let back = engine.iso_to_ms(&iso).unwrap();
         assert_eq!(back, ts);
     }
