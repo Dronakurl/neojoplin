@@ -185,8 +185,7 @@ impl App {
         // Load all settings (encryption, sync, and UI)
         state.settings.load_all_settings(&data_dir).await?;
 
-        // Apply loaded UI settings to state
-        state.note_filter_query = state.settings.ui.note_filter_query.clone();
+        // Apply loaded UI settings to state (but NOT note_filter_query - filters should not persist)
         state.show_completed_todos = state.settings.ui.show_completed_todos;
         state.note_filter_mode = state.settings.ui.note_filter_mode;
 

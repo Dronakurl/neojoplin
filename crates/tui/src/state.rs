@@ -995,7 +995,7 @@ impl AppState {
 
     /// Sync UI settings from state to settings.ui
     pub fn sync_ui_settings(&mut self) {
-        self.settings.ui.note_filter_query = self.note_filter_query.clone();
+        // Note: note_filter_query is NOT synced to settings as filters should not persist
         self.settings.ui.show_completed_todos = self.show_completed_todos;
         self.settings.ui.note_filter_mode = self.note_filter_mode;
     }

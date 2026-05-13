@@ -371,7 +371,6 @@ use crate::state::NoteFilterMode;
 /// UI settings for note filtering and display
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct UiSettings {
-    pub note_filter_query: String,
     pub show_completed_todos: bool,
     pub note_filter_mode: NoteFilterMode,
 }
@@ -379,7 +378,6 @@ pub struct UiSettings {
 impl UiSettings {
     pub fn new() -> Self {
         Self {
-            note_filter_query: String::new(),
             show_completed_todos: false,
             note_filter_mode: NoteFilterMode::TitleOnly,
         }
