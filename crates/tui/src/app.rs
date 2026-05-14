@@ -44,36 +44,48 @@ struct PersistedUiState {
 type SyncTaskResult =
     Result<(String, bool, std::path::PathBuf, SyncStats), joplin_domain::DomainError>;
 
-/// Ollama configuration
+/// AI configuration - supports both Mistral and Ollama
 #[derive(Debug, Clone)]
-struct OllamaConfig {
-    model: String,
+struct AiConfig {
+    /// API base URL
     api_url: String,
-    timeout_seconds: u64,
+    /// Model to use
+    model: String,
+    /// API key (for Mistral)
     api_key: Option<String>,
+    /// Timeout in seconds
+    timeout_seconds: u64,
 }
 
-impl Default for OllamaConfig {
+impl Default for AiConfig {
     fn default() -> Self {
+        // Load Mistral API key from ~/.env if available
+        let api_key = std::fs::read_to_string(
+            dirs::home_dir().expect("Could not determine home directory").join(".env")
+        ).ok().and_then(|content| {
+            content.lines().find(|line| line.starts_with("MISTRAL_API_KEY="))
+                .map(|line| line.trim_start_matches("MISTRAL_API_KEY=").to_string())
+        });
+
         Self {
-            model: "gemma2:2b".to_string(),
-            api_url: "http://localhost:11434".to_string(),
+            api_url: "https://api.mistral.ai/v1/chat/completions".to_string(),
+            model: "mistral-tiny".to_string(),
+            api_key,
             timeout_seconds: 120,
-            api_key: None,
         }
     }
 }
 
-/// Ollama client for AI chat
+/// AI client for Mistral API
 #[derive(Clone)]
-struct OllamaClient {
-    config: OllamaConfig,
+struct AiClient {
+    config: AiConfig,
 }
 
-impl OllamaClient {
+impl AiClient {
     fn new() -> Self {
         Self {
-            config: OllamaConfig::default(),
+            config: AiConfig::default(),
         }
     }
 
@@ -96,17 +108,13 @@ impl OllamaClient {
         let request_body = json!({
             "model": self.config.model,
             "messages": messages,
-            "stream": false,
-            "options": {
-                "temperature": 0.7,
-                "num_predict": 2048,
-            }
+            "temperature": 0.7,
+            "max_tokens": 2048,
         });
 
-        let url = format!("{}/api/chat", self.config.api_url);
         let agent = self.create_agent();
-
-        let mut request = agent.post(&url).set("Content-Type", "application/json");
+        let mut request = agent.post(&self.config.api_url)
+            .set("Content-Type", "application/json");
 
         if let Some(ref key) = self.config.api_key {
             request = request.set("Authorization", &format!("Bearer {}", key));
@@ -114,16 +122,19 @@ impl OllamaClient {
 
         let response = request
             .send_json(request_body)
-            .map_err(|e| anyhow::anyhow!("Failed to send request to Ollama: {}", e))?;
+            .map_err(|e| anyhow::anyhow!("Failed to send request to Mistral API: {}", e))?;
 
         let body: serde_json::Value = response
             .into_json()
-            .map_err(|e| anyhow::anyhow!("Failed to parse Ollama response: {}", e))?;
+            .map_err(|e| anyhow::anyhow!("Failed to parse Mistral response: {}", e))?;
 
-        body["message"]["content"]
-            .as_str()
+        // Mistral API response format: { "choices": [{ "message": { "content": "..." } }] }
+        body["choices"]
+            .as_array()
+            .and_then(|choices| choices.first())
+            .and_then(|choice| choice["message"]["content"].as_str())
             .map(|s| s.to_string())
-            .ok_or_else(|| anyhow::anyhow!("Invalid response format from Ollama"))
+            .ok_or_else(|| anyhow::anyhow!("Invalid response format from Mistral API"))
     }
 }
 
@@ -146,8 +157,8 @@ pub struct App {
     /// Plugin manager for loading and managing plugins
     #[allow(dead_code)]
     plugin_manager: PluginManager,
-    /// Ollama client for AI chat
-    ollama_client: OllamaClient,
+    /// AI client for chat (Mistral API)
+    ai_client: AiClient,
     /// Background chat task handle
     chat_task: Option<JoinHandle<Result<String>>>,
 }
@@ -295,7 +306,7 @@ impl App {
         };
         plugin_manager.load_enabled_plugins(context).await?;
 
-        let ollama_client = OllamaClient::new();
+        let ai_client = AiClient::new();
 
         let mut app = Self {
             state,
@@ -312,7 +323,7 @@ impl App {
             auto_sync_scheduler,
             sync_task: None,
             plugin_manager,
-            ollama_client,
+            ai_client,
             chat_task: None,
         };
         app.restore_ui_state(&data_dir).await?;
@@ -1220,9 +1231,9 @@ impl App {
         Ok(())
     }
 
-    /// Spawn a background task to get a chat response from Ollama
+    /// Spawn a background task to get a chat response from Mistral API
     async fn spawn_chat_response_task(&mut self, prompt: String) {
-        let client = self.ollama_client.clone();
+        let client = self.ai_client.clone();
         let task = tokio::spawn(async move {
             client.generate_response(&prompt).await
         });
