@@ -177,16 +177,16 @@ install-plugins:
     mkdir -p ~/.config/neojoplin/plugins/enabled
     cp target/release/libai_ollama.so ~/.config/neojoplin/plugins/available/ai-ollama/0.1.0/
     cp target/release/libjarvis.so ~/.config/neojoplin/plugins/available/jarvis/0.1.0/
-    ln -sf ../../available/ai-ollama/0.1.0/libai_ollama.so ~/.config/neojoplin/plugins/enabled/
-    ln -sf ../../available/jarvis/0.1.0/libjarvis.so ~/.config/neojoplin/plugins/enabled/
+    ln -sf ../available/ai-ollama/0.1.0/libai_ollama.so ~/.config/neojoplin/plugins/enabled/
+    ln -sf ../available/jarvis/0.1.0/libjarvis.so ~/.config/neojoplin/plugins/enabled/
     # Install to test plugin directory
     mkdir -p ~/.config/neojoplin-test/plugins/available/ai-ollama/0.1.0
     mkdir -p ~/.config/neojoplin-test/plugins/available/jarvis/0.1.0
     mkdir -p ~/.config/neojoplin-test/plugins/enabled
     cp target/release/libai_ollama.so ~/.config/neojoplin-test/plugins/available/ai-ollama/0.1.0/
     cp target/release/libjarvis.so ~/.config/neojoplin-test/plugins/available/jarvis/0.1.0/
-    ln -sf ../../available/ai-ollama/0.1.0/libai_ollama.so ~/.config/neojoplin-test/plugins/enabled/
-    ln -sf ../../available/jarvis/0.1.0/libjarvis.so ~/.config/neojoplin-test/plugins/enabled/
+    ln -sf ../available/ai-ollama/0.1.0/libai_ollama.so ~/.config/neojoplin-test/plugins/enabled/
+    ln -sf ../available/jarvis/0.1.0/libjarvis.so ~/.config/neojoplin-test/plugins/enabled/
     @echo "✓ Plugins installed to ~/.config/neojoplin/plugins/ and ~/.config/neojoplin-test/plugins/"
 
     @echo "✓ NeoJoplin and plugins installed successfully"
