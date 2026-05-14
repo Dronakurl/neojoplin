@@ -117,9 +117,13 @@ install-cli: install
 # Legacy compatibility (now just installs the main binary)
 install-tui: install
 
-# Legacy compatibility (now just installs the main binary)
-install-all: install
-    @echo "Installed neojoplin (CLI + TUI combined)"
+# Legacy compatibility (now installs binary + plugins)
+install-all:
+    just clean
+    cargo build --release
+    just install-plugins
+    cargo install --path crates/cli --force
+    @echo "Installed neojoplin (CLI + TUI + plugins)"
 
 # Note: tui-bin crate removed - unified binary provides both interfaces
 
@@ -185,10 +189,4 @@ install-plugins:
     ln -sf ../../available/jarvis/0.1.0/libjarvis.so ~/.config/neojoplin-test/plugins/enabled/
     @echo "✓ Plugins installed to ~/.config/neojoplin/plugins/ and ~/.config/neojoplin-test/plugins/"
 
-# Build and install everything (binary + plugins)
-install-all:
-    just clean
-    just install
-    just build-plugins
-    just install-plugins
     @echo "✓ NeoJoplin and plugins installed successfully"
