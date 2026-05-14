@@ -1234,8 +1234,43 @@ impl App {
     /// Spawn a background task to get a chat response from Mistral API
     async fn spawn_chat_response_task(&mut self, prompt: String) {
         let client = self.ai_client.clone();
+        let notes = self.state.notes.clone();
+        
+        // Build context from selected note (full content)
+        let selected_context = if let Some(note) = self.state.selected_note() {
+            format!(
+                "Current note:\nTitle: {}\nContent:\n{}",
+                note.title, note.body
+            )
+        } else {
+            String::new()
+        };
+        
+        // Build summary of other notes (titles only, limited to 10)
+        let other_notes_context: String = notes
+            .iter()
+            .filter(|n| self.state.selected_note().map_or(true, |s| s.id != n.id))
+            .take(10)
+            .map(|note| format!("- {}", note.title))
+            .collect::<Vec<_>>()
+            .join("\n");
+        
+        // Combine all context with prompt
+        let full_prompt = format!(
+            "You are a helpful AI assistant with access to the user's notes. \
+Use the notes below to provide accurate, context-aware answers.\n\n
+{}{}\n\nUser question: {}",
+            selected_context,
+            if !other_notes_context.is_empty() {
+                format!("\n\nOther notes available:\n{}", other_notes_context)
+            } else {
+                String::new()
+            },
+            prompt
+        );
+        
         let task = tokio::spawn(async move {
-            client.generate_response(&prompt).await
+            client.generate_response(&full_prompt).await
         });
         self.chat_task = Some(task);
     }
