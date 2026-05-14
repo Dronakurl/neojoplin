@@ -1,0 +1,25 @@
+# Ollama AI Plugin Configuration
+# This file contains metadata about the plugin
+
+[package]
+id = "ai-ollama"
+name = "Ollama AI Provider"
+version = "0.1.0"
+description = "Local LLM integration via Ollama API"
+author = "NeoJoplin Team"
+license = "MIT"
+
+[capabilities]
+enabled = ["AiProvider", "CliCommands"]
+
+# Default settings for the plugin
+# Uses gemma2:2b which is already downloaded in the Docker volumes
+[settings]
+model = "gemma2:2b"
+api_url = "http://localhost:11434"
+timeout_seconds = 120
+# api_key = ""  # Optional, if your Ollama instance requires authentication
+
+# Note: These settings can be overridden via:
+# - Plugin configuration file: ~/.config/neojoplin/plugins/config/ai-ollama.json
+# - Environment variables: OLlama_MODEL, OLlama_API_URL, etc.

@@ -34,6 +34,17 @@ pub struct Config {
 impl Config {
     /// Get configuration file path
     pub fn config_path() -> Result<PathBuf> {
+        // Check for custom config directory environment variable
+        if let Ok(custom_dir) = std::env::var("NEOJOPLIN_CONFIG_DIR") {
+            return Ok(PathBuf::from(custom_dir).join("config.toml"));
+        }
+
+        // Check for test mode
+        if std::env::var("NEOJOPLIN_TEST_MODE").is_ok() {
+            let config_dir = dirs::config_dir().context("Failed to determine config directory")?;
+            return Ok(config_dir.join("neojoplin-test").join("config.toml"));
+        }
+
         let config_dir = dirs::config_dir().context("Failed to determine config directory")?;
         Ok(config_dir.join("neojoplin").join("config.toml"))
     }

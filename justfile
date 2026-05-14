@@ -148,3 +148,14 @@ webdav-logs:
 # Test bidirectional sync with Joplin CLI
 test-sync:
     ./tests/integration/sync_test.sh
+
+
+# AI Plugin Development
+build-ai-plugin:
+    cargo build -p ai-ollama --release
+
+start-ollama:
+    ./scripts/start_ollama.sh
+
+stop-ollama:
+    ./scripts/stop_ollama.sh
