@@ -3,6 +3,7 @@ members = [
   "crates/joplin-domain",
   "crates/joplin",
   "crates/joplin-sync",
+  "crates/plugins",
   "crates/core",
   "crates/storage",
   "crates/sync",
