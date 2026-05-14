@@ -121,13 +121,13 @@ install-tui: install
 install:
     just clean
     cargo build --release
-    just install-plugins
     cargo install --path crates/cli --force
-    @echo "Installed neojoplin (CLI + TUI + plugins)"
+    @echo "Installed neojoplin (CLI + TUI)"
 
 # Note: tui-bin crate removed - unified binary provides both interfaces
+# AI chat is now integrated directly into TUI (no plugins needed)
 
-# Alias for install (installs binary + plugins)
+# Alias for install
 install-all: install
 
 # Test WebDAV connection
@@ -167,22 +167,12 @@ start-ollama:
 stop-ollama:
     ./scripts/stop_ollama.sh
 
-# Build all plugins
+# (No plugins to build - AI chat is now integrated directly into TUI)
 build-plugins:
-    cargo build -p jarvis --release
+    @echo "No plugins to build - AI chat is integrated directly into TUI"
 
-# Install plugins to plugin directories (both regular and test mode)
+# Install plugins to plugin directories (kept for future plugin system)
 install-plugins:
-    # Install to regular plugin directory
-    mkdir -p ~/.config/neojoplin/plugins/available/jarvis/0.1.0
-    mkdir -p ~/.config/neojoplin/plugins/enabled
-    cp target/release/libjarvis.so ~/.config/neojoplin/plugins/available/jarvis/0.1.0/
-    ln -sf ../available/jarvis/0.1.0/libjarvis.so ~/.config/neojoplin/plugins/enabled/
-    # Install to test plugin directory
-    mkdir -p ~/.config/neojoplin-test/plugins/available/jarvis/0.1.0
-    mkdir -p ~/.config/neojoplin-test/plugins/enabled
-    cp target/release/libjarvis.so ~/.config/neojoplin-test/plugins/available/jarvis/0.1.0/
-    ln -sf ../available/jarvis/0.1.0/libjarvis.so ~/.config/neojoplin-test/plugins/enabled/
-    @echo "✓ Plugins installed to ~/.config/neojoplin/plugins/ and ~/.config/neojoplin-test/plugins/"
+    @echo "No plugins to install - AI chat is integrated directly into TUI"
 
     @echo "✓ NeoJoplin and plugins installed successfully"

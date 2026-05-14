@@ -15,7 +15,7 @@ use tokio::task::JoinHandle;
 
 use joplin_domain::{now_ms, Folder, Note, NoteTag, Storage, SyncEvent, Tag};
 use neojoplin_core::AutoSyncScheduler;
-use neojoplin_plugin::{Plugin, PluginManager};
+use neojoplin_plugin::PluginManager;
 use neojoplin_storage::SqliteStorage;
 use std::path::Path;
 
@@ -63,10 +63,6 @@ pub struct App {
     /// Plugin manager for loading and managing plugins
     #[allow(dead_code)]
     plugin_manager: PluginManager,
-    /// Map of key bindings to TUI panel indices
-    key_to_panel: HashMap<char, usize>,
-    /// Active TUI panel plugins
-    tui_panels: Vec<Box<dyn Plugin>>,
 }
 
 #[derive(Default, Debug, Clone, Copy)]
@@ -211,25 +207,6 @@ impl App {
             metadata: neojoplin_plugin::PluginMetadata::default(),
         };
         plugin_manager.load_enabled_plugins(context).await?;
-        
-        // Collect TUI panel plugins
-        let mut tui_panels: Vec<Box<dyn Plugin>> = Vec::new();
-        let mut key_to_panel: HashMap<char, usize> = HashMap::new();
-        
-        for plugin in plugin_manager.loader.get_all_plugins() {
-            if let Some(panel_provider) = plugin.as_tui_panel_provider() {
-                if let Some(key) = panel_provider.key_binding() {
-                    let idx = tui_panels.len();
-                    tui_panels.push(plugin.clone_box());
-                    key_to_panel.insert(key, idx);
-                    tracing::info!(
-                        "Registered TUI panel '{}' with key binding '{}'",
-                        panel_provider.panel_name(),
-                        key
-                    );
-                }
-            }
-        }
 
         let mut app = Self {
             state,
@@ -246,8 +223,6 @@ impl App {
             auto_sync_scheduler,
             sync_task: None,
             plugin_manager,
-            key_to_panel,
-            tui_panels,
         };
         app.restore_ui_state(&data_dir).await?;
         app.refresh_sync_status().await?;
@@ -426,16 +401,6 @@ impl App {
                     ui::render_sort_popup(f, &self.state);
                 } else {
                     ui::render_ui(f, &self.state);
-                    
-                    // Render plugin panels
-                    for panel_plugin in &self.tui_panels {
-                        if let Some(panel_provider) = panel_plugin.as_tui_panel_provider() {
-                            // For now, render panels in the center of the screen
-                            // In a real implementation, panels would have their own area management
-                            let area = f.area();
-                            let _ = panel_provider.render_panel(f, area);
-                        }
-                    }
                 }
             })?;
 
@@ -464,15 +429,40 @@ impl App {
             return Ok(true);
         }
 
-        // Handle plugin key bindings
-        if let KeyCode::Char(c) = key.code {
-            if let Some(&panel_idx) = self.key_to_panel.get(&c) {
-                if let Some(panel_plugin) = self.tui_panels.get_mut(panel_idx) {
-                    if let Some(panel_provider) = panel_plugin.as_mut_tui_panel_provider() {
-                        panel_provider.handle_input(key)?;
-                        return Ok(false);
-                    }
+        // Handle chat overlay input
+        if self.state.chat_overlay.visible {
+            match key.code {
+                KeyCode::Esc => {
+                    self.state.close_chat_overlay();
+                    return Ok(false);
                 }
+                KeyCode::Enter => {
+                    if !self.state.chat_overlay.input.trim().is_empty()
+                        && !self.state.chat_overlay.pending
+                    {
+                        let question = self.state.chat_overlay.input.trim().to_string();
+                        self.state.chat_add_message("You", question);
+                        self.state.chat_overlay.input.clear();
+                        self.state.chat_overlay.pending = true;
+
+                        // TODO: Call AI backend
+                        self.state
+                            .chat_add_message("Jarvis", "Let me think about that...");
+                        self.state.chat_overlay.pending = false;
+                    }
+                    return Ok(false);
+                }
+                KeyCode::Backspace => {
+                    self.state.chat_overlay.input.pop();
+                    return Ok(false);
+                }
+                KeyCode::Char(c) => {
+                    self.state.chat_overlay.input.push(c);
+                    return Ok(false);
+                }
+                // Pass Tab through to allow switching to preview panel
+                KeyCode::Tab => {}
+                _ => {}
             }
         }
 
@@ -727,6 +717,11 @@ impl App {
                 self.refresh_sync_status().await?;
                 self.refresh_plugin_list().await?;
                 self.state.toggle_settings();
+            }
+
+            // AI Chat overlay
+            KeyCode::Char('P') => {
+                self.state.open_chat_overlay();
             }
 
             // Panel navigation

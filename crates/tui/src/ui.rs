@@ -46,6 +46,9 @@ const HELP_LINES: &[&str] = &[
     "  D      Delete selected note immediately",
     "  R      Restore selected trashed note",
     "",
+    "AI Chat",
+    "  P      Toggle AI chat overlay",
+    "",
     "Filtering",
     "  f / F              Filter the focused list (F searches note contents too)",
     "  =text              Disable fuzzy matching and use a literal substring search",
@@ -95,41 +98,18 @@ const HELP_LINES: &[&str] = &[
     "  q          Quit",
 ];
 
-pub fn help_search_lines() -> Vec<String> {
-    // This is used for search, but we can't pass state here
-    // For now, return base help lines without plugin-specific entries
-    HELP_LINES.iter().map(|s| s.to_string()).collect()
+pub fn help_search_lines() -> &'static [&'static str] {
+    HELP_LINES
 }
 
-/// Check if Jarvis plugin is loaded
-fn has_jarvis_plugin(state: &AppState) -> bool {
-    state.plugins.iter().any(|p| p.id == "jarvis")
-}
-
-/// Get all help lines including dynamic ones based on loaded plugins
-fn all_help_lines(state: &AppState) -> Vec<String> {
-    let mut lines: Vec<String> = HELP_LINES.iter().map(|s| s.to_string()).collect();
-    
-    // Add AI help lines if Jarvis plugin is present
-    if has_jarvis_plugin(state) {
-        lines.push(String::new());
-        lines.push("AI (Jarvis plugin)".to_string());
-        lines.push("  P      Open AI chat overlay".to_string());
-    }
-    
-    lines
-}
-
-/// Get help lines for search query, including dynamic ones
-fn all_help_lines_for_query(state: &AppState, query: Option<&str>) -> Vec<String> {
+fn help_lines_for_query(query: Option<&str>) -> Vec<&'static str> {
     let Some(query) = query.filter(|query| !query.trim().is_empty()) else {
-        return all_help_lines(state);
+        return HELP_LINES.to_vec();
     };
 
     let needle = query.to_lowercase();
     let mut filtered = Vec::new();
-    
-    for line in all_help_lines(state) {
+    for &line in HELP_LINES {
         let is_heading = !line.is_empty() && !line.starts_with(' ');
         if is_heading || (!line.is_empty() && line.to_lowercase().contains(&needle)) {
             filtered.push(line);
@@ -138,7 +118,9 @@ fn all_help_lines_for_query(state: &AppState, query: Option<&str>) -> Vec<String
     filtered
 }
 
-fn highlight_help_line<'a>(line: &'a str, query: Option<&str>, theme: &'a Theme) -> Line<'a> {
+
+
+fn highlight_help_line<'a>(line: &'static str, query: Option<&str>, theme: &'a Theme) -> Line<'a> {
     let is_heading = !line.is_empty() && !line.starts_with(' ');
     let Some(query) = query.filter(|query| !query.trim().is_empty()) else {
         return if is_heading {
@@ -277,6 +259,72 @@ pub fn render_ui(f: &mut Frame, state: &AppState) {
     if state.command_prompt.visible {
         render_command_overlay(f, state, status_area);
     }
+
+    // Render AI chat overlay if visible
+    if state.chat_overlay.visible {
+        render_chat_overlay(f, state, chunks[0]);
+    }
+}
+
+/// Render AI chat overlay
+fn render_chat_overlay(f: &mut Frame, state: &AppState, parent: Rect) {
+    let theme = &state.theme;
+    let cols = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Percentage(60), Constraint::Percentage(40)])
+        .split(parent);
+    let area = cols[0];
+    let inner = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Min(3), Constraint::Length(3)])
+        .split(area);
+
+    let title = if state.chat_overlay.pending {
+        " AI Chat (thinking...) "
+    } else {
+        " AI Chat (P to close) "
+    };
+    let mut lines = Vec::new();
+
+    for message in state.chat_overlay.messages.iter().rev().take(12).rev() {
+        lines.push(Line::from(vec![
+            Span::styled(format!("{}: ", message.role), theme.accent().bold()),
+            Span::styled(message.content.clone(), theme.text()),
+        ]));
+        lines.push(Line::from(""));
+    }
+    if lines.is_empty() {
+        lines.push(Line::from("Ask a question about your notes.").style(theme.muted()));
+    }
+
+    let transcript = Paragraph::new(lines)
+        .block(
+            Block::default()
+                .title(title)
+                .borders(Borders::ALL)
+                .border_style(theme.border_focused()),
+        )
+        .wrap(Wrap { trim: false });
+    f.render_widget(Clear, area);
+    f.render_widget(transcript, inner[0]);
+
+    let session = state
+        .chat_overlay
+        .session_id
+        .as_deref()
+        .unwrap_or("new-session");
+    let input = Paragraph::new(vec![Line::from(vec![
+        Span::styled("> ", theme.primary().bold()),
+        Span::styled(&state.chat_overlay.input, theme.text()),
+        Span::styled("█", theme.muted()),
+    ])])
+    .block(
+        Block::default()
+            .title(format!(" Session: {} ", session))
+            .borders(Borders::ALL)
+            .border_style(theme.border_focused()),
+    );
+    f.render_widget(input, inner[1]);
 }
 
 /// Render main content area with split panes
@@ -850,6 +898,7 @@ fn render_keybinding_ribbon(f: &mut Frame, state: &AppState, area: Rect) {
             bindings.push(("r".to_string(), "RESTORE".to_string(), false));
         }
         bindings.push(("s".to_string(), "SYNC".to_string(), false));
+        bindings.push(("P".to_string(), "AI CHAT".to_string(), false));
     }
 
     // Filter available when focus is list-based or preview
@@ -1860,7 +1909,7 @@ pub fn render_help(
         ),
     ]);
 
-    let visible_lines = all_help_lines_for_query(state, search_query);
+    let visible_lines = help_lines_for_query(search_query);
     let text = Text::from(
         visible_lines
             .iter()

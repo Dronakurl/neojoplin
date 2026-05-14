@@ -24,6 +24,24 @@ pub struct PluginListItem {
     pub state: String,
 }
 
+/// Message in the chat overlay
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ChatOverlayMessage {
+    pub role: String,
+    pub content: String,
+}
+
+/// State for the AI chat overlay
+#[derive(Debug, Clone, Default)]
+pub struct ChatOverlayState {
+    pub visible: bool,
+    pub input: String,
+    pub session_id: Option<String>,
+    pub messages: Vec<ChatOverlayMessage>,
+    pub pending: bool,
+    pub scroll: usize,
+}
+
 /// Which panel has focus
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FocusPanel {
@@ -279,6 +297,8 @@ pub struct AppState {
     pub error_message: String,
     /// Whether a sync operation is currently in progress
     pub sync_in_progress: bool,
+    /// AI chat overlay state
+    pub chat_overlay: ChatOverlayState,
     /// List of plugins for settings display
     pub plugins: Vec<PluginListItem>,
     /// Selected plugin index in settings tab
@@ -337,6 +357,7 @@ impl Default for AppState {
             show_error_dialog: false,
             error_message: String::new(),
             sync_in_progress: false,
+            chat_overlay: ChatOverlayState::default(),
             plugins: Vec::new(),
             selected_plugin: 0,
         }
@@ -1123,6 +1144,29 @@ impl AppState {
             self.trash_mode = false;
             self.selected_folder = None;
         }
+    }
+
+    /// Open the AI chat overlay
+    pub fn open_chat_overlay(&mut self) {
+        self.chat_overlay.visible = true;
+        self.chat_overlay.pending = false;
+    }
+
+    /// Close the AI chat overlay
+    pub fn close_chat_overlay(&mut self) {
+        self.chat_overlay.visible = false;
+        self.chat_overlay.input.clear();
+        self.chat_overlay.pending = false;
+        self.chat_overlay.scroll = 0;
+    }
+
+    /// Add a message to the chat overlay
+    pub fn chat_add_message(&mut self, role: impl Into<String>, content: impl Into<String>) {
+        self.chat_overlay.messages.push(ChatOverlayMessage {
+            role: role.into(),
+            content: content.into(),
+        });
+        self.chat_overlay.scroll = 0;
     }
 }
 
