@@ -52,6 +52,7 @@ impl Default for OllamaConfig {
 }
 
 /// Ollama AI plugin
+#[derive(Clone)]
 pub struct OllamaPlugin {
     config: OllamaConfig,
     plugin_config: PluginConfig,
@@ -230,6 +231,10 @@ impl Plugin for OllamaPlugin {
     
     fn as_ai_provider(&self) -> Option<&dyn AiProvider> {
         Some(self)
+    }
+    
+    fn clone_box(&self) -> Box<dyn Plugin> {
+        Box::new(self.clone())
     }
     
     fn as_cli_command_provider(&self) -> Option<&dyn CliCommandProvider> {

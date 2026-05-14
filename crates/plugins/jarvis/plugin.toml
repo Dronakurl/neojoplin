@@ -1,0 +1,13 @@
+[package]
+id = "jarvis"
+name = "Jarvis AI Chat"
+version = "0.1.0"
+description = "AI chat overlay panel for NeoJoplin TUI"
+author = "NeoJoplin Team"
+license = "MIT"
+
+[capabilities]
+tui_panels = true
+
+[dependencies]
+ai_provider = "ai-ollama"

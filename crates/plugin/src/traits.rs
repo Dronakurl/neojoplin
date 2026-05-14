@@ -74,6 +74,9 @@ pub trait Plugin: Send + Sync + DowncastSync {
     /// Get plugin capabilities
     fn capabilities(&self) -> &[PluginCapability];
     
+    /// Clone the plugin as a Box<dyn Plugin>
+    fn clone_box(&self) -> Box<dyn Plugin>;
+    
     /// Get this plugin as an AiProvider if it implements that capability
     fn as_ai_provider(&self) -> Option<&dyn AiProvider> {
         None
@@ -81,6 +84,11 @@ pub trait Plugin: Send + Sync + DowncastSync {
     
     /// Get this plugin as a CliCommandProvider if it implements that capability
     fn as_cli_command_provider(&self) -> Option<&dyn CliCommandProvider> {
+        None
+    }
+    
+    /// Get this plugin as a TuiPanelProvider if it implements that capability
+    fn as_tui_panel_provider(&self) -> Option<&dyn TuiPanelProvider> {
         None
     }
 }
@@ -110,8 +118,8 @@ pub trait TuiPanelProvider: Plugin {
     /// Get panel key binding (optional)
     fn key_binding(&self) -> Option<char>;
 
-    /// Render panel content
-    async fn render_panel(&self, area: Rect) -> Result<Frame>;
+    /// Render panel content onto the given frame
+    async fn render_panel(&self, f: &mut Frame, area: Rect) -> Result<()>;
 
     /// Handle panel input
     async fn handle_input(&mut self, event: crossterm::event::KeyEvent) -> Result<bool>;
