@@ -55,6 +55,7 @@ neojoplin --tui
 # N     - New folder
 # d     - Delete selected
 # s     - Sync
+# P     - Open AI chat overlay (Jarvis plugin)
 ```
 
 ### CLI Commands
@@ -75,6 +76,12 @@ neojoplin edit "Rust Tips"
 
 # Sync with WebDAV
 neojoplin sync --url https://webdav.example.com --username user --password pass
+
+# Plugin management + AI chat
+neojoplin plugin list
+neojoplin plugin enable jarvis
+neojoplin ask "What notes mention Pflege?"
+neojoplin plugin chat "Summarize my latest todo notes"
 ```
 
 ## Configuration
@@ -114,6 +121,27 @@ Or set it in the config:
 ```bash
 neojoplin config editor hx
 ```
+
+### AI Provider Configuration
+
+NeoJoplin AI chat supports both Ollama and OpenAI-compatible APIs.
+
+```bash
+# Provider selection: ollama (default) or openai
+export NEOJOPLIN_AI_PROVIDER=ollama
+
+# Ollama defaults
+export OLLAMA_BASE_URL=http://127.0.0.1:11434
+export OLLAMA_MODEL=llama3.2
+
+# OpenAI-compatible
+export NEOJOPLIN_AI_PROVIDER=openai
+export OPENAI_API_KEY=...
+export OPENAI_BASE_URL=https://api.openai.com
+export OPENAI_MODEL=gpt-4.1-mini
+```
+
+The CLI also reads `.env` in the current directory and `~/.env`.
 
 ## Commands
 
