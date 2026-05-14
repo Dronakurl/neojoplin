@@ -17,7 +17,7 @@ run ARGV="":
     cargo run --release --bin neojoplin -- {{ARGV}}
 
 # Build and install to ~/.cargo/bin
-install:
+install-bare:
     cargo install --path crates/cli --force
     @echo "Installed neojoplin to ~/.cargo/bin"
 
@@ -118,7 +118,7 @@ install-cli: install
 install-tui: install
 
 # Legacy compatibility (now installs binary + plugins)
-install-all:
+install:
     just clean
     cargo build --release
     just install-plugins
