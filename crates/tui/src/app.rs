@@ -431,6 +431,11 @@ impl App {
 
         // Handle chat overlay input
         if self.state.chat_overlay.visible {
+            // Check if there's a note to navigate to
+            if let Some(note_id) = self.state.chat_overlay.navigate_to_note_id.take() {
+                self.state.select_note_by_id(&note_id);
+            }
+
             match key.code {
                 KeyCode::Esc => {
                     self.state.close_chat_overlay();
@@ -446,6 +451,7 @@ impl App {
                         self.state.chat_overlay.pending = true;
 
                         // TODO: Call AI backend
+                        // For now, simulate a response that navigates to a note
                         self.state
                             .chat_add_message("Jarvis", "Let me think about that...");
                         self.state.chat_overlay.pending = false;

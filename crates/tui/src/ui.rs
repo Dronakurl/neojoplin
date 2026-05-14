@@ -266,14 +266,18 @@ pub fn render_ui(f: &mut Frame, state: &AppState) {
     }
 }
 
-/// Render AI chat overlay
+/// Render AI chat overlay over notebooks+notes panels, leaving preview visible
 fn render_chat_overlay(f: &mut Frame, state: &AppState, parent: Rect) {
     let theme = &state.theme;
-    let cols = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([Constraint::Percentage(60), Constraint::Percentage(40)])
-        .split(parent);
-    let area = cols[0];
+    // Use left 50% of parent for chat overlay (notebooks + notes area)
+    // This leaves the right 50% (preview panel) fully visible
+    let chat_width = parent.width / 2;
+    let area = Rect {
+        x: parent.x,
+        y: parent.y,
+        width: chat_width,
+        height: parent.height,
+    };
     let inner = Layout::default()
         .direction(Direction::Vertical)
         .constraints([Constraint::Min(3), Constraint::Length(3)])
@@ -281,8 +285,10 @@ fn render_chat_overlay(f: &mut Frame, state: &AppState, parent: Rect) {
 
     let title = if state.chat_overlay.pending {
         " AI Chat (thinking...) "
+    } else if state.chat_overlay.navigate_to_note_id.is_some() {
+        " AI Chat (navigating to note...) "
     } else {
-        " AI Chat (P to close) "
+        " AI Chat (P to close, Tab to preview) "
     };
     let mut lines = Vec::new();
 

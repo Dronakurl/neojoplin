@@ -40,6 +40,8 @@ pub struct ChatOverlayState {
     pub messages: Vec<ChatOverlayMessage>,
     pub pending: bool,
     pub scroll: usize,
+    /// Note ID to navigate to (when chat suggests a relevant note)
+    pub navigate_to_note_id: Option<String>,
 }
 
 /// Which panel has focus
@@ -1158,6 +1160,7 @@ impl AppState {
         self.chat_overlay.input.clear();
         self.chat_overlay.pending = false;
         self.chat_overlay.scroll = 0;
+        self.chat_overlay.navigate_to_note_id = None;
     }
 
     /// Add a message to the chat overlay
@@ -1167,6 +1170,11 @@ impl AppState {
             content: content.into(),
         });
         self.chat_overlay.scroll = 0;
+    }
+
+    /// Navigate to a note by ID (called by chat when suggesting a relevant note)
+    pub fn chat_navigate_to_note(&mut self, note_id: String) {
+        self.chat_overlay.navigate_to_note_id = Some(note_id);
     }
 }
 
