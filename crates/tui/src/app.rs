@@ -61,6 +61,7 @@ pub struct App {
     /// Background sync task handle
     sync_task: Option<JoinHandle<SyncTaskResult>>,
     /// Plugin manager for loading and managing plugins
+    #[allow(dead_code)]
     plugin_manager: PluginManager,
     /// Map of key bindings to TUI panel indices
     key_to_panel: HashMap<char, usize>,

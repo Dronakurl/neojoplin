@@ -6,17 +6,12 @@
 use anyhow::Result;
 use async_trait::async_trait;
 use crossterm::event::{KeyCode, KeyEvent};
-use neojoplin_plugin::{
-    AiProvider, Plugin, PluginCapability, PluginConfig, PluginContext, PluginMetadata,
-    TuiPanelProvider,
-};
+use neojoplin_plugin::{Plugin, PluginCapability, PluginContext, PluginMetadata, TuiPanelProvider};
 use once_cell::sync::Lazy;
 use ratatui::prelude::*;
 use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
 use ratatui::text::{Line, Span};
 use ratatui::style::{Color, Style};
-use ratatui::Frame;
-use std::sync::Arc;
 
 /// Jarvis plugin metadata
 static METADATA: Lazy<PluginMetadata> = Lazy::new(|| PluginMetadata {
@@ -52,16 +47,12 @@ pub struct ChatOverlayState {
 #[derive(Clone)]
 pub struct JarvisPlugin {
     state: ChatOverlayState,
-    ai_provider: Option<Arc<dyn AiProvider>>,
-    plugin_config: PluginConfig,
 }
 
 impl JarvisPlugin {
     pub fn new() -> Self {
         Self {
             state: ChatOverlayState::default(),
-            ai_provider: None,
-            plugin_config: PluginConfig::default(),
         }
     }
 
@@ -94,8 +85,6 @@ impl JarvisPlugin {
 #[async_trait]
 impl Plugin for JarvisPlugin {
     async fn initialize(&mut self, _context: PluginContext) -> Result<()> {
-        // Try to get an AI provider from loaded plugins
-        // For now, we'll look it up when needed
         tracing::info!("Jarvis plugin initialized");
         Ok(())
     }
