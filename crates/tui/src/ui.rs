@@ -37,6 +37,7 @@ const HELP_LINES: &[&str] = &[
     "  T      Convert selected note <-> to-do",
     "  m      Move the selected note or notebook to another notebook",
     "  a      Edit tags on the selected note",
+    "  P      Open AI chat overlay (if Jarvis plugin enabled)",
     "  r      Rename selected note or notebook",
     "  v      Open/close note version browser (preview panel)",
     "  f      Filter the focused list (notes: title only, #tag still works)",
@@ -253,6 +254,10 @@ pub fn render_ui(f: &mut Frame, state: &AppState) {
 
     if state.command_prompt.visible {
         render_command_overlay(f, state, status_area);
+    }
+
+    if state.chat_overlay.visible {
+        render_chat_overlay(f, state, chunks[0]);
     }
 }
 
@@ -826,6 +831,7 @@ fn render_keybinding_ribbon(f: &mut Frame, state: &AppState, area: Rect) {
         if state.focus == FocusPanel::Content && state.content_view_mode != ContentViewMode::Note {
             bindings.push(("r".to_string(), "RESTORE".to_string(), false));
         }
+        bindings.push(("P".to_string(), "AI CHAT".to_string(), false));
         bindings.push(("s".to_string(), "SYNC".to_string(), false));
     }
 
@@ -1067,12 +1073,13 @@ pub fn render_settings(f: &mut Frame, state: &AppState) {
         .split(inner);
 
     // Tab bar
-    let tab_names = ["Sync", "Auto-sync", "Status", "Encryption"];
+    let tab_names = ["Sync", "Auto-sync", "Status", "Encryption", "Plugins"];
     let current_tab_idx = match state.settings.current_tab {
         SettingsTab::Sync => 0,
         SettingsTab::AutoSync => 1,
         SettingsTab::Status => 2,
         SettingsTab::Encryption => 3,
+        SettingsTab::Plugins => 4,
     };
     let tabs = Tabs::new(tab_names)
         .select(current_tab_idx)
@@ -1086,6 +1093,7 @@ pub fn render_settings(f: &mut Frame, state: &AppState) {
         SettingsTab::AutoSync => render_auto_sync_settings(f, state, layout[1]),
         SettingsTab::Status => render_sync_status_settings(f, state, layout[1]),
         SettingsTab::Encryption => render_encryption_settings(f, state, layout[1]),
+        SettingsTab::Plugins => render_plugins_settings(f, state, layout[1]),
     }
 
     // Delete confirmation overlay
@@ -1108,6 +1116,104 @@ pub fn render_settings(f: &mut Frame, state: &AppState) {
             .unwrap_or("this target");
         render_activate_target_overlay(f, target_name, area, theme);
     }
+}
+
+fn render_plugins_settings(f: &mut Frame, state: &AppState, area: Rect) {
+    let theme = &state.theme;
+    let mut lines = vec![Line::from("Installed plugins").style(theme.primary().bold())];
+    lines.push(Line::from(""));
+
+    if state.plugins.is_empty() {
+        lines.push(Line::from("No plugins discovered").style(theme.muted()));
+        lines.push(
+            Line::from("Use `neojoplin plugin enable jarvis` to enable the AI plugin.")
+                .style(theme.muted()),
+        );
+    } else {
+        for (idx, plugin) in state.plugins.iter().enumerate() {
+            let style = if idx == state.selected_plugin {
+                theme.selection()
+            } else {
+                theme.text()
+            };
+            lines.push(Line::from(vec![
+                Span::styled(format!("• {} ", plugin.name), style),
+                Span::styled(format!("({})", plugin.id), theme.dim()),
+                Span::raw(" "),
+                Span::styled(format!("[{}]", plugin.state), theme.accent()),
+            ]));
+            if !plugin.description.is_empty() {
+                lines.push(Line::from(Span::styled(
+                    format!("  {}", plugin.description),
+                    theme.muted(),
+                )));
+            }
+        }
+    }
+
+    let content = Paragraph::new(lines)
+        .block(Block::default().title(" Plugins ").borders(Borders::ALL))
+        .wrap(Wrap { trim: false });
+    f.render_widget(content, area);
+}
+
+fn render_chat_overlay(f: &mut Frame, state: &AppState, parent: Rect) {
+    let theme = &state.theme;
+    let cols = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
+        .split(parent);
+    let area = cols[0];
+    let inner = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Min(3), Constraint::Length(3)])
+        .split(area);
+
+    let title = if state.chat_overlay.pending {
+        " AI Chat (thinking...) "
+    } else {
+        " AI Chat "
+    };
+    let mut lines = Vec::new();
+    for message in state.chat_overlay.messages.iter().rev().take(12).rev() {
+        lines.push(Line::from(vec![
+            Span::styled(format!("{}: ", message.role), theme.accent().bold()),
+            Span::styled(message.content.clone(), theme.text()),
+        ]));
+        lines.push(Line::from(""));
+    }
+    if lines.is_empty() {
+        lines.push(Line::from("Ask a question about your notes.").style(theme.muted()));
+    }
+
+    let transcript = Paragraph::new(lines)
+        .block(
+            Block::default()
+                .title(title)
+                .borders(Borders::ALL)
+                .border_style(theme.border_focused()),
+        )
+        .wrap(Wrap { trim: false });
+    f.render_widget(Clear, area);
+    f.render_widget(transcript, inner[0]);
+
+    let session = state
+        .chat_overlay
+        .session_id
+        .as_deref()
+        .unwrap_or("new-session");
+    let input = Paragraph::new(vec![Line::from(vec![
+        Span::styled("> ", theme.primary().bold()),
+        Span::styled(&state.chat_overlay.input, theme.text()),
+        Span::styled("█", theme.muted()),
+    ])])
+    .block(
+        Block::default()
+            .title(format!(" Session: {} ", session))
+            .borders(Borders::ALL)
+            .border_style(theme.border_focused()),
+    );
+    f.render_widget(input, inner[1]);
 }
 
 /// Build contextual bottom hints for the settings panel
@@ -1165,6 +1271,13 @@ fn settings_bottom_hints<'a>(state: &'a AppState, theme: &'a Theme) -> Line<'a> 
         for s in kh(theme, "Esc", "cancel") {
             spans.push(s);
         }
+    } else if state.settings.current_tab == SettingsTab::Plugins {
+        for s in kh(theme, "j/k", "select") {
+            spans.push(s);
+        }
+        for s in kh(theme, "r", "refresh list") {
+            spans.push(s);
+        }
     } else {
         for s in kh(theme, "h/l", "switch tab") {
             spans.push(s);
@@ -1219,6 +1332,7 @@ fn settings_bottom_hints<'a>(state: &'a AppState, theme: &'a Theme) -> Line<'a> 
                     }
                 }
             }
+            SettingsTab::Plugins => {}
         }
     }
 

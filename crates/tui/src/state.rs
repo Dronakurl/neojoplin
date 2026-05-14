@@ -111,6 +111,30 @@ pub struct TagPopupState {
     pub pending_delete_tag: Option<(String, String)>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PluginListItem {
+    pub id: String,
+    pub name: String,
+    pub state: String,
+    pub description: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ChatOverlayMessage {
+    pub role: String,
+    pub content: String,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct ChatOverlayState {
+    pub visible: bool,
+    pub input: String,
+    pub session_id: Option<String>,
+    pub messages: Vec<ChatOverlayMessage>,
+    pub pending: bool,
+    pub scroll: usize,
+}
+
 impl TagPopupState {
     pub fn open(&mut self, items: Vec<TagPopupItem>) {
         self.visible = true;
@@ -269,6 +293,12 @@ pub struct AppState {
     pub error_message: String,
     /// Whether a sync operation is currently in progress
     pub sync_in_progress: bool,
+    /// AI chat overlay state
+    pub chat_overlay: ChatOverlayState,
+    /// Plugin list for settings tab
+    pub plugins: Vec<PluginListItem>,
+    /// Selected plugin index in settings tab
+    pub selected_plugin: usize,
 }
 
 impl Default for AppState {
@@ -323,6 +353,9 @@ impl Default for AppState {
             show_error_dialog: false,
             error_message: String::new(),
             sync_in_progress: false,
+            chat_overlay: ChatOverlayState::default(),
+            plugins: Vec::new(),
+            selected_plugin: 0,
         }
     }
 }
@@ -331,6 +364,26 @@ impl AppState {
     /// Create new app state
     pub fn new() -> Self {
         Self::default()
+    }
+
+    pub fn open_chat_overlay(&mut self) {
+        self.chat_overlay.visible = true;
+        self.chat_overlay.pending = false;
+    }
+
+    pub fn close_chat_overlay(&mut self) {
+        self.chat_overlay.visible = false;
+        self.chat_overlay.input.clear();
+        self.chat_overlay.pending = false;
+        self.chat_overlay.scroll = 0;
+    }
+
+    pub fn chat_add_message(&mut self, role: impl Into<String>, content: impl Into<String>) {
+        self.chat_overlay.messages.push(ChatOverlayMessage {
+            role: role.into(),
+            content: content.into(),
+        });
+        self.chat_overlay.scroll = 0;
     }
 
     /// Set folders list
@@ -1434,6 +1487,7 @@ mod tests {
             master_key_id: None,
             encryption_applied: 0,
             encryption_cipher_text: None,
+            encryption_blob_encrypted: 0,
             icon: String::new(),
         }];
 
@@ -1475,6 +1529,7 @@ mod tests {
                 master_key_id: None,
                 encryption_applied: 0,
                 encryption_cipher_text: None,
+                encryption_blob_encrypted: 0,
                 icon: String::new(),
             },
             Folder {
@@ -1490,6 +1545,7 @@ mod tests {
                 master_key_id: None,
                 encryption_applied: 0,
                 encryption_cipher_text: None,
+                encryption_blob_encrypted: 0,
                 icon: String::new(),
             },
         ];

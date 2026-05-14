@@ -15,6 +15,7 @@ use tokio::task::JoinHandle;
 
 use joplin_domain::{now_ms, Folder, Note, NoteTag, Storage, SyncEvent, Tag};
 use neojoplin_core::AutoSyncScheduler;
+use neojoplin_plugins::{PluginError, PluginRuntime, PluginState};
 use neojoplin_storage::SqliteStorage;
 use std::path::Path;
 
@@ -42,6 +43,7 @@ struct PersistedUiState {
 
 type SyncTaskResult =
     Result<(String, bool, std::path::PathBuf, SyncStats), joplin_domain::DomainError>;
+type ChatTaskResult = Result<neojoplin_plugins::ChatResponse, PluginError>;
 
 /// Main TUI application
 pub struct App {
@@ -59,6 +61,10 @@ pub struct App {
     auto_sync_scheduler: AutoSyncScheduler,
     /// Background sync task handle
     sync_task: Option<JoinHandle<SyncTaskResult>>,
+    /// Plugin runtime (optional fallback keeps app functional without plugins)
+    plugin_runtime: Option<Arc<PluginRuntime>>,
+    /// Background AI chat task
+    chat_task: Option<JoinHandle<ChatTaskResult>>,
 }
 
 #[derive(Default, Debug, Clone, Copy)]
@@ -190,6 +196,13 @@ impl App {
         state.note_filter_mode = state.settings.ui.note_filter_mode;
 
         let auto_sync_scheduler = AutoSyncScheduler::new(state.settings.auto_sync.interval_seconds);
+        let plugin_runtime = match PluginRuntime::new().await {
+            Ok(runtime) => Some(Arc::new(runtime)),
+            Err(e) => {
+                tracing::warn!("Failed to initialize plugin runtime: {}", e);
+                None
+            }
+        };
 
         let mut app = Self {
             state,
@@ -205,9 +218,12 @@ impl App {
             command_history_draft: String::new(),
             auto_sync_scheduler,
             sync_task: None,
+            plugin_runtime,
+            chat_task: None,
         };
         app.restore_ui_state(&data_dir).await?;
         app.refresh_sync_status().await?;
+        let _ = app.refresh_plugin_list().await;
         Ok(app)
     }
 
@@ -349,6 +365,7 @@ impl App {
         loop {
             self.run_auto_sync_if_due().await?;
             self.check_sync_task().await?;
+            self.check_chat_task().await?;
             self.state
                 .settings
                 .set_next_auto_sync_in_seconds(self.auto_sync_scheduler.seconds_until_next_run());
@@ -466,6 +483,10 @@ impl App {
 
         if self.state.tag_popup.visible {
             return self.handle_tag_popup_key_event(key).await;
+        }
+
+        if self.state.chat_overlay.visible {
+            return self.handle_chat_overlay_key_event(key).await;
         }
 
         if self.state.command_prompt.visible {
@@ -660,7 +681,12 @@ impl App {
             // Settings
             KeyCode::Char('S') => {
                 self.refresh_sync_status().await?;
+                self.refresh_plugin_list().await?;
                 self.state.toggle_settings();
+            }
+
+            KeyCode::Char('P') => {
+                self.open_chat_overlay().await?;
             }
 
             // Panel navigation
@@ -1031,6 +1057,171 @@ impl App {
         Ok(())
     }
 
+    async fn check_chat_task(&mut self) -> Result<()> {
+        if let Some(task) = self.chat_task.take() {
+            if task.is_finished() {
+                match task.await {
+                    Ok(Ok(response)) => {
+                        self.state.chat_overlay.pending = false;
+                        self.state.chat_overlay.session_id = Some(response.session_id);
+                        self.state.chat_add_message("Jarvis", response.answer);
+                        if let Some(note_id) = response.suggested_note_id {
+                            self.open_suggested_note(&note_id).await?;
+                        }
+                    }
+                    Ok(Err(e)) => {
+                        self.state.chat_overlay.pending = false;
+                        self.state
+                            .chat_add_message("System", format!("Error: {}", e));
+                    }
+                    Err(join_err) => {
+                        self.state.chat_overlay.pending = false;
+                        self.state
+                            .chat_add_message("System", format!("Chat task failed: {}", join_err));
+                    }
+                }
+            } else {
+                self.chat_task = Some(task);
+            }
+        }
+        Ok(())
+    }
+
+    async fn refresh_plugin_list(&mut self) -> Result<()> {
+        if let Some(runtime) = &self.plugin_runtime {
+            let plugins = runtime.list_plugins()?;
+            self.state.plugins = plugins
+                .into_iter()
+                .map(|plugin| {
+                    let state = match plugin.state {
+                        PluginState::Enabled => "enabled",
+                        PluginState::Disabled => "disabled",
+                        PluginState::Available => "available",
+                    };
+                    crate::state::PluginListItem {
+                        id: plugin.manifest.id,
+                        name: plugin.manifest.name,
+                        state: state.to_string(),
+                        description: plugin.manifest.description,
+                    }
+                })
+                .collect();
+            if self.state.plugins.is_empty() {
+                self.state.selected_plugin = 0;
+            } else {
+                self.state.selected_plugin =
+                    self.state.selected_plugin.min(self.state.plugins.len() - 1);
+            }
+        } else {
+            self.state.plugins.clear();
+            self.state.selected_plugin = 0;
+        }
+        Ok(())
+    }
+
+    async fn open_chat_overlay(&mut self) -> Result<()> {
+        let Some(runtime) = &self.plugin_runtime else {
+            self.state
+                .set_status("Plugin runtime unavailable; AI chat is disabled");
+            return Ok(());
+        };
+
+        if !runtime.is_enabled("jarvis")? {
+            self.state
+                .set_status("Jarvis plugin is not enabled. Run: neojoplin plugin enable jarvis");
+            return Ok(());
+        }
+
+        self.state.open_chat_overlay();
+        if self.state.chat_overlay.session_id.is_none() {
+            if let Some(latest) = runtime.latest_session_id().await? {
+                self.state.chat_overlay.session_id = Some(latest.clone());
+                let messages = runtime.session_messages(&latest).await?;
+                self.state.chat_overlay.messages = messages
+                    .into_iter()
+                    .map(|msg| crate::state::ChatOverlayMessage {
+                        role: match msg.role {
+                            neojoplin_plugins::ChatRole::User => "You".to_string(),
+                            neojoplin_plugins::ChatRole::Assistant => "Jarvis".to_string(),
+                            neojoplin_plugins::ChatRole::System => "System".to_string(),
+                        },
+                        content: msg.content,
+                    })
+                    .collect();
+            }
+        }
+        Ok(())
+    }
+
+    async fn handle_chat_overlay_key_event(&mut self, key: KeyEvent) -> Result<bool> {
+        match key.code {
+            KeyCode::Esc => {
+                self.state.close_chat_overlay();
+            }
+            KeyCode::Enter => {
+                self.submit_chat_question().await?;
+            }
+            KeyCode::Backspace => {
+                self.state.chat_overlay.input.pop();
+            }
+            KeyCode::Char(c)
+                if !key.modifiers.contains(KeyModifiers::CONTROL)
+                    && !key.modifiers.contains(KeyModifiers::ALT) =>
+            {
+                self.state.chat_overlay.input.push(c);
+            }
+            _ => {}
+        }
+        Ok(false)
+    }
+
+    async fn submit_chat_question(&mut self) -> Result<()> {
+        if self.state.chat_overlay.pending {
+            return Ok(());
+        }
+
+        let question = self.state.chat_overlay.input.trim().to_string();
+        if question.is_empty() {
+            return Ok(());
+        }
+
+        let Some(runtime) = &self.plugin_runtime else {
+            self.state
+                .chat_add_message("System", "Plugin runtime unavailable".to_string());
+            return Ok(());
+        };
+
+        let runtime = runtime.clone();
+        let storage = self.storage.clone();
+        let session_id = self.state.chat_overlay.session_id.clone();
+        self.state.chat_overlay.input.clear();
+        self.state.chat_overlay.pending = true;
+        self.state.chat_add_message("You", question.clone());
+
+        self.chat_task = Some(tokio::spawn(async move {
+            let notes = storage
+                .list_notes(None)
+                .await
+                .map_err(|e| PluginError::Storage(e.to_string()))?;
+            runtime
+                .ask_jarvis(&question, &notes, session_id.as_deref())
+                .await
+        }));
+        Ok(())
+    }
+
+    async fn open_suggested_note(&mut self, note_id: &str) -> Result<()> {
+        if self.storage.get_note(note_id).await?.is_none() {
+            return Ok(());
+        }
+
+        self.refresh_lists(true, None, Some(note_id.to_string()))
+            .await?;
+        self.state
+            .set_status(&format!("Jarvis suggested opening note {}", note_id));
+        Ok(())
+    }
+
     async fn refresh_sync_status(&mut self) -> Result<()> {
         let data_dir = neojoplin_core::Config::data_dir()?;
         self.state
@@ -1072,6 +1263,7 @@ impl App {
             && !self.state.show_filter_prompt
             && !self.state.show_sort_popup
             && !self.state.tag_popup.visible
+            && !self.state.chat_overlay.visible
             && !self.state.command_prompt.visible
             && !self.state.show_error_dialog
             && !self.state.show_quit_confirmation
@@ -1607,10 +1799,25 @@ impl App {
                 self.state.settings.auto_sync.move_selection(false);
             }
 
+            KeyCode::Up | KeyCode::Char('k')
+                if self.state.settings.current_tab == SettingsTab::Plugins =>
+            {
+                self.state.selected_plugin = self.state.selected_plugin.saturating_sub(1);
+            }
+
             KeyCode::Down | KeyCode::Char('j')
                 if self.state.settings.current_tab == SettingsTab::AutoSync =>
             {
                 self.state.settings.auto_sync.move_selection(true);
+            }
+
+            KeyCode::Down | KeyCode::Char('j')
+                if self.state.settings.current_tab == SettingsTab::Plugins =>
+            {
+                if !self.state.plugins.is_empty() {
+                    self.state.selected_plugin =
+                        (self.state.selected_plugin + 1).min(self.state.plugins.len() - 1);
+                }
             }
 
             KeyCode::Enter if self.state.settings.current_tab == SettingsTab::AutoSync => {
@@ -1663,6 +1870,11 @@ impl App {
             KeyCode::Char('r') if self.state.settings.current_tab == SettingsTab::Status => {
                 self.refresh_sync_status().await?;
                 self.state.set_status("Sync status refreshed");
+            }
+
+            KeyCode::Char('r') if self.state.settings.current_tab == SettingsTab::Plugins => {
+                self.refresh_plugin_list().await?;
+                self.state.set_status("Plugin list refreshed");
             }
 
             KeyCode::Char('b') if self.state.settings.current_tab == SettingsTab::Status => {
