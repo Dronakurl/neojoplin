@@ -453,15 +453,27 @@ impl TuiPanelProvider for JarvisPlugin {
             return Ok(());
         }
 
+        // The area passed in is the full screen area.
+        // We want to render the chat overlay over the notebooks+notes panels (left side)
+        // but leave the preview panel (right side) visible.
+        // We'll use 60% of the width for the chat overlay to leave room for preview.
+        let chat_width = (area.width * 60) / 100;
+        let chat_area = Rect {
+            x: area.x,
+            y: area.y,
+            width: chat_width.min(area.width),
+            height: area.height,
+        };
+
         let block = Block::default()
-            .title("AI Chat (P to toggle)")
+            .title("AI Chat (P to toggle, Tab to focus preview)")
             .borders(Borders::ALL);
 
         let inner_area = Rect {
-            x: area.x + 1,
-            y: area.y + 1,
-            width: area.width.saturating_sub(2),
-            height: area.height.saturating_sub(2),
+            x: chat_area.x + 1,
+            y: chat_area.y + 1,
+            width: chat_area.width.saturating_sub(2),
+            height: chat_area.height.saturating_sub(2),
         };
 
         // Render messages
@@ -519,7 +531,7 @@ impl TuiPanelProvider for JarvisPlugin {
             });
         }
 
-        f.render_widget(block, area);
+        f.render_widget(block, chat_area);
 
         Ok(())
     }
@@ -541,10 +553,8 @@ impl TuiPanelProvider for JarvisPlugin {
                     self.chat_state.input.clear();
                     self.chat_state.pending = true;
 
-                    // Spawn a background task to call the AI
-                    // This is a bit tricky because we need to access self
-                    // We'll use a simple approach: just add a thinking message for now
-                    // In a real implementation, this would spawn a tokio task
+                    // TODO: Spawn async task to call Ollama AI
+                    // For now, add a placeholder response
                     self.add_message("Jarvis", "Let me think about that...");
                     self.chat_state.pending = false;
                 }
@@ -558,6 +568,8 @@ impl TuiPanelProvider for JarvisPlugin {
                 self.chat_state.input.push(c);
                 Ok(true)
             }
+            // Pass Tab through to allow switching to preview panel
+            KeyCode::Tab => Ok(false),
             _ => Ok(false),
         }
     }
