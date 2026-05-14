@@ -44,6 +44,89 @@ struct PersistedUiState {
 type SyncTaskResult =
     Result<(String, bool, std::path::PathBuf, SyncStats), joplin_domain::DomainError>;
 
+/// Ollama configuration
+#[derive(Debug, Clone)]
+struct OllamaConfig {
+    model: String,
+    api_url: String,
+    timeout_seconds: u64,
+    api_key: Option<String>,
+}
+
+impl Default for OllamaConfig {
+    fn default() -> Self {
+        Self {
+            model: "gemma2:2b".to_string(),
+            api_url: "http://localhost:11434".to_string(),
+            timeout_seconds: 120,
+            api_key: None,
+        }
+    }
+}
+
+/// Ollama client for AI chat
+#[derive(Clone)]
+struct OllamaClient {
+    config: OllamaConfig,
+}
+
+impl OllamaClient {
+    fn new() -> Self {
+        Self {
+            config: OllamaConfig::default(),
+        }
+    }
+
+    fn create_agent(&self) -> ureq::Agent {
+        ureq::AgentBuilder::new()
+            .timeout(std::time::Duration::from_secs(self.config.timeout_seconds))
+            .build()
+    }
+
+    async fn generate_response(&self, prompt: &str) -> Result<String> {
+        use serde_json::json;
+
+        let messages = vec![
+            json!({
+                "role": "user",
+                "content": prompt
+            })
+        ];
+
+        let request_body = json!({
+            "model": self.config.model,
+            "messages": messages,
+            "stream": false,
+            "options": {
+                "temperature": 0.7,
+                "num_predict": 2048,
+            }
+        });
+
+        let url = format!("{}/api/chat", self.config.api_url);
+        let agent = self.create_agent();
+
+        let mut request = agent.post(&url).set("Content-Type", "application/json");
+
+        if let Some(ref key) = self.config.api_key {
+            request = request.set("Authorization", &format!("Bearer {}", key));
+        }
+
+        let response = request
+            .send_json(request_body)
+            .map_err(|e| anyhow::anyhow!("Failed to send request to Ollama: {}", e))?;
+
+        let body: serde_json::Value = response
+            .into_json()
+            .map_err(|e| anyhow::anyhow!("Failed to parse Ollama response: {}", e))?;
+
+        body["message"]["content"]
+            .as_str()
+            .map(|s| s.to_string())
+            .ok_or_else(|| anyhow::anyhow!("Invalid response format from Ollama"))
+    }
+}
+
 /// Main TUI application
 pub struct App {
     state: AppState,
@@ -63,6 +146,10 @@ pub struct App {
     /// Plugin manager for loading and managing plugins
     #[allow(dead_code)]
     plugin_manager: PluginManager,
+    /// Ollama client for AI chat
+    ollama_client: OllamaClient,
+    /// Background chat task handle
+    chat_task: Option<JoinHandle<Result<String>>>,
 }
 
 #[derive(Default, Debug, Clone, Copy)]
@@ -208,6 +295,8 @@ impl App {
         };
         plugin_manager.load_enabled_plugins(context).await?;
 
+        let ollama_client = OllamaClient::new();
+
         let mut app = Self {
             state,
             storage,
@@ -223,6 +312,8 @@ impl App {
             auto_sync_scheduler,
             sync_task: None,
             plugin_manager,
+            ollama_client,
+            chat_task: None,
         };
         app.restore_ui_state(&data_dir).await?;
         app.refresh_sync_status().await?;
@@ -367,6 +458,7 @@ impl App {
         loop {
             self.run_auto_sync_if_due().await?;
             self.check_sync_task().await?;
+            self.check_chat_task().await?;
             self.state
                 .settings
                 .set_next_auto_sync_in_seconds(self.auto_sync_scheduler.seconds_until_next_run());
@@ -437,6 +529,11 @@ impl App {
             }
 
             match key.code {
+                // P toggles chat overlay (closes it when open)
+                KeyCode::Char('P') | KeyCode::Char('p') => {
+                    self.state.close_chat_overlay();
+                    return Ok(false);
+                }
                 KeyCode::Esc => {
                     self.state.close_chat_overlay();
                     return Ok(false);
@@ -446,15 +543,12 @@ impl App {
                         && !self.state.chat_overlay.pending
                     {
                         let question = self.state.chat_overlay.input.trim().to_string();
-                        self.state.chat_add_message("You", question);
+                        self.state.chat_add_message("You", question.clone());
                         self.state.chat_overlay.input.clear();
                         self.state.chat_overlay.pending = true;
 
-                        // TODO: Call AI backend
-                        // For now, simulate a response that navigates to a note
-                        self.state
-                            .chat_add_message("Jarvis", "Let me think about that...");
-                        self.state.chat_overlay.pending = false;
+                        // Call AI backend - spawn async task
+                        self.spawn_chat_response_task(question).await;
                     }
                     return Ok(false);
                 }
@@ -1096,6 +1190,43 @@ impl App {
             }
         }
         Ok(())
+    }
+
+    /// Check if a background chat task has completed and handle the result
+    async fn check_chat_task(&mut self) -> Result<()> {
+        if let Some(task) = self.chat_task.take() {
+            if task.is_finished() {
+                match task.await {
+                    Ok(Ok(response)) => {
+                        self.state.chat_overlay.pending = false;
+                        self.state.chat_add_message("Jarvis", response);
+                    }
+                    Ok(Err(e)) => {
+                        self.state.chat_overlay.pending = false;
+                        self.state
+                            .chat_add_message("System", format!("Error: {}", e));
+                    }
+                    Err(join_err) => {
+                        self.state.chat_overlay.pending = false;
+                        self.state
+                            .chat_add_message("System", format!("Chat task failed: {}", join_err));
+                    }
+                }
+            } else {
+                // Task still running, put it back
+                self.chat_task = Some(task);
+            }
+        }
+        Ok(())
+    }
+
+    /// Spawn a background task to get a chat response from Ollama
+    async fn spawn_chat_response_task(&mut self, prompt: String) {
+        let client = self.ollama_client.clone();
+        let task = tokio::spawn(async move {
+            client.generate_response(&prompt).await
+        });
+        self.chat_task = Some(task);
     }
 
     async fn refresh_sync_status(&mut self) -> Result<()> {

@@ -288,7 +288,7 @@ fn render_chat_overlay(f: &mut Frame, state: &AppState, parent: Rect) {
     } else if state.chat_overlay.navigate_to_note_id.is_some() {
         " AI Chat (navigating to note...) "
     } else {
-        " AI Chat (P to close, Tab to preview) "
+        " AI Chat (P to toggle, Tab to preview) "
     };
     let mut lines = Vec::new();
 
