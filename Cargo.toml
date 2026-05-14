@@ -11,7 +11,6 @@ members = [
   "crates/cli",
   "crates/test-utils",
   "crates/plugin",
-  "crates/plugins/ai-ollama",
   "crates/plugins/jarvis",
 ]
 resolver = "2"

@@ -95,18 +95,41 @@ const HELP_LINES: &[&str] = &[
     "  q          Quit",
 ];
 
-pub fn help_search_lines() -> &'static [&'static str] {
-    HELP_LINES
+pub fn help_search_lines() -> Vec<String> {
+    // This is used for search, but we can't pass state here
+    // For now, return base help lines without plugin-specific entries
+    HELP_LINES.iter().map(|s| s.to_string()).collect()
 }
 
-fn help_lines_for_query(query: Option<&str>) -> Vec<&'static str> {
+/// Check if Jarvis plugin is loaded
+fn has_jarvis_plugin(state: &AppState) -> bool {
+    state.plugins.iter().any(|p| p.id == "jarvis")
+}
+
+/// Get all help lines including dynamic ones based on loaded plugins
+fn all_help_lines(state: &AppState) -> Vec<String> {
+    let mut lines: Vec<String> = HELP_LINES.iter().map(|s| s.to_string()).collect();
+    
+    // Add AI help lines if Jarvis plugin is present
+    if has_jarvis_plugin(state) {
+        lines.push(String::new());
+        lines.push("AI (Jarvis plugin)".to_string());
+        lines.push("  P      Open AI chat overlay".to_string());
+    }
+    
+    lines
+}
+
+/// Get help lines for search query, including dynamic ones
+fn all_help_lines_for_query(state: &AppState, query: Option<&str>) -> Vec<String> {
     let Some(query) = query.filter(|query| !query.trim().is_empty()) else {
-        return HELP_LINES.to_vec();
+        return all_help_lines(state);
     };
 
     let needle = query.to_lowercase();
     let mut filtered = Vec::new();
-    for &line in HELP_LINES {
+    
+    for line in all_help_lines(state) {
         let is_heading = !line.is_empty() && !line.starts_with(' ');
         if is_heading || (!line.is_empty() && line.to_lowercase().contains(&needle)) {
             filtered.push(line);
@@ -121,7 +144,7 @@ fn highlight_help_line<'a>(line: &'a str, query: Option<&str>, theme: &'a Theme)
         return if is_heading {
             Line::from(Span::styled(line, theme.primary()))
         } else {
-            Line::from(line)
+            Line::from(Span::styled(line, theme.text()))
         };
     };
 
@@ -1837,7 +1860,7 @@ pub fn render_help(
         ),
     ]);
 
-    let visible_lines = help_lines_for_query(search_query);
+    let visible_lines = all_help_lines_for_query(state, search_query);
     let text = Text::from(
         visible_lines
             .iter()

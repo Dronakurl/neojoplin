@@ -2,28 +2,40 @@
 name = "jarvis"
 version = "0.1.0"
 edition = "2021"
-authors = ["NeoJoplin Team"]
-license = "MIT"
-repository = "https://github.com/Dronakurl/neojoplin"
+description = "Jarvis AI Chat Plugin for NeoJoplin - provides AI chat overlay and Ollama integration"
 
 [lib]
-# Must be a dynamic library for plugin loading
 crate-type = ["cdylib"]
 
 [dependencies]
-# NeoJoplin dependencies
+# NeoJoplin plugin framework
 neojoplin-plugin = { path = "../../plugin" }
-joplin-domain = { path = "../../joplin-domain" }
-
-# For TUI rendering
-ratatui = "0.30"
-crossterm = "0.29"
 
 # Async support
 async-trait = "0.1"
-anyhow = "1.0"
+tokio = { version = "1", features = ["full"] }
+
+# HTTP client (synchronous to avoid tokio conflicts)
+ureq = { version = "2", features = ["json"] }
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# TUI
+ratatui = "0.30"
+crossterm = "0.29"
+
+# Utilities
+anyhow = "1"
+once_cell = "1.18"
 tracing = "0.1"
-downcast-rs = "1.2"
-serde = { version = "1.0", features = ["derive"] }
-serde_json = "1.0"
-once_cell = "1.19"
+
+# Domain types
+joplin-domain = { path = "../../joplin-domain" }
+
+# CLI argument parsing
+clap = { version = "4", features = ["derive"] }
+
+[features]
+default = []

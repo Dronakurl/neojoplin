@@ -1,29 +1,61 @@
 //! Jarvis AI Chat Plugin for NeoJoplin
 //!
-//! This plugin provides an AI chat overlay panel for the TUI.
-//! It implements the TuiPanelProvider trait to integrate with the NeoJoplin TUI.
+//! This plugin provides an AI chat overlay panel for the TUI with Ollama integration.
+//! It implements both AiProvider (for AI capabilities) and TuiPanelProvider (for TUI integration).
 
 use anyhow::Result;
 use async_trait::async_trait;
 use crossterm::event::{KeyCode, KeyEvent};
-use neojoplin_plugin::{Plugin, PluginCapability, PluginContext, PluginMetadata, TuiPanelProvider};
+use joplin_domain::Note;
+use neojoplin_plugin::traits::cosine_similarity;
+use neojoplin_plugin::{
+    AiProvider, CliCommandProvider, Plugin, PluginCapability, PluginConfig, PluginContext,
+    PluginMetadata, TuiPanelProvider,
+};
 use once_cell::sync::Lazy;
 use ratatui::prelude::*;
-use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
 use ratatui::text::{Line, Span};
-use ratatui::style::{Color, Style};
+use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
+use serde::{Deserialize, Serialize};
+use serde_json::json;
+use std::sync::Arc;
+use tokio::sync::Mutex;
+use ureq::Agent;
 
-/// Jarvis plugin metadata
-static METADATA: Lazy<PluginMetadata> = Lazy::new(|| PluginMetadata {
-    id: "jarvis".to_string(),
-    name: "Jarvis AI Chat".to_string(),
-    version: "0.1.0".to_string(),
-    description: "AI chat overlay panel for NeoJoplin TUI".to_string(),
-    author: "NeoJoplin Team".to_string(),
-    license: Some("MIT".to_string()),
-    dependencies: vec!["ai-ollama".to_string()],
-    capabilities: vec![PluginCapability::TuiPanels],
-});
+/// Ollama configuration
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OllamaConfig {
+    #[serde(default = "default_model")]
+    pub model: String,
+    #[serde(default = "default_api_url")]
+    pub api_url: String,
+    #[serde(default = "default_timeout")]
+    pub timeout_seconds: u64,
+    pub api_key: Option<String>,
+}
+
+fn default_model() -> String {
+    "gemma2:2b".to_string()
+}
+
+fn default_api_url() -> String {
+    "http://localhost:11434".to_string()
+}
+
+fn default_timeout() -> u64 {
+    120
+}
+
+impl Default for OllamaConfig {
+    fn default() -> Self {
+        Self {
+            model: default_model(),
+            api_url: default_api_url(),
+            timeout_seconds: default_timeout(),
+            api_key: None,
+        }
+    }
+}
 
 /// Message in the chat overlay
 #[derive(Debug, Clone, Default)]
@@ -43,49 +75,188 @@ pub struct ChatOverlayState {
     pub scroll: usize,
 }
 
-/// Jarvis plugin - provides AI chat overlay for TUI
+/// Ollama client for making API calls
+#[derive(Clone)]
+pub struct OllamaClient {
+    config: OllamaConfig,
+}
+
+impl OllamaClient {
+    pub fn new(config: OllamaConfig) -> Self {
+        Self { config }
+    }
+
+    fn create_agent(&self) -> Agent {
+        ureq::AgentBuilder::new()
+            .timeout(std::time::Duration::from_secs(self.config.timeout_seconds))
+            .build()
+    }
+
+    pub async fn generate_text(
+        &self,
+        prompt: &str,
+        system_prompt: Option<&str>,
+    ) -> Result<String> {
+        let mut messages = Vec::new();
+
+        if let Some(system) = system_prompt {
+            messages.push(json!({
+                "role": "system",
+                "content": system
+            }));
+        }
+
+        messages.push(json!({
+            "role": "user",
+            "content": prompt
+        }));
+
+        let request_body = json!({
+            "model": self.config.model,
+            "messages": messages,
+            "stream": false,
+            "options": {
+                "temperature": 0.7,
+                "num_predict": 2048,
+            }
+        });
+
+        let url = format!("{}/api/chat", self.config.api_url);
+        let agent = self.create_agent();
+
+        let mut request = agent.post(&url).set("Content-Type", "application/json");
+
+        if let Some(ref key) = self.config.api_key {
+            request = request.set("Authorization", &format!("Bearer {}", key));
+        }
+
+        let response = request
+            .send_json(request_body)
+            .map_err(|e| anyhow::anyhow!("Failed to send request to Ollama at {}: {}", url, e))?;
+
+        let body: serde_json::Value = response
+            .into_json()
+            .map_err(|e| anyhow::anyhow!("Failed to parse JSON response: {}", e))?;
+
+        body["message"]["content"]
+            .as_str()
+            .map(|s| s.to_string())
+            .ok_or_else(|| anyhow::anyhow!("Invalid response format from Ollama"))
+    }
+
+    pub async fn generate_embeddings(&self, text: &str) -> Result<Vec<f32>> {
+        let request_body = json!({
+            "model": self.config.model,
+            "input": text
+        });
+
+        let url = format!("{}/api/embeddings", self.config.api_url);
+        let agent = self.create_agent();
+
+        let mut request = agent.post(&url).set("Content-Type", "application/json");
+
+        if let Some(ref key) = self.config.api_key {
+            request = request.set("Authorization", &format!("Bearer {}", key));
+        }
+
+        let response = request
+            .send_json(request_body)
+            .map_err(|e| anyhow::anyhow!("Failed to send embeddings request to Ollama at {}: {}", url, e))?;
+
+        let body: serde_json::Value = response
+            .into_json()
+            .map_err(|e| anyhow::anyhow!("Failed to parse JSON response: {}", e))?;
+
+        body["embeddings"]
+            .as_array()
+            .and_then(|arr| arr.first())
+            .and_then(|v| v.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|v| v.as_f64().map(|f| f as f32))
+                    .collect()
+            })
+            .ok_or_else(|| anyhow::anyhow!("Invalid embeddings response format"))
+    }
+}
+
+/// Jarvis plugin metadata
+static METADATA: Lazy<PluginMetadata> = Lazy::new(|| PluginMetadata {
+    id: "jarvis".to_string(),
+    name: "Jarvis AI Chat".to_string(),
+    version: "0.1.0".to_string(),
+    description: "AI chat overlay panel with Ollama integration for NeoJoplin TUI".to_string(),
+    author: "NeoJoplin Team".to_string(),
+    license: Some("MIT".to_string()),
+    dependencies: vec![],
+    capabilities: vec![
+        PluginCapability::AiProvider,
+        PluginCapability::CliCommands,
+        PluginCapability::TuiPanels,
+    ],
+});
+
+/// Jarvis plugin - provides AI chat overlay for TUI with integrated Ollama support
 #[derive(Clone)]
 pub struct JarvisPlugin {
-    state: ChatOverlayState,
+    chat_state: ChatOverlayState,
+    ollama_client: Arc<Mutex<OllamaClient>>,
+    config: OllamaConfig,
+    plugin_config: PluginConfig,
 }
 
 impl JarvisPlugin {
     pub fn new() -> Self {
         Self {
-            state: ChatOverlayState::default(),
+            chat_state: ChatOverlayState::default(),
+            ollama_client: Arc::new(Mutex::new(OllamaClient::new(OllamaConfig::default()))),
+            config: OllamaConfig::default(),
+            plugin_config: PluginConfig::default(),
+        }
+    }
+
+    fn load_config(&mut self) {
+        if let Some(settings) = self.plugin_config.settings.get("ollama") {
+            if let Ok(config) = serde_json::from_value::<OllamaConfig>(settings.clone()) {
+                self.config = config;
+                *self.ollama_client.blocking_lock() = OllamaClient::new(self.config.clone());
+                tracing::info!(
+                    "Loaded Ollama config: model={}, api_url={}",
+                    self.config.model,
+                    self.config.api_url
+                );
+            }
         }
     }
 
     /// Add a message to the chat overlay
     pub fn add_message(&mut self, role: &str, content: &str) {
-        self.state.messages.push(ChatMessage {
+        self.chat_state.messages.push(ChatMessage {
             role: role.to_string(),
             content: content.to_string(),
         });
-        self.state.scroll = self.state.messages.len().saturating_sub(1);
-    }
-
-    /// Toggle the chat overlay visibility
-    pub fn toggle_visible(&mut self) {
-        self.state.visible = !self.state.visible;
+        self.chat_state.scroll = self.chat_state.messages.len().saturating_sub(1);
     }
 
     /// Show the chat overlay
     pub fn show(&mut self) {
-        self.state.visible = true;
+        self.chat_state.visible = true;
     }
 
     /// Hide the chat overlay
     pub fn hide(&mut self) {
-        self.state.visible = false;
-        self.state.input.clear();
+        self.chat_state.visible = false;
+        self.chat_state.input.clear();
     }
 }
 
 #[async_trait]
 impl Plugin for JarvisPlugin {
-    async fn initialize(&mut self, _context: PluginContext) -> Result<()> {
-        tracing::info!("Jarvis plugin initialized");
+    async fn initialize(&mut self, context: PluginContext) -> Result<()> {
+        self.plugin_config = context.config;
+        self.load_config();
+
+        tracing::info!("Jarvis plugin initialized with Ollama support");
         Ok(())
     }
 
@@ -101,17 +272,170 @@ impl Plugin for JarvisPlugin {
     fn capabilities(&self) -> &[PluginCapability] {
         &METADATA.capabilities
     }
-    
+
     fn clone_box(&self) -> Box<dyn Plugin> {
         Box::new(self.clone())
     }
-    
+
+    fn as_ai_provider(&self) -> Option<&dyn AiProvider> {
+        Some(self)
+    }
+
+    fn as_cli_command_provider(&self) -> Option<&dyn CliCommandProvider> {
+        Some(self)
+    }
+
     fn as_tui_panel_provider(&self) -> Option<&dyn TuiPanelProvider> {
         Some(self)
     }
-    
+
     fn as_mut_tui_panel_provider(&mut self) -> Option<&mut dyn TuiPanelProvider> {
         Some(self)
+    }
+}
+
+#[async_trait]
+impl AiProvider for JarvisPlugin {
+    async fn generate_text(&self, prompt: &str, system_prompt: Option<&str>) -> Result<String> {
+        let client = self.ollama_client.lock().await;
+        client.generate_text(prompt, system_prompt).await
+    }
+
+    async fn generate_embeddings(&self, text: &str) -> Result<Vec<f32>> {
+        let client = self.ollama_client.lock().await;
+        client.generate_embeddings(text).await
+    }
+
+    async fn find_similar_notes(
+        &self,
+        query_note: &Note,
+        all_notes: &[Note],
+        limit: usize,
+    ) -> Result<Vec<Note>> {
+        let client = self.ollama_client.lock().await;
+
+        // Generate embeddings for query
+        let query_embedding = client.generate_embeddings(&query_note.body).await?;
+
+        // Calculate similarity with all notes
+        let mut results: Vec<(Note, f32)> = Vec::new();
+
+        for note in all_notes {
+            if note.id == query_note.id {
+                continue;
+            }
+
+            let note_embedding = client.generate_embeddings(&note.body).await?;
+            let similarity = cosine_similarity(&query_embedding, &note_embedding);
+            results.push((note.clone(), similarity));
+        }
+
+        // Sort by similarity (descending)
+        results.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+
+        Ok(results.into_iter().take(limit).map(|(n, _)| n).collect())
+    }
+
+    async fn summarize(&self, note: &Note, max_length: Option<usize>) -> Result<String> {
+        let client = self.ollama_client.lock().await;
+
+        let prompt = if let Some(max) = max_length {
+            format!(
+                "Summarize this note in {} characters or less:\n\n{}",
+                max, note.body
+            )
+        } else {
+            format!("Summarize this note:\n\n{}", note.body)
+        };
+
+        client.generate_text(&prompt, None).await
+    }
+
+    async fn generate_tags(&self, note: &Note, limit: usize) -> Result<Vec<String>> {
+        let client = self.ollama_client.lock().await;
+
+        let prompt = format!(
+            "Extract up to {} relevant tags from this note. Return ONLY a comma-separated list, no other text:\n\n{}",
+            limit, note.body
+        );
+
+        let result = client.generate_text(&prompt, None).await?;
+
+        let cleaned = result
+            .trim()
+            .trim_start_matches('"')
+            .trim_end_matches('"')
+            .trim_start_matches('[')
+            .trim_end_matches(']')
+            .trim();
+
+        Ok(cleaned
+            .split(',')
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .take(limit)
+            .collect())
+    }
+}
+
+#[async_trait]
+impl CliCommandProvider for JarvisPlugin {
+    fn register_commands(&self, app: clap::Command) -> clap::Command {
+        app.subcommand(
+            clap::Command::new("ai")
+                .about("AI commands (Ollama via Jarvis)")
+                .subcommand(
+                    clap::Command::new("generate")
+                        .about("Generate text with AI")
+                        .arg(clap::arg!(<PROMPT> "The prompt for text generation"))
+                        .arg(clap::arg!(--system <SYSTEM> "Optional system prompt").required(false)),
+                )
+                .subcommand(
+                    clap::Command::new("summarize")
+                        .about("Summarize a note")
+                        .arg(clap::arg!(<NOTE> "Note ID or title")),
+                )
+                .subcommand(
+                    clap::Command::new("tags")
+                        .about("Generate tags for a note")
+                        .arg(clap::arg!(<NOTE> "Note ID or title"))
+                        .arg(clap::arg!(--limit <LIMIT> "Maximum number of tags").default_value("5")),
+                )
+                .subcommand(
+                    clap::Command::new("similar")
+                        .about("Find similar notes")
+                        .arg(clap::arg!(<NOTE> "Note ID or title"))
+                        .arg(clap::arg!(--limit <LIMIT> "Maximum results").default_value("5")),
+                ),
+        )
+    }
+
+    async fn handle_command(&self, command_path: &str, args: &[String]) -> Result<String> {
+        let client = self.ollama_client.lock().await;
+
+        match command_path {
+            "ai/generate" => {
+                let prompt = args.get(0).map(|s| s.as_str()).unwrap_or("");
+                let system = args.get(1).map(|s| s.as_str());
+                client.generate_text(prompt, system).await
+            }
+            "ai/summarize" => {
+                Err(anyhow::anyhow!(
+                    "Note loading not yet implemented in plugin CLI commands"
+                ))
+            }
+            "ai/tags" => {
+                Err(anyhow::anyhow!(
+                    "Note loading not yet implemented in plugin CLI commands"
+                ))
+            }
+            "ai/similar" => {
+                Err(anyhow::anyhow!(
+                    "Note loading not yet implemented in plugin CLI commands"
+                ))
+            }
+            _ => Err(anyhow::anyhow!("Unknown command: {}", command_path)),
+        }
     }
 }
 
@@ -125,15 +449,13 @@ impl TuiPanelProvider for JarvisPlugin {
     }
 
     fn render_panel(&self, f: &mut Frame, area: Rect) -> Result<()> {
-        if !self.state.visible {
+        if !self.chat_state.visible {
             return Ok(());
         }
 
-        // Create the chat overlay UI
         let block = Block::default()
-            .title("AI Chat (P)")
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(Color::Blue));
+            .title("AI Chat (P to toggle)")
+            .borders(Borders::ALL);
 
         let inner_area = Rect {
             x: area.x + 1,
@@ -144,7 +466,7 @@ impl TuiPanelProvider for JarvisPlugin {
 
         // Render messages
         let mut cursor_y = inner_area.y;
-        for msg in &self.state.messages {
+        for msg in &self.chat_state.messages {
             let role_style = match msg.role.as_str() {
                 "You" => Style::default().fg(Color::Green),
                 "Jarvis" | "Assistant" => Style::default().fg(Color::Cyan),
@@ -164,7 +486,6 @@ impl TuiPanelProvider for JarvisPlugin {
             });
             cursor_y += 1;
 
-            // Wrap the content
             let content_paragraph = Paragraph::new(msg.content.clone())
                 .wrap(Wrap { trim: true });
             f.render_widget(content_paragraph, Rect {
@@ -177,39 +498,34 @@ impl TuiPanelProvider for JarvisPlugin {
         }
 
         // Render input line
-        if self.state.visible {
-            let input_text = format!("> {}", self.state.input);
-            let input_paragraph = Paragraph::new(input_text)
-                .style(Style::default().fg(Color::Yellow));
-            f.render_widget(input_paragraph, Rect {
+        let input_text = format!("> {}", self.chat_state.input);
+        let input_paragraph = Paragraph::new(input_text);
+        f.render_widget(input_paragraph, Rect {
+            x: inner_area.x,
+            y: cursor_y,
+            width: inner_area.width,
+            height: 1,
+        });
+
+        // Show pending indicator
+        if self.chat_state.pending {
+            let pending_text = "... thinking ...";
+            let pending_paragraph = Paragraph::new(pending_text);
+            f.render_widget(pending_paragraph, Rect {
                 x: inner_area.x,
-                y: cursor_y,
+                y: cursor_y + 1,
                 width: inner_area.width,
                 height: 1,
             });
-
-            // Show pending indicator
-            if self.state.pending {
-                let pending_text = "... thinking ...";
-                let pending_paragraph = Paragraph::new(pending_text)
-                    .style(Style::default().fg(Color::Magenta));
-                f.render_widget(pending_paragraph, Rect {
-                    x: inner_area.x,
-                    y: cursor_y + 1,
-                    width: inner_area.width,
-                    height: 1,
-                });
-            }
         }
 
-        // Draw the border
         f.render_widget(block, area);
 
         Ok(())
     }
 
     fn handle_input(&mut self, event: KeyEvent) -> Result<bool> {
-        if !self.state.visible {
+        if !self.chat_state.visible {
             return Ok(false);
         }
 
@@ -219,25 +535,27 @@ impl TuiPanelProvider for JarvisPlugin {
                 Ok(true)
             }
             KeyCode::Enter => {
-                if !self.state.input.trim().is_empty() && !self.state.pending {
-                    let question = self.state.input.trim().to_string();
+                if !self.chat_state.input.trim().is_empty() && !self.chat_state.pending {
+                    let question = self.chat_state.input.trim().to_string();
                     self.add_message("You", &question);
-                    self.state.input.clear();
-                    self.state.pending = true;
-                    
-                    // TODO: This would need to trigger async AI call
-                    // For now, just add a placeholder response
-                    self.add_message("Jarvis", "I'm thinking about that...");
-                    self.state.pending = false;
+                    self.chat_state.input.clear();
+                    self.chat_state.pending = true;
+
+                    // Spawn a background task to call the AI
+                    // This is a bit tricky because we need to access self
+                    // We'll use a simple approach: just add a thinking message for now
+                    // In a real implementation, this would spawn a tokio task
+                    self.add_message("Jarvis", "Let me think about that...");
+                    self.chat_state.pending = false;
                 }
                 Ok(true)
             }
             KeyCode::Backspace => {
-                self.state.input.pop();
+                self.chat_state.input.pop();
                 Ok(true)
             }
             KeyCode::Char(c) => {
-                self.state.input.push(c);
+                self.chat_state.input.push(c);
                 Ok(true)
             }
             _ => Ok(false),
