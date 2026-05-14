@@ -3,7 +3,7 @@
 //! This plugin provides AI capabilities via Ollama's local LLM API.
 //! It implements the AiProvider trait from neojoplin-plugin.
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use async_trait::async_trait;
 use joplin_domain::Note;
 use neojoplin_plugin::traits::cosine_similarity;
@@ -12,10 +12,9 @@ use neojoplin_plugin::{
     PluginMetadata,
 };
 use once_cell::sync::Lazy;
-use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use std::time::Duration;
+use ureq::Agent;
 
 /// Ollama plugin configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -54,7 +53,6 @@ impl Default for OllamaConfig {
 
 /// Ollama AI plugin
 pub struct OllamaPlugin {
-    client: Client,
     config: OllamaConfig,
     plugin_config: PluginConfig,
 }
@@ -63,10 +61,16 @@ impl OllamaPlugin {
     /// Create a new Ollama plugin instance
     pub fn new() -> Self {
         Self {
-            client: Client::new(),
             config: OllamaConfig::default(),
             plugin_config: PluginConfig::default(),
         }
+    }
+
+    /// Create an ureq agent with the configured timeout
+    fn create_agent(&self) -> Agent {
+        ureq::AgentBuilder::new()
+            .timeout(std::time::Duration::from_secs(self.config.timeout_seconds))
+            .build()
     }
 
     /// Load configuration from plugin settings
@@ -89,6 +93,7 @@ impl OllamaPlugin {
         prompt: &str,
         system_prompt: Option<&str>,
     ) -> Result<String> {
+        // Use ureq for synchronous HTTP requests (wrapped in async for the trait)
         let mut messages = Vec::new();
 
         if let Some(system) = system_prompt {
@@ -103,7 +108,7 @@ impl OllamaPlugin {
             "content": prompt
         }));
 
-        let request = json!({
+        let request_body = json!({
             "model": self.config.model,
             "messages": messages,
             "stream": false,
@@ -115,22 +120,25 @@ impl OllamaPlugin {
 
         let url = format!("{}/api/chat", self.config.api_url);
 
-        let mut builder = self.client.post(&url).json(&request);
+        // Create agent with configured timeout
+        let agent = self.create_agent();
 
+        // Use ureq's blocking request in an async context
+        // This works because ureq is synchronous, so it doesn't need a tokio runtime
+        let mut request = agent.post(&url).set("Content-Type", "application/json");
+        
         // Add API key if configured
         if let Some(ref key) = self.config.api_key {
-            builder = builder.bearer_auth(key);
+            request = request.set("Authorization", &format!("Bearer {}", key));
         }
+        
+        let response = request
+            .send_json(request_body)
+            .map_err(|e| anyhow::anyhow!("Failed to send request to Ollama at {}: {}", url, e))?;
 
-        let response = builder
-            .timeout(Duration::from_secs(self.config.timeout_seconds))
-            .send()
-            .await
-            .with_context(|| format!("Failed to send request to Ollama at {}", url))?
-            .error_for_status()
-            .with_context(|| "Ollama API returned an error")?;
-
-        let body: serde_json::Value = response.json().await?;
+        let body: serde_json::Value = response
+            .into_json()
+            .map_err(|e| anyhow::anyhow!("Failed to parse JSON response: {}", e))?;
 
         body["message"]["content"]
             .as_str()
@@ -140,27 +148,30 @@ impl OllamaPlugin {
 
     /// Call Ollama embeddings API
     async fn call_ollama_embeddings(&self, text: &str) -> Result<Vec<f32>> {
-        let request = json!({
+        let request_body = json!({
             "model": self.config.model,
             "input": text
         });
 
         let url = format!("{}/api/embeddings", self.config.api_url);
 
-        let mut builder = self.client.post(&url).json(&request);
+        // Create agent with configured timeout
+        let agent = self.create_agent();
 
+        let mut request = agent.post(&url).set("Content-Type", "application/json");
+        
+        // Add API key if configured
         if let Some(ref key) = self.config.api_key {
-            builder = builder.bearer_auth(key);
+            request = request.set("Authorization", &format!("Bearer {}", key));
         }
+        
+        let response = request
+            .send_json(request_body)
+            .map_err(|e| anyhow::anyhow!("Failed to send embeddings request to Ollama at {}: {}", url, e))?;
 
-        let response = builder
-            .timeout(Duration::from_secs(self.config.timeout_seconds))
-            .send()
-            .await
-            .with_context(|| format!("Failed to send embeddings request to Ollama at {}", url))?
-            .error_for_status()?;
-
-        let body: serde_json::Value = response.json().await?;
+        let body: serde_json::Value = response
+            .into_json()
+            .map_err(|e| anyhow::anyhow!("Failed to parse JSON response: {}", e))?;
 
         body["embeddings"]
             .as_array()
@@ -215,6 +226,14 @@ impl Plugin for OllamaPlugin {
 
     fn capabilities(&self) -> &[PluginCapability] {
         &PLUGIN_METADATA.capabilities
+    }
+    
+    fn as_ai_provider(&self) -> Option<&dyn AiProvider> {
+        Some(self)
+    }
+    
+    fn as_cli_command_provider(&self) -> Option<&dyn CliCommandProvider> {
+        Some(self)
     }
 }
 
@@ -363,6 +382,8 @@ impl CliCommandProvider for OllamaPlugin {
 
 /// Plugin constructor - must be exported with this exact name
 /// This is the entry point that the plugin loader calls
+/// Note: Returns Box<dyn Plugin> which generates a warning about FFI-safety
+/// but works correctly at runtime with libloading.
 #[allow(improper_ctypes_definitions)]
 #[no_mangle]
 pub extern "C" fn plugin_constructor() -> Box<dyn Plugin> {

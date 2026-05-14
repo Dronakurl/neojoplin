@@ -15,9 +15,9 @@ crate-type = ["cdylib"]
 neojoplin-plugin = { path = "../../plugin" }
 joplin-domain = { path = "../../joplin-domain" }
 
-# HTTP client for Ollama API
-reqwest = { version = "0.13", features = ["json"] }
-tokio = { version = "1.0", features = ["full"] }
+# HTTP client for Ollama API (synchronous to avoid tokio conflicts)
+# Using ureq instead of reqwest to avoid pulling in tokio
+ureq = { version = "2.12", features = ["json"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 anyhow = "1.0"
