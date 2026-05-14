@@ -3,14 +3,15 @@ members = [
   "crates/joplin-domain",
   "crates/joplin",
   "crates/joplin-sync",
-  "crates/plugins",
   "crates/core",
   "crates/storage",
   "crates/sync",
   "crates/e2ee",
   "crates/tui",
   "crates/cli",
-  "crates/test-utils", "crates/plugin", "crates/plugins/ai-ollama",
+  "crates/test-utils",
+  "crates/plugin",
+  "crates/plugins/ai-ollama",
 ]
 resolver = "2"
 

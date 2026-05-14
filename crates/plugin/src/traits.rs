@@ -25,7 +25,7 @@ pub enum PluginCapability {
 }
 
 /// Plugin metadata from plugin.toml
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct PluginMetadata {
     pub id: String,
     pub name: String,
@@ -73,6 +73,16 @@ pub trait Plugin: Send + Sync + DowncastSync {
 
     /// Get plugin capabilities
     fn capabilities(&self) -> &[PluginCapability];
+    
+    /// Get this plugin as an AiProvider if it implements that capability
+    fn as_ai_provider(&self) -> Option<&dyn AiProvider> {
+        None
+    }
+    
+    /// Get this plugin as a CliCommandProvider if it implements that capability
+    fn as_cli_command_provider(&self) -> Option<&dyn CliCommandProvider> {
+        None
+    }
 }
 
 // Implement DowncastSync for Plugin trait

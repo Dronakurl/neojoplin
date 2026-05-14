@@ -5,7 +5,6 @@ use clap::{Parser, Subcommand};
 use joplin_domain::{now_ms, Folder, Note, Storage};
 use joplin_sync::{E2eeService, MasterKey};
 use neojoplin_core::Editor;
-use neojoplin_plugins::{PluginRuntime, PluginState};
 use neojoplin_storage::SqliteStorage;
 use neojoplin_tui::importer::{
     default_cli_database_path, default_desktop_database_path, import_database, resolve_import_path,
@@ -37,15 +36,6 @@ struct Cli {
 enum Commands {
     /// Initialize the database
     Init,
-
-    /// Ask the AI plugin a question about your notes
-    Ask {
-        /// Your question
-        question: String,
-        /// Optional existing session ID to continue a conversation
-        #[arg(long)]
-        session: Option<String>,
-    },
 
     /// Create a new note
     #[command(name = "mknote", visible_alias = "mk-note")]
@@ -204,10 +194,43 @@ enum Commands {
         command: E2eeCommands,
     },
 
-    /// Manage plugins and plugin chat
-    Plugin {
+    /// AI commands (provided by plugins)
+    Ai {
         #[command(subcommand)]
-        command: PluginCommands,
+        command: AiCommands,
+    },
+}
+
+#[derive(Subcommand)]
+enum AiCommands {
+    /// Generate text using AI
+    Generate {
+        /// Prompt for text generation
+        prompt: String,
+        /// System prompt/context
+        #[arg(short, long)]
+        system: Option<String>,
+    },
+    /// Summarize a note
+    Summarize {
+        /// Note ID or title
+        note: String,
+    },
+    /// Generate tags for a note
+    Tag {
+        /// Note ID or title
+        note: String,
+        /// Maximum number of tags
+        #[arg(short, long, default_value = "5")]
+        limit: usize,
+    },
+    /// Find similar notes
+    Similar {
+        /// Note ID or title
+        note: String,
+        /// Maximum number of results
+        #[arg(short, long, default_value = "5")]
+        limit: usize,
     },
 }
 
@@ -237,30 +260,6 @@ enum E2eeCommands {
     Decrypt {
         /// Encrypted string (JED format)
         encrypted: String,
-    },
-}
-
-#[derive(Subcommand)]
-enum PluginCommands {
-    /// List known plugins and states
-    List,
-    /// Enable a plugin
-    Enable {
-        /// Plugin ID
-        plugin: String,
-    },
-    /// Disable a plugin
-    Disable {
-        /// Plugin ID
-        plugin: String,
-    },
-    /// Ask through plugin chat interface
-    Chat {
-        /// Your question
-        question: String,
-        /// Optional existing session ID to continue a conversation
-        #[arg(long)]
-        session: Option<String>,
     },
 }
 
@@ -397,6 +396,8 @@ async fn load_e2ee_service(password_override: Option<String>) -> Result<E2eeServ
     Ok(e2ee)
 }
 
+use neojoplin_plugin::{PluginContext, PluginManager};
+
 #[tokio::main]
 async fn main() -> Result<()> {
     // Check for environment variable first (before parsing CLI args)
@@ -404,6 +405,18 @@ async fn main() -> Result<()> {
     if std::env::var("NEOJOPLIN_TEST_MODE").is_ok() {
         std::env::set_var("NEOJOPLIN_TEST_MODE", "1");
     }
+
+    // Initialize plugin manager and load plugins
+    let mut plugin_manager = PluginManager::new();
+    plugin_manager.initialize().await?;
+    
+    let context = PluginContext {
+        storage: None,
+        config: Default::default(),
+        metadata: Default::default(),
+    };
+    
+    plugin_manager.load_enabled_plugins(context).await?;
 
     let cli = Cli::parse();
 
@@ -419,25 +432,19 @@ async fn main() -> Result<()> {
 
     // Initialize storage for CLI commands
     let storage = Arc::new(SqliteStorage::new().await?);
+    
+    // Re-load plugins with storage context
+    let context_with_storage = PluginContext {
+        storage: Some(storage.clone()),
+        config: Default::default(),
+        metadata: Default::default(),
+    };
+    
+    plugin_manager.load_enabled_plugins(context_with_storage).await?;
 
     match cli.command.unwrap() {
         Commands::Init => {
             println!("Database initialized at: {}", get_db_path()?.display());
-            Ok(())
-        }
-
-        Commands::Ask { question, session } => {
-            let runtime = PluginRuntime::new().await?;
-            let notes = storage.list_notes(None).await?;
-            let response = runtime
-                .ask_jarvis(&question, &notes, session.as_deref())
-                .await?;
-            println!("{}", response.answer);
-            println!();
-            println!("session_id: {}", response.session_id);
-            if let Some(note_id) = response.suggested_note_id {
-                println!("suggested_note_id: {}", note_id);
-            }
             Ok(())
         }
 
@@ -1231,45 +1238,99 @@ async fn main() -> Result<()> {
             }
         }
 
-        Commands::Plugin { command } => {
-            let runtime = PluginRuntime::new().await?;
+        Commands::Ai { command } => {
+            // Get AI provider plugins
+            let mut ai_providers: Vec<&dyn neojoplin_plugin::AiProvider> = Vec::new();
+            
+            for plugin in plugin_manager.loader.get_all_plugins() {
+                if let Some(provider) = plugin.as_ai_provider() {
+                    ai_providers.push(provider);
+                }
+            }
+
+            if ai_providers.is_empty() {
+                return Err(anyhow::anyhow!(
+                    "No AI provider plugin loaded. Install an AI plugin first."
+                ));
+            }
+
+            // For now, use the first AI provider
+            let ai_provider = ai_providers[0];
+
             match command {
-                PluginCommands::List => {
-                    let plugins = runtime.list_plugins()?;
-                    println!("Plugin root: {}", runtime.plugin_root().display());
-                    for plugin in plugins {
-                        let state = match plugin.state {
-                            PluginState::Enabled => "enabled",
-                            PluginState::Disabled => "disabled",
-                            PluginState::Available => "available",
-                        };
-                        println!(
-                            "{} ({}) - {}",
-                            plugin.manifest.name, plugin.manifest.id, state
-                        );
+                AiCommands::Generate { prompt, system } => {
+                    let result = ai_provider
+                        .generate_text(&prompt, system.as_deref())
+                        .await?;
+                    println!("{}", result);
+                    Ok(())
+                }
+                AiCommands::Summarize { note } => {
+                    // Get note from storage
+                    let note_obj = if let Some(found) = storage.get_note(&note).await? {
+                        found
+                    } else {
+                        let notes = storage.list_notes(None).await?;
+                        let found = notes
+                            .iter()
+                            .find(|n| n.title == note)
+                            .ok_or_else(|| anyhow::anyhow!("Note not found: {}", note))?;
+                        storage.get_note(&found.id).await?.unwrap()
+                    };
+
+                    let summary = ai_provider.summarize(&note_obj, None).await?;
+                    println!("Summary of '{}':", note_obj.title);
+                    println!("{}", summary);
+                    Ok(())
+                }
+                AiCommands::Tag { note, limit } => {
+                    // Get note from storage
+                    let note_obj = if let Some(found) = storage.get_note(&note).await? {
+                        found
+                    } else {
+                        let notes = storage.list_notes(None).await?;
+                        let found = notes
+                            .iter()
+                            .find(|n| n.title == note)
+                            .ok_or_else(|| anyhow::anyhow!("Note not found: {}", note))?;
+                        storage.get_note(&found.id).await?.unwrap()
+                    };
+
+                    let tags = ai_provider.generate_tags(&note_obj, limit).await?;
+                    println!("Suggested tags for '{}':", note_obj.title);
+                    for tag in tags {
+                        println!("  - {}", tag);
                     }
                     Ok(())
                 }
-                PluginCommands::Enable { plugin } => {
-                    runtime.enable_plugin(&plugin)?;
-                    println!("Enabled plugin: {}", plugin);
-                    Ok(())
-                }
-                PluginCommands::Disable { plugin } => {
-                    runtime.disable_plugin(&plugin)?;
-                    println!("Disabled plugin: {}", plugin);
-                    Ok(())
-                }
-                PluginCommands::Chat { question, session } => {
-                    let notes = storage.list_notes(None).await?;
-                    let response = runtime
-                        .ask_jarvis(&question, &notes, session.as_deref())
+                AiCommands::Similar { note, limit } => {
+                    // Get note from storage
+                    let note_obj = if let Some(found) = storage.get_note(&note).await? {
+                        found
+                    } else {
+                        let notes = storage.list_notes(None).await?;
+                        let found = notes
+                            .iter()
+                            .find(|n| n.title == note)
+                            .ok_or_else(|| anyhow::anyhow!("Note not found: {}", note))?;
+                        storage.get_note(&found.id).await?.unwrap()
+                    };
+
+                    // Get all notes for similarity search
+                    let all_notes = storage.list_notes(None).await?;
+
+                    let similar = ai_provider
+                        .find_similar_notes(&note_obj, &all_notes, limit)
                         .await?;
-                    println!("{}", response.answer);
-                    println!();
-                    println!("session_id: {}", response.session_id);
-                    if let Some(note_id) = response.suggested_note_id {
-                        println!("suggested_note_id: {}", note_id);
+
+                    println!("Notes similar to '{}':", note_obj.title);
+                    for (i, similar_note) in similar.iter().enumerate() {
+                        println!(
+                            "{}. {} ({})",
+                            i + 1,
+                            similar_note.title,
+                            similar_note.id
+                        );
                     }
                     Ok(())
                 }

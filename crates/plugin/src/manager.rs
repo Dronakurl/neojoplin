@@ -1,6 +1,6 @@
 //! Plugin manager - handles plugin discovery, installation, and configuration
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use std::path::{Path, PathBuf};
 
 use crate::loader::PluginLoader;

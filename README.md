@@ -55,7 +55,7 @@ neojoplin --tui
 # N     - New folder
 # d     - Delete selected
 # s     - Sync
-# P     - Open AI chat overlay (Jarvis plugin)
+
 ```
 
 ### CLI Commands
@@ -79,9 +79,9 @@ neojoplin sync --url https://webdav.example.com --username user --password pass
 
 # Plugin management + AI chat
 neojoplin plugin list
-neojoplin plugin enable jarvis
-neojoplin ask "What notes mention Pflege?"
-neojoplin plugin chat "Summarize my latest todo notes"
+neojoplin plugin enable ai-ollama
+neojoplin ai generate "What notes mention Pflege?"
+neojoplin ai summarize "My note title"
 ```
 
 ## Configuration

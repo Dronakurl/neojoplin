@@ -363,6 +363,7 @@ impl CliCommandProvider for OllamaPlugin {
 
 /// Plugin constructor - must be exported with this exact name
 /// This is the entry point that the plugin loader calls
+#[allow(improper_ctypes_definitions)]
 #[no_mangle]
 pub extern "C" fn plugin_constructor() -> Box<dyn Plugin> {
     Box::new(OllamaPlugin::new())
