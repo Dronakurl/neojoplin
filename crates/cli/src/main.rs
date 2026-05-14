@@ -5,6 +5,7 @@ use clap::{Parser, Subcommand};
 use joplin_domain::{now_ms, Folder, Note, Storage};
 use joplin_sync::{E2eeService, MasterKey};
 use neojoplin_core::Editor;
+use neojoplin_plugins::{PluginRuntime, PluginState};
 use neojoplin_storage::SqliteStorage;
 use neojoplin_tui::importer::{
     default_cli_database_path, default_desktop_database_path, import_database, resolve_import_path,
@@ -30,6 +31,15 @@ struct Cli {
 enum Commands {
     /// Initialize the database
     Init,
+
+    /// Ask the AI plugin a question about your notes
+    Ask {
+        /// Your question
+        question: String,
+        /// Optional existing session ID to continue a conversation
+        #[arg(long)]
+        session: Option<String>,
+    },
 
     /// Create a new note
     #[command(name = "mknote", visible_alias = "mk-note")]
@@ -187,6 +197,12 @@ enum Commands {
         #[command(subcommand)]
         command: E2eeCommands,
     },
+
+    /// Manage plugins and plugin chat
+    Plugin {
+        #[command(subcommand)]
+        command: PluginCommands,
+    },
 }
 
 #[derive(Subcommand)]
@@ -215,6 +231,30 @@ enum E2eeCommands {
     Decrypt {
         /// Encrypted string (JED format)
         encrypted: String,
+    },
+}
+
+#[derive(Subcommand)]
+enum PluginCommands {
+    /// List known plugins and states
+    List,
+    /// Enable a plugin
+    Enable {
+        /// Plugin ID
+        plugin: String,
+    },
+    /// Disable a plugin
+    Disable {
+        /// Plugin ID
+        plugin: String,
+    },
+    /// Ask through plugin chat interface
+    Chat {
+        /// Your question
+        question: String,
+        /// Optional existing session ID to continue a conversation
+        #[arg(long)]
+        session: Option<String>,
     },
 }
 
@@ -366,6 +406,21 @@ async fn main() -> Result<()> {
     match cli.command.unwrap() {
         Commands::Init => {
             println!("Database initialized at: {}", get_db_path()?.display());
+            Ok(())
+        }
+
+        Commands::Ask { question, session } => {
+            let runtime = PluginRuntime::new().await?;
+            let notes = storage.list_notes(None).await?;
+            let response = runtime
+                .ask_jarvis(&question, &notes, session.as_deref())
+                .await?;
+            println!("{}", response.answer);
+            println!();
+            println!("session_id: {}", response.session_id);
+            if let Some(note_id) = response.suggested_note_id {
+                println!("suggested_note_id: {}", note_id);
+            }
             Ok(())
         }
 
@@ -1154,6 +1209,51 @@ async fn main() -> Result<()> {
                     let decrypted = e2ee_service.decrypt_string(&encrypted)?;
 
                     println!("{}", decrypted);
+                    Ok(())
+                }
+            }
+        }
+
+        Commands::Plugin { command } => {
+            let runtime = PluginRuntime::new().await?;
+            match command {
+                PluginCommands::List => {
+                    let plugins = runtime.list_plugins()?;
+                    println!("Plugin root: {}", runtime.plugin_root().display());
+                    for plugin in plugins {
+                        let state = match plugin.state {
+                            PluginState::Enabled => "enabled",
+                            PluginState::Disabled => "disabled",
+                            PluginState::Available => "available",
+                        };
+                        println!(
+                            "{} ({}) - {}",
+                            plugin.manifest.name, plugin.manifest.id, state
+                        );
+                    }
+                    Ok(())
+                }
+                PluginCommands::Enable { plugin } => {
+                    runtime.enable_plugin(&plugin)?;
+                    println!("Enabled plugin: {}", plugin);
+                    Ok(())
+                }
+                PluginCommands::Disable { plugin } => {
+                    runtime.disable_plugin(&plugin)?;
+                    println!("Disabled plugin: {}", plugin);
+                    Ok(())
+                }
+                PluginCommands::Chat { question, session } => {
+                    let notes = storage.list_notes(None).await?;
+                    let response = runtime
+                        .ask_jarvis(&question, &notes, session.as_deref())
+                        .await?;
+                    println!("{}", response.answer);
+                    println!();
+                    println!("session_id: {}", response.session_id);
+                    if let Some(note_id) = response.suggested_note_id {
+                        println!("suggested_note_id: {}", note_id);
+                    }
                     Ok(())
                 }
             }
