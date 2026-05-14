@@ -15,6 +15,7 @@ use tokio::task::JoinHandle;
 
 use joplin_domain::{now_ms, Folder, Note, NoteTag, Storage, SyncEvent, Tag};
 use neojoplin_core::AutoSyncScheduler;
+use neojoplin_plugin::{Plugin, PluginManager};
 use neojoplin_storage::SqliteStorage;
 use std::path::Path;
 
@@ -59,6 +60,12 @@ pub struct App {
     auto_sync_scheduler: AutoSyncScheduler,
     /// Background sync task handle
     sync_task: Option<JoinHandle<SyncTaskResult>>,
+    /// Plugin manager for loading and managing plugins
+    plugin_manager: PluginManager,
+    /// Map of key bindings to TUI panel indices
+    key_to_panel: HashMap<char, usize>,
+    /// Active TUI panel plugins
+    tui_panels: Vec<Box<dyn Plugin>>,
 }
 
 #[derive(Default, Debug, Clone, Copy)]
@@ -192,6 +199,37 @@ impl App {
 
         let auto_sync_scheduler = AutoSyncScheduler::new(state.settings.auto_sync.interval_seconds);
 
+        // Initialize plugin manager
+        let mut plugin_manager = PluginManager::new();
+        plugin_manager.initialize().await?;
+        
+        // Load enabled plugins
+        let context = neojoplin_plugin::PluginContext {
+            storage: None,
+            config: neojoplin_plugin::PluginConfig::default(),
+            metadata: neojoplin_plugin::PluginMetadata::default(),
+        };
+        plugin_manager.load_enabled_plugins(context).await?;
+        
+        // Collect TUI panel plugins
+        let mut tui_panels: Vec<Box<dyn Plugin>> = Vec::new();
+        let mut key_to_panel: HashMap<char, usize> = HashMap::new();
+        
+        for plugin in plugin_manager.loader.get_all_plugins() {
+            if let Some(panel_provider) = plugin.as_tui_panel_provider() {
+                if let Some(key) = panel_provider.key_binding() {
+                    let idx = tui_panels.len();
+                    tui_panels.push(plugin.clone_box());
+                    key_to_panel.insert(key, idx);
+                    tracing::info!(
+                        "Registered TUI panel '{}' with key binding '{}'",
+                        panel_provider.panel_name(),
+                        key
+                    );
+                }
+            }
+        }
+
         let mut app = Self {
             state,
             storage,
@@ -206,6 +244,9 @@ impl App {
             command_history_draft: String::new(),
             auto_sync_scheduler,
             sync_task: None,
+            plugin_manager,
+            key_to_panel,
+            tui_panels,
         };
         app.restore_ui_state(&data_dir).await?;
         app.refresh_sync_status().await?;
@@ -384,6 +425,16 @@ impl App {
                     ui::render_sort_popup(f, &self.state);
                 } else {
                     ui::render_ui(f, &self.state);
+                    
+                    // Render plugin panels
+                    for panel_plugin in &self.tui_panels {
+                        if let Some(panel_provider) = panel_plugin.as_tui_panel_provider() {
+                            // For now, render panels in the center of the screen
+                            // In a real implementation, panels would have their own area management
+                            let area = f.area();
+                            let _ = panel_provider.render_panel(f, area);
+                        }
+                    }
                 }
             })?;
 
@@ -410,6 +461,18 @@ impl App {
     {
         if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
             return Ok(true);
+        }
+
+        // Handle plugin key bindings
+        if let KeyCode::Char(c) = key.code {
+            if let Some(&panel_idx) = self.key_to_panel.get(&c) {
+                if let Some(panel_plugin) = self.tui_panels.get_mut(panel_idx) {
+                    if let Some(panel_provider) = panel_plugin.as_mut_tui_panel_provider() {
+                        panel_provider.handle_input(key)?;
+                        return Ok(false);
+                    }
+                }
+            }
         }
 
         // Handle global shortcuts

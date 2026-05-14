@@ -91,6 +91,11 @@ pub trait Plugin: Send + Sync + DowncastSync {
     fn as_tui_panel_provider(&self) -> Option<&dyn TuiPanelProvider> {
         None
     }
+    
+    /// Get this plugin as a mutable TuiPanelProvider if it implements that capability
+    fn as_mut_tui_panel_provider(&mut self) -> Option<&mut dyn TuiPanelProvider> {
+        None
+    }
 }
 
 // Implement DowncastSync for Plugin trait
@@ -110,7 +115,6 @@ pub trait CliCommandProvider: Plugin {
 }
 
 /// Trait for TUI panel providers
-#[async_trait]
 pub trait TuiPanelProvider: Plugin {
     /// Get panel name
     fn panel_name(&self) -> &str;
@@ -119,10 +123,10 @@ pub trait TuiPanelProvider: Plugin {
     fn key_binding(&self) -> Option<char>;
 
     /// Render panel content onto the given frame
-    async fn render_panel(&self, f: &mut Frame, area: Rect) -> Result<()>;
+    fn render_panel(&self, f: &mut Frame, area: Rect) -> Result<()>;
 
     /// Handle panel input
-    async fn handle_input(&mut self, event: crossterm::event::KeyEvent) -> Result<bool>;
+    fn handle_input(&mut self, event: crossterm::event::KeyEvent) -> Result<bool>;
 }
 
 /// Trait for note processors

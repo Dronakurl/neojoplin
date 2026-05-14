@@ -9,7 +9,7 @@ use joplin_domain::Note;
 use neojoplin_plugin::traits::cosine_similarity;
 use neojoplin_plugin::{
     AiProvider, CliCommandProvider, Plugin, PluginCapability, PluginConfig, PluginContext,
-    PluginMetadata,
+    PluginMetadata, TuiPanelProvider,
 };
 use once_cell::sync::Lazy;
 use serde::{Deserialize, Serialize};
@@ -239,6 +239,14 @@ impl Plugin for OllamaPlugin {
     
     fn as_cli_command_provider(&self) -> Option<&dyn CliCommandProvider> {
         Some(self)
+    }
+    
+    fn as_tui_panel_provider(&self) -> Option<&dyn TuiPanelProvider> {
+        None
+    }
+    
+    fn as_mut_tui_panel_provider(&mut self) -> Option<&mut dyn TuiPanelProvider> {
+        None
     }
 }
 

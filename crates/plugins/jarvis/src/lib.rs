@@ -116,9 +116,16 @@ impl Plugin for JarvisPlugin {
     fn clone_box(&self) -> Box<dyn Plugin> {
         Box::new(self.clone())
     }
+    
+    fn as_tui_panel_provider(&self) -> Option<&dyn TuiPanelProvider> {
+        Some(self)
+    }
+    
+    fn as_mut_tui_panel_provider(&mut self) -> Option<&mut dyn TuiPanelProvider> {
+        Some(self)
+    }
 }
 
-#[async_trait]
 impl TuiPanelProvider for JarvisPlugin {
     fn panel_name(&self) -> &str {
         "AI Chat"
@@ -128,7 +135,7 @@ impl TuiPanelProvider for JarvisPlugin {
         Some('P')
     }
 
-    async fn render_panel(&self, f: &mut Frame, area: Rect) -> Result<()> {
+    fn render_panel(&self, f: &mut Frame, area: Rect) -> Result<()> {
         if !self.state.visible {
             return Ok(());
         }
@@ -212,7 +219,7 @@ impl TuiPanelProvider for JarvisPlugin {
         Ok(())
     }
 
-    async fn handle_input(&mut self, event: KeyEvent) -> Result<bool> {
+    fn handle_input(&mut self, event: KeyEvent) -> Result<bool> {
         if !self.state.visible {
             return Ok(false);
         }
