@@ -1067,12 +1067,13 @@ pub fn render_settings(f: &mut Frame, state: &AppState) {
         .split(inner);
 
     // Tab bar
-    let tab_names = ["Sync", "Auto-sync", "Status", "Encryption"];
+    let tab_names = ["Sync", "Auto-sync", "Status", "Encryption", "Plugins"];
     let current_tab_idx = match state.settings.current_tab {
         SettingsTab::Sync => 0,
         SettingsTab::AutoSync => 1,
         SettingsTab::Status => 2,
         SettingsTab::Encryption => 3,
+        SettingsTab::Plugins => 4,
     };
     let tabs = Tabs::new(tab_names)
         .select(current_tab_idx)
@@ -1086,6 +1087,7 @@ pub fn render_settings(f: &mut Frame, state: &AppState) {
         SettingsTab::AutoSync => render_auto_sync_settings(f, state, layout[1]),
         SettingsTab::Status => render_sync_status_settings(f, state, layout[1]),
         SettingsTab::Encryption => render_encryption_settings(f, state, layout[1]),
+        SettingsTab::Plugins => render_plugins_settings(f, state, layout[1]),
     }
 
     // Delete confirmation overlay
@@ -1218,6 +1220,9 @@ fn settings_bottom_hints<'a>(state: &'a AppState, theme: &'a Theme) -> Line<'a> 
                         spans.push(s);
                     }
                 }
+            }
+            SettingsTab::Plugins => {
+                // No special hints for plugins tab yet
             }
         }
     }
@@ -2573,6 +2578,42 @@ fn centered_rect(percent_x: u16, percent_y: u16, r: Rect) -> Rect {
             .as_ref(),
         )
         .split(popup_layout[1])[1]
+}
+
+/// Render plugins settings tab
+fn render_plugins_settings(f: &mut Frame, state: &AppState, area: Rect) {
+    use ratatui::widgets::List;
+    use ratatui::text::Line;
+    
+    let theme = &state.theme;
+    let mut lines = vec![Line::from("Installed plugins").style(theme.primary().bold())];
+    lines.push(Line::from(""));
+
+    if state.plugins.is_empty() {
+        lines.push(Line::from("No plugins loaded").style(theme.muted()));
+    } else {
+        for (idx, plugin) in state.plugins.iter().enumerate() {
+            let style = if idx == state.selected_plugin {
+                theme.selection()
+            } else {
+                theme.text()
+            };
+            lines.push(Line::from(vec![
+                Span::styled(format!("• {} ", plugin.name), style),
+                Span::styled(format!("({}) ", plugin.id), theme.dim()),
+                Span::styled(format!("[{}]", plugin.state), theme.accent()),
+            ]));
+            if !plugin.description.is_empty() {
+                lines.push(Line::from(Span::styled(
+                    format!("  {}", plugin.description),
+                    theme.muted(),
+                )));
+            }
+        }
+    }
+    
+    let list = List::new(lines).style(theme.text());
+    f.render_widget(list, area);
 }
 
 #[cfg(test)]

@@ -725,6 +725,7 @@ impl App {
             // Settings
             KeyCode::Char('S') => {
                 self.refresh_sync_status().await?;
+                self.refresh_plugin_list().await?;
                 self.state.toggle_settings();
             }
 
@@ -1114,6 +1115,31 @@ impl App {
         self.state
             .settings
             .set_next_auto_sync_in_seconds(self.auto_sync_scheduler.seconds_until_next_run());
+        Ok(())
+    }
+
+    /// Refresh the list of plugins for settings display
+    async fn refresh_plugin_list(&mut self) -> Result<()> {
+        let mut plugins: Vec<crate::state::PluginListItem> = Vec::new();
+        
+        for plugin in self.plugin_manager.loader.get_all_plugins() {
+            let metadata = plugin.metadata();
+            let state = "enabled".to_string(); // For now, all loaded plugins are enabled
+            plugins.push(crate::state::PluginListItem {
+                id: metadata.id.clone(),
+                name: metadata.name.clone(),
+                version: metadata.version.clone(),
+                description: metadata.description.clone(),
+                state,
+            });
+        }
+        
+        self.state.plugins = plugins;
+        if self.state.plugins.is_empty() {
+            self.state.selected_plugin = 0;
+        } else {
+            self.state.selected_plugin = self.state.selected_plugin.min(self.state.plugins.len() - 1);
+        }
         Ok(())
     }
 

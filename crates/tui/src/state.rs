@@ -14,6 +14,16 @@ use fuzzy_matcher::FuzzyMatcher;
 use joplin_domain::{Folder, Note, NoteRevision};
 use joplin_sync::E2eeService;
 
+/// Plugin list item for settings display
+#[derive(Debug, Clone)]
+pub struct PluginListItem {
+    pub id: String,
+    pub name: String,
+    pub version: String,
+    pub description: String,
+    pub state: String,
+}
+
 /// Which panel has focus
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FocusPanel {
@@ -269,6 +279,10 @@ pub struct AppState {
     pub error_message: String,
     /// Whether a sync operation is currently in progress
     pub sync_in_progress: bool,
+    /// List of plugins for settings display
+    pub plugins: Vec<PluginListItem>,
+    /// Selected plugin index in settings tab
+    pub selected_plugin: usize,
 }
 
 impl Default for AppState {
@@ -323,6 +337,8 @@ impl Default for AppState {
             show_error_dialog: false,
             error_message: String::new(),
             sync_in_progress: false,
+            plugins: Vec::new(),
+            selected_plugin: 0,
         }
     }
 }
