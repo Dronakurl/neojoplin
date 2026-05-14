@@ -1641,12 +1641,12 @@ impl App {
                 return Ok(false);
             }
 
-            // Tab navigation (h/l and </> and Tab/BackTab)
-            KeyCode::Char('l') | KeyCode::Char('>') | KeyCode::Tab | KeyCode::Right => {
+            // Tab navigation (h/l and </> and [] and Tab/BackTab and Left/Right)
+            KeyCode::Char('l') | KeyCode::Char('>') | KeyCode::Char(']') | KeyCode::Tab | KeyCode::Right => {
                 self.state.settings.cycle_tab_forward();
             }
 
-            KeyCode::Char('h') | KeyCode::Char('<') | KeyCode::BackTab | KeyCode::Left => {
+            KeyCode::Char('h') | KeyCode::Char('<') | KeyCode::Char('[') | KeyCode::BackTab | KeyCode::Left => {
                 self.state.settings.cycle_tab_backward();
             }
 

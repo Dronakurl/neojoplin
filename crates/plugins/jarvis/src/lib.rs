@@ -537,40 +537,54 @@ impl TuiPanelProvider for JarvisPlugin {
     }
 
     fn handle_input(&mut self, event: KeyEvent) -> Result<bool> {
-        if !self.chat_state.visible {
-            return Ok(false);
-        }
-
         match event.code {
-            KeyCode::Esc => {
-                self.hide();
-                Ok(true)
-            }
-            KeyCode::Enter => {
-                if !self.chat_state.input.trim().is_empty() && !self.chat_state.pending {
-                    let question = self.chat_state.input.trim().to_string();
-                    self.add_message("You", &question);
+            // Toggle chat overlay visibility when the binding key is pressed
+            KeyCode::Char('P') | KeyCode::Char('p') => {
+                self.chat_state.visible = !self.chat_state.visible;
+                if !self.chat_state.visible {
                     self.chat_state.input.clear();
-                    self.chat_state.pending = true;
-
-                    // TODO: Spawn async task to call Ollama AI
-                    // For now, add a placeholder response
-                    self.add_message("Jarvis", "Let me think about that...");
                     self.chat_state.pending = false;
                 }
                 Ok(true)
             }
-            KeyCode::Backspace => {
-                self.chat_state.input.pop();
+            KeyCode::Esc => {
+                self.hide();
                 Ok(true)
             }
-            KeyCode::Char(c) => {
-                self.chat_state.input.push(c);
-                Ok(true)
+            _ => {
+                // Only handle input if chat is visible
+                if !self.chat_state.visible {
+                    return Ok(false);
+                }
+
+                match event.code {
+                    KeyCode::Enter => {
+                        if !self.chat_state.input.trim().is_empty() && !self.chat_state.pending {
+                            let question = self.chat_state.input.trim().to_string();
+                            self.add_message("You", &question);
+                            self.chat_state.input.clear();
+                            self.chat_state.pending = true;
+
+                            // TODO: Spawn async task to call Ollama AI
+                            // For now, add a placeholder response
+                            self.add_message("Jarvis", "Let me think about that...");
+                            self.chat_state.pending = false;
+                        }
+                        Ok(true)
+                    }
+                    KeyCode::Backspace => {
+                        self.chat_state.input.pop();
+                        Ok(true)
+                    }
+                    KeyCode::Char(c) => {
+                        self.chat_state.input.push(c);
+                        Ok(true)
+                    }
+                    // Pass Tab through to allow switching to preview panel
+                    KeyCode::Tab => Ok(false),
+                    _ => Ok(false),
+                }
             }
-            // Pass Tab through to allow switching to preview panel
-            KeyCode::Tab => Ok(false),
-            _ => Ok(false),
         }
     }
 }
