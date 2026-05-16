@@ -15,7 +15,6 @@ use tokio::task::JoinHandle;
 
 use joplin_domain::{now_ms, Folder, Note, NoteTag, Storage, SyncEvent, Tag};
 use neojoplin_core::AutoSyncScheduler;
-use neojoplin_plugin::PluginManager;
 use neojoplin_storage::SqliteStorage;
 use std::path::Path;
 
@@ -61,9 +60,15 @@ impl Default for AiConfig {
     fn default() -> Self {
         // Load Mistral API key from ~/.env if available
         let api_key = std::fs::read_to_string(
-            dirs::home_dir().expect("Could not determine home directory").join(".env")
-        ).ok().and_then(|content| {
-            content.lines().find(|line| line.starts_with("MISTRAL_API_KEY="))
+            dirs::home_dir()
+                .expect("Could not determine home directory")
+                .join(".env"),
+        )
+        .ok()
+        .and_then(|content| {
+            content
+                .lines()
+                .find(|line| line.starts_with("MISTRAL_API_KEY="))
                 .map(|line| line.trim_start_matches("MISTRAL_API_KEY=").to_string())
         });
 
@@ -98,12 +103,10 @@ impl AiClient {
     async fn generate_response(&self, prompt: &str) -> Result<String> {
         use serde_json::json;
 
-        let messages = vec![
-            json!({
-                "role": "user",
-                "content": prompt
-            })
-        ];
+        let messages = vec![json!({
+            "role": "user",
+            "content": prompt
+        })];
 
         let request_body = json!({
             "model": self.config.model,
@@ -113,7 +116,8 @@ impl AiClient {
         });
 
         let agent = self.create_agent();
-        let mut request = agent.post(&self.config.api_url)
+        let mut request = agent
+            .post(&self.config.api_url)
             .set("Content-Type", "application/json");
 
         if let Some(ref key) = self.config.api_key {
@@ -297,7 +301,7 @@ impl App {
         // Initialize plugin manager
         let mut plugin_manager = PluginManager::new();
         plugin_manager.initialize().await?;
-        
+
         // Load enabled plugins
         let context = neojoplin_plugin::PluginContext {
             storage: None,
@@ -1242,11 +1246,18 @@ impl App {
         let client = self.ai_client.clone();
         let storage = self.storage.clone();
         let selected_note = self.state.selected_note().cloned();
-        let selected_folder = self.state.selected_folder.map(|idx| self.state.folders.get(idx).cloned()).flatten();
-        
+        let selected_folder = self
+            .state
+            .selected_folder
+            .map(|idx| self.state.folders.get(idx).cloned())
+            .flatten();
+
         // Search for relevant notes using FTS
-        let matching_notes = storage.search_notes(&prompt, Some(5)).await.unwrap_or_default();
-        
+        let matching_notes = storage
+            .search_notes(&prompt, Some(5))
+            .await
+            .unwrap_or_default();
+
         // Build context from selected note (full content)
         let selected_context = if let Some(note) = &selected_note {
             format!(
@@ -1256,14 +1267,14 @@ impl App {
         } else {
             String::new()
         };
-        
+
         // Build context from selected notebook
         let folder_context = if let Some(folder) = &selected_folder {
             format!("Current notebook: {}", folder.title)
         } else {
             String::new()
         };
-        
+
         // Build context from matching notes
         let matching_context: String = matching_notes
             .iter()
@@ -1274,7 +1285,7 @@ impl App {
             .map(|note| format!("--- Note: {} ---\n{}", note.title, note.body))
             .collect::<Vec<_>>()
             .join("\n\n");
-        
+
         // Combine all context with prompt
         let full_prompt = format!(
             "You are a helpful AI assistant with access to the user's notes and notebooks. \
@@ -1285,10 +1296,8 @@ If the user asks about specific information (like IBAN, account numbers, etc.), 
             if !matching_context.is_empty() { format!("\n\nRelevant notes:\n{}", matching_context) } else { String::new() },
             prompt
         );
-        
-        let task = tokio::spawn(async move {
-            client.generate_response(&full_prompt).await
-        });
+
+        let task = tokio::spawn(async move { client.generate_response(&full_prompt).await });
         self.chat_task = Some(task);
     }
 
@@ -1316,7 +1325,7 @@ If the user asks about specific information (like IBAN, account numbers, etc.), 
     /// Refresh the list of plugins for settings display
     async fn refresh_plugin_list(&mut self) -> Result<()> {
         let mut plugins: Vec<crate::state::PluginListItem> = Vec::new();
-        
+
         for plugin in self.plugin_manager.loader.get_all_plugins() {
             let metadata = plugin.metadata();
             let state = "enabled".to_string(); // For now, all loaded plugins are enabled
@@ -1328,12 +1337,13 @@ If the user asks about specific information (like IBAN, account numbers, etc.), 
                 state,
             });
         }
-        
+
         self.state.plugins = plugins;
         if self.state.plugins.is_empty() {
             self.state.selected_plugin = 0;
         } else {
-            self.state.selected_plugin = self.state.selected_plugin.min(self.state.plugins.len() - 1);
+            self.state.selected_plugin =
+                self.state.selected_plugin.min(self.state.plugins.len() - 1);
         }
         Ok(())
     }
@@ -1837,11 +1847,19 @@ If the user asks about specific information (like IBAN, account numbers, etc.), 
             }
 
             // Tab navigation (h/l and </> and [] and Tab/BackTab and Left/Right)
-            KeyCode::Char('l') | KeyCode::Char('>') | KeyCode::Char(']') | KeyCode::Tab | KeyCode::Right => {
+            KeyCode::Char('l')
+            | KeyCode::Char('>')
+            | KeyCode::Char(']')
+            | KeyCode::Tab
+            | KeyCode::Right => {
                 self.state.settings.cycle_tab_forward();
             }
 
-            KeyCode::Char('h') | KeyCode::Char('<') | KeyCode::Char('[') | KeyCode::BackTab | KeyCode::Left => {
+            KeyCode::Char('h')
+            | KeyCode::Char('<')
+            | KeyCode::Char('[')
+            | KeyCode::BackTab
+            | KeyCode::Left => {
                 self.state.settings.cycle_tab_backward();
             }
 

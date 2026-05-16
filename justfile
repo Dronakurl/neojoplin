@@ -1,5 +1,8 @@
 # NeoJoplin Build Automation
 
+# Import test recipes
+import "scripts/just/test.just"
+
 # Default recipe
 default:
     @just --list
@@ -8,18 +11,9 @@ default:
 build:
     cargo build --release
 
-# Run tests
-test:
-    cargo test --all
-
 # Build and run (launches TUI by default, or pass CLI commands)
 run ARGV="":
     cargo run --release --bin neojoplin -- {{ARGV}}
-
-# Build and install to ~/.cargo/bin
-install-bare:
-    cargo install --path crates/cli --force
-    @echo "Installed neojoplin to ~/.cargo/bin"
 
 # Check code with clippy
 check:
@@ -29,7 +23,7 @@ check:
 verify:
     cargo fmt --check
     cargo clippy --all-targets --all-features -- -D warnings
-    cargo test --all
+    just test
 
 # Format code
 fmt:
@@ -39,18 +33,6 @@ fmt:
 clean:
     cargo clean
 
-# Initialize database
-init-db:
-    cargo run -- init-db
-
-# Run with debug logging
-debug:
-    cargo run -- --log-level debug
-
-# Create a test note
-test-note:
-    cargo run -- mknote "Test Note" "This is a test note created via justfile"
-
 # Run sync command
 sync:
     cargo run -- sync
@@ -59,42 +41,19 @@ sync:
 help:
     cargo run -- --help
 
-# Run single test by name
-test-one FILTER:
-    cargo test -- --exact {{FILTER}}
-
-# Run database tests only
-test-db:
-    cargo test database::
-
-# Run tests with output
-test-verbose:
-    cargo test -- --nocapture
-
-# Run AI Ollama integration tests
-test-ai:
-    ./tests/ai_ollama_test.sh
-
-# Run AI Ollama integration tests with verbose output
-test-ai-verbose:
-    bash -x ./tests/ai_ollama_test.sh
-
 # Reset database (careful!)
 reset-db:
-    rm -f ~/.local/share/neojoplin/joplin.db
-    @echo "Database deleted. It will be recreated automatically on next TUI start."
-
-# Development build (faster than release)
-dev-build:
-    cargo build
+    @read -p "Are you sure you want to delete the database? This cannot be undone. [y/N] " -n 1 -r && \
+    if [[ $REPLY =~ ^[Yy]$ ]]; then \
+        rm -f ~/.local/share/neojoplin/joplin.db && \
+        echo "Database deleted. It will be recreated automatically on next TUI start." ; \
+    else \
+        echo "Database deletion cancelled." ; \
+    fi
 
 # Run development binary
 dev-run:
     cargo run --
-
-# Open database in sqlite3
-db-shell:
-    sqlite3 ~/.local/share/neojoplin/joplin.db
 
 # Show database schema
 db-schema:
@@ -104,42 +63,16 @@ db-schema:
 db-list-notes:
     @sqlite3 ~/.local/share/neojoplin/joplin.db "SELECT id, title FROM notes LIMIT 10"
 
-# Create comprehensive test data
-test-data:
-    cargo run -- mkbook "Development" && \
-    cargo run -- mkbook "Personal" && \
-    cargo run -- mk-note "Welcome" "Welcome to NeoJoplin!" && \
-    echo "Test data created successfully"
-
 # Launch TUI (same as running with no arguments)
 tui:
     cargo run --release --bin neojoplin -- --tui
 
-# Legacy compatibility (now just runs the main binary)
-run-tui: tui
-
-# Legacy compatibility (now just installs the main binary)
-install-cli: install
-
-# Legacy compatibility (now just installs the main binary)
-install-tui: install
-
-# Legacy compatibility (now installs binary + plugins)
+# Install the system
 install:
     just clean
     cargo build --release
     cargo install --path crates/cli --force
     @echo "Installed neojoplin (CLI + TUI)"
-
-# Note: tui-bin crate removed - unified binary provides both interfaces
-# AI chat is now integrated directly into TUI (no plugins needed)
-
-# Alias for install
-install-all: install
-
-# Test WebDAV connection
-test-webdav URL USERNAME PASSWORD:
-    cargo run --bin webdav-test -- {{URL}} {{USERNAME}} {{PASSWORD}}
 
 # Start local WebDAV server for testing
 webdav-server:
@@ -151,35 +84,19 @@ webdav-server:
 webdav-stop:
     cd docker && docker compose down
 
-# Test with local WebDAV server
-test-local-webdav:
-    cargo run --bin webdav-test -- http://localhost:8080/webdav test test
-
 # View WebDAV server logs
 webdav-logs:
     cd docker && docker compose logs -f webdav
 
-# Test bidirectional sync with Joplin CLI
-test-sync:
-    ./tests/integration/sync_test.sh
-
-
-# AI Plugin Development
-build-ai-plugin:
-    cargo build -p ai-ollama --release
-
+# Ollama Docker container management
 start-ollama:
-    ./scripts/start_ollama.sh
+    cd docker && docker compose -f docker-compose.ollama.yml up -d
 
 stop-ollama:
-    ./scripts/stop_ollama.sh
+    cd docker && docker compose -f docker-compose.ollama.yml down
 
-# (No plugins to build - AI chat is now integrated directly into TUI)
-build-plugins:
-    @echo "No plugins to build - AI chat is integrated directly into TUI"
+ollama-logs:
+    cd docker && docker compose -f docker-compose.ollama.yml logs -f ollama
 
-# Install plugins to plugin directories (kept for future plugin system)
-install-plugins:
-    @echo "No plugins to install - AI chat is integrated directly into TUI"
-
-    @echo "✓ NeoJoplin and plugins installed successfully"
+ollama-restart:
+    cd docker && docker compose -f docker-compose.ollama.yml restart ollama

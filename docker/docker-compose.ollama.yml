@@ -1,0 +1,14 @@
+services:
+  ollama:
+    image: ollama/ollama:latest
+    container_name: neojoplin-ollama
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama-data:/root/.ollama
+    restart: unless-stopped
+    # Keep container running with tail -f /dev/null
+    command: tail -f /dev/null
+
+volumes:
+  ollama-data:

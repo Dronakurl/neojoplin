@@ -118,8 +118,6 @@ fn help_lines_for_query(query: Option<&str>) -> Vec<&'static str> {
     filtered
 }
 
-
-
 fn highlight_help_line<'a>(line: &'static str, query: Option<&str>, theme: &'a Theme) -> Line<'a> {
     let is_heading = !line.is_empty() && !line.starts_with(' ');
     let Some(query) = query.filter(|query| !query.trim().is_empty()) else {
@@ -2660,9 +2658,9 @@ fn centered_rect(percent_x: u16, percent_y: u16, r: Rect) -> Rect {
 
 /// Render plugins settings tab
 fn render_plugins_settings(f: &mut Frame, state: &AppState, area: Rect) {
-    use ratatui::widgets::List;
     use ratatui::text::Line;
-    
+    use ratatui::widgets::List;
+
     let theme = &state.theme;
     let mut lines = vec![Line::from("Installed plugins").style(theme.primary().bold())];
     lines.push(Line::from(""));
@@ -2689,7 +2687,7 @@ fn render_plugins_settings(f: &mut Frame, state: &AppState, area: Rect) {
             }
         }
     }
-    
+
     let list = List::new(lines).style(theme.text());
     f.render_widget(list, area);
 }

@@ -27,10 +27,11 @@ struct HttpAiClient {
 impl HttpAiClient {
     fn from_env() -> Option<Self> {
         let provider = env::var("NEOJOPLIN_AI_PROVIDER").unwrap_or_else(|_| "ollama".to_string());
-        
+
         match provider.as_str() {
             "ollama" => {
-                let api_url = env::var("OLLAMA_BASE_URL").unwrap_or_else(|_| "http://127.0.0.1:11434".to_string());
+                let api_url = env::var("OLLAMA_BASE_URL")
+                    .unwrap_or_else(|_| "http://127.0.0.1:11434".to_string());
                 let model = env::var("OLLAMA_MODEL").unwrap_or_else(|_| "llama3.2".to_string());
                 Some(Self {
                     api_url,
@@ -39,7 +40,8 @@ impl HttpAiClient {
                 })
             }
             "openai" => {
-                let api_url = env::var("OPENAI_BASE_URL").unwrap_or_else(|_| "https://api.openai.com/v1".to_string());
+                let api_url = env::var("OPENAI_BASE_URL")
+                    .unwrap_or_else(|_| "https://api.openai.com/v1".to_string());
                 let model = env::var("OPENAI_MODEL").unwrap_or_else(|_| "gpt-4o-mini".to_string());
                 let api_key = env::var("OPENAI_API_KEY").ok();
                 Some(Self {
@@ -51,59 +53,60 @@ impl HttpAiClient {
             _ => None,
         }
     }
-    
+
     async fn generate_text(&self, prompt: &str, system_prompt: Option<&str>) -> Result<String> {
         let client = reqwest::Client::builder()
             .timeout(Duration::from_secs(120))
             .build()?;
-        
+
         let mut messages: Vec<_> = Vec::new();
-        
+
         if let Some(sys) = system_prompt {
             messages.push(json!({
                 "role": "system",
                 "content": sys
             }));
         }
-        
+
         messages.push(json!({
             "role": "user",
             "content": prompt
         }));
-        
+
         let mut request_body = json!({
             "model": self.model,
             "messages": messages,
             "temperature": 0.7,
             "max_tokens": 2048,
         });
-        
+
         // For Ollama, use non-streaming mode and the /api/chat endpoint
-        let api_url = if self.api_url.contains("127.0.0.1:11434") || self.api_url.contains("localhost:11434") {
+        let api_url = if self.api_url.contains("127.0.0.1:11434")
+            || self.api_url.contains("localhost:11434")
+        {
             // This is Ollama - use /api/chat endpoint and disable streaming
             request_body["stream"] = json!(false);
             format!("{}/api/chat", self.api_url.trim_end_matches('/'))
         } else {
             self.api_url.clone()
         };
-        
-        let mut request = client.post(&api_url)
-            .json(&request_body);
-        
+
+        let mut request = client.post(&api_url).json(&request_body);
+
         if let Some(ref key) = self.api_key {
             request = request.bearer_auth(key);
         }
-        
+
         let response = request.send().await?;
         let body: serde_json::Value = response.json().await?;
-        
+
         // Handle Ollama /api/chat response format
         if let Some(message) = body["message"].as_object() {
             if let Some(content) = message["content"].as_str() {
                 return Ok(content.to_string());
             }
         }
-        
+
         // Handle OpenAI response format
         if let Some(choices) = body["choices"].as_array() {
             if let Some(first) = choices.first() {
@@ -114,13 +117,16 @@ impl HttpAiClient {
                 }
             }
         }
-        
+
         // Ollama /api/generate uses "response" field
         if let Some(response) = body["response"].as_str() {
             return Ok(response.to_string());
         }
-        
-        Err(anyhow::anyhow!("Unexpected AI API response format: {}", body))
+
+        Err(anyhow::anyhow!(
+            "Unexpected AI API response format: {}",
+            body
+        ))
     }
 }
 
@@ -504,8 +510,6 @@ async fn load_e2ee_service(password_override: Option<String>) -> Result<E2eeServ
     Ok(e2ee)
 }
 
-use neojoplin_plugin::{PluginContext, PluginManager};
-
 #[tokio::main]
 async fn main() -> Result<()> {
     // Check for environment variable first (before parsing CLI args)
@@ -513,18 +517,6 @@ async fn main() -> Result<()> {
     if std::env::var("NEOJOPLIN_TEST_MODE").is_ok() {
         std::env::set_var("NEOJOPLIN_TEST_MODE", "1");
     }
-
-    // Initialize plugin manager and load plugins
-    let mut plugin_manager = PluginManager::new();
-    plugin_manager.initialize().await?;
-    
-    let context = PluginContext {
-        storage: None,
-        config: Default::default(),
-        metadata: Default::default(),
-    };
-    
-    plugin_manager.load_enabled_plugins(context).await?;
 
     let cli = Cli::parse();
 
@@ -540,15 +532,6 @@ async fn main() -> Result<()> {
 
     // Initialize storage for CLI commands
     let storage = Arc::new(SqliteStorage::new().await?);
-    
-    // Re-load plugins with storage context
-    let context_with_storage = PluginContext {
-        storage: Some(storage.clone()),
-        config: Default::default(),
-        metadata: Default::default(),
-    };
-    
-    plugin_manager.load_enabled_plugins(context_with_storage).await?;
 
     match cli.command.unwrap() {
         Commands::MkNote {
@@ -1342,31 +1325,17 @@ async fn main() -> Result<()> {
         }
 
         Commands::Ai { command } => {
-            // Check for HTTP client from environment (simpler approach)
-            let http_client = HttpAiClient::from_env();
-            
-            // Try plugin providers first
-            let mut plugin_providers: Vec<&dyn neojoplin_plugin::AiProvider> = Vec::new();
-            for plugin in plugin_manager.loader.get_all_plugins() {
-                if let Some(provider) = plugin.as_ai_provider() {
-                    plugin_providers.push(provider);
-                }
-            }
-
-            let use_plugin = !plugin_providers.is_empty();
-            let use_http = http_client.is_some();
-            
-            if !use_plugin && !use_http {
-                return Err(anyhow::anyhow!(
-                    "No AI provider available. Set NEOJOPLIN_AI_PROVIDER (ollama/openai) and corresponding environment variables."
-                ));
-            }
+            // Get HTTP AI client from environment variables
+            let http_client = HttpAiClient::from_env()
+                .ok_or_else(|| anyhow::anyhow!(
+                    "No AI provider configured. Set NEOJOPLIN_AI_PROVIDER (ollama/openai) and corresponding environment variables."
+                ))?;
 
             match command {
                 AiCommands::Generate { prompt, system } => {
                     // Search for relevant notes based on the prompt
                     let matching_notes = storage.search_notes(&prompt, Some(5)).await?;
-                    
+
                     // Build context from matching notes
                     let context = if matching_notes.is_empty() {
                         String::new()
@@ -1377,22 +1346,18 @@ async fn main() -> Result<()> {
                             .collect();
                         format!("\n\nRelevant notes:\n{}", notes_context.join("\n\n"))
                     };
-                    
+
                     // Build the full prompt with context
                     let full_prompt = format!(
                         "You are a helpful AI assistant with access to the user's notes. \
 Use the information below to provide accurate, context-aware answers. \
 Search for relevant information in the notes provided.\n\n{}\n\nUser question: {}",
-                        context,
-                        prompt
+                        context, prompt
                     );
-                    
-                    // Use plugin or HTTP client
-                    let result = if use_plugin {
-                        plugin_providers[0].generate_text(&full_prompt, system.as_deref()).await?
-                    } else {
-                        http_client.unwrap().generate_text(&full_prompt, system.as_deref()).await?
-                    };
+
+                    let result = http_client
+                        .generate_text(&full_prompt, system.as_deref())
+                        .await?;
                     println!("{}", result);
                     Ok(())
                 }
@@ -1409,13 +1374,9 @@ Search for relevant information in the notes provided.\n\n{}\n\nUser question: {
                         storage.get_note(&found.id).await?.unwrap()
                     };
 
-                    let summary = if use_plugin {
-                        plugin_providers[0].summarize(&note_obj, None).await?
-                    } else {
-                        // For HTTP client, build the summarize prompt manually
-                        let summarize_prompt = format!("Summarize this note:\n\n{}", note_obj.body);
-                        http_client.unwrap().generate_text(&summarize_prompt, None).await?
-                    };
+                    // Build summarize prompt for HTTP client
+                    let summarize_prompt = format!("Summarize this note:\n\n{}", note_obj.body);
+                    let summary = http_client.generate_text(&summarize_prompt, None).await?;
                     println!("Summary of '{}':", note_obj.title);
                     println!("{}", summary);
                     Ok(())
@@ -1433,23 +1394,19 @@ Search for relevant information in the notes provided.\n\n{}\n\nUser question: {
                         storage.get_note(&found.id).await?.unwrap()
                     };
 
-                    let tags = if use_plugin {
-                        plugin_providers[0].generate_tags(&note_obj, limit).await?
-                    } else {
-                        // For HTTP client, build the tags prompt manually
-                        let tags_prompt = format!(
-                            "Extract up to {} relevant tags from this note. Return as comma-separated list:\n\n{}",
-                            limit,
-                            note_obj.body
-                        );
-                        let result = http_client.unwrap().generate_text(&tags_prompt, None).await?;
-                        result
-                            .split(',')
-                            .map(|s| s.trim().to_string())
-                            .filter(|s| !s.is_empty())
-                            .take(limit)
-                            .collect()
-                    };
+                    // Build tags prompt for HTTP client
+                    let tags_prompt = format!(
+                        "Extract up to {} relevant tags from this note. Return as comma-separated list:\n\n{}",
+                        limit,
+                        note_obj.body
+                    );
+                    let result = http_client.generate_text(&tags_prompt, None).await?;
+                    let tags: Vec<String> = result
+                        .split(',')
+                        .map(|s| s.trim().to_string())
+                        .filter(|s| !s.is_empty())
+                        .take(limit)
+                        .collect();
                     println!("Suggested tags for '{}':", note_obj.title);
                     for tag in tags {
                         println!("  - {}", tag);
@@ -1469,26 +1426,13 @@ Search for relevant information in the notes provided.\n\n{}\n\nUser question: {
                         storage.get_note(&found.id).await?.unwrap()
                     };
 
-                    // Get all notes for similarity search
-                    let all_notes = storage.list_notes(None).await?;
-
-                    let similar = if use_plugin {
-                        plugin_providers[0].find_similar_notes(&note_obj, &all_notes, limit).await?
-                    } else {
-                        // For HTTP client, use FTS search as a fallback for similarity
-                        // This is a simplified version - proper similarity would need embeddings
-                        let query = format!("{} {}", note_obj.title, note_obj.body);
-                        storage.search_notes(&query, Some(limit)).await?
-                    };
+                    // Get all notes for similarity search using FTS
+                    let query = format!("{} {}", note_obj.title, note_obj.body);
+                    let similar = storage.search_notes(&query, Some(limit)).await?;
 
                     println!("Notes similar to '{}':", note_obj.title);
                     for (i, similar_note) in similar.iter().enumerate() {
-                        println!(
-                            "{}. {} ({})",
-                            i + 1,
-                            similar_note.title,
-                            similar_note.id
-                        );
+                        println!("{}. {} ({})", i + 1, similar_note.title, similar_note.id);
                     }
                     Ok(())
                 }
