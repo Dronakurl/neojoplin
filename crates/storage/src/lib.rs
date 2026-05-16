@@ -1222,6 +1222,38 @@ impl Storage for SqliteStorage {
         Ok(notes)
     }
 
+    async fn search_notes(&self, query: &str, limit: Option<usize>) -> Result<Vec<Note>, DatabaseError> {
+        let limit_clause = limit.map(|l| format!(" LIMIT {}", l)).unwrap_or_default();
+        
+        let notes: Vec<Note> = sqlx::query_as::<_, Note>(&format!(
+            r#"
+            SELECT
+                id, title, body, created_time, updated_time,
+                user_created_time, user_updated_time, parent_id,
+                is_conflict, is_todo, todo_completed, todo_due,
+                source, source_application, "order", latitude, longitude,
+                altitude, author, source_url, is_shared, application_data,
+                markup_language, encryption_cipher_text, encryption_applied,
+                encryption_blob_encrypted, master_key_id, share_id,
+                conflict_original_id, deleted_time
+            FROM notes
+            WHERE id IN (
+                SELECT id FROM notes_fts WHERE notes_fts MATCH ?
+            )
+            AND COALESCE(deleted_time, 0) = 0
+            ORDER BY "order" ASC, title ASC
+            {}
+            "#,
+            limit_clause
+        ))
+        .bind(query)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| DatabaseError::QueryFailed(format!("Failed to search notes: {}", e)))?;
+
+        Ok(notes)
+    }
+
     // Folder operations
     async fn create_folder(&self, folder: &Folder) -> Result<(), DatabaseError> {
         sqlx::query(

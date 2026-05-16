@@ -1259,8 +1259,31 @@ async fn main() -> Result<()> {
 
             match command {
                 AiCommands::Generate { prompt, system } => {
+                    // Search for relevant notes based on the prompt
+                    let matching_notes = storage.search_notes(&prompt, Some(5)).await?;
+                    
+                    // Build context from matching notes
+                    let context = if matching_notes.is_empty() {
+                        String::new()
+                    } else {
+                        let notes_context: Vec<String> = matching_notes
+                            .iter()
+                            .map(|note| format!("--- Note: {} ---\n{}", note.title, note.body))
+                            .collect();
+                        format!("\n\nRelevant notes:\n{}", notes_context.join("\n\n"))
+                    };
+                    
+                    // Build the full prompt with context
+                    let full_prompt = format!(
+                        "You are a helpful AI assistant with access to the user's notes. \
+Use the information below to provide accurate, context-aware answers. \
+If the user asks about specific information (like IBAN, account numbers, etc.), search for it in the notes.\n\n{}\n\nUser question: {}",
+                        context,
+                        prompt
+                    );
+                    
                     let result = ai_provider
-                        .generate_text(&prompt, system.as_deref())
+                        .generate_text(&full_prompt, system.as_deref())
                         .await?;
                     println!("{}", result);
                     Ok(())

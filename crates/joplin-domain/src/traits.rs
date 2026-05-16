@@ -18,6 +18,9 @@ pub trait Storage: Send + Sync {
     async fn update_note(&self, note: &Note) -> Result<(), DatabaseError>;
     async fn delete_note(&self, id: &str) -> Result<(), DatabaseError>;
     async fn list_notes(&self, folder_id: Option<&str>) -> Result<Vec<Note>, DatabaseError>;
+
+    /// Search notes by title and body using full-text search
+    async fn search_notes(&self, query: &str, limit: Option<usize>) -> Result<Vec<Note>, DatabaseError>;
     async fn trash_note(&self, id: &str) -> Result<(), DatabaseError>;
     async fn restore_note(&self, id: &str) -> Result<(), DatabaseError>;
     async fn list_deleted_notes(&self) -> Result<Vec<Note>, DatabaseError>;
