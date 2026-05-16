@@ -720,6 +720,12 @@ impl App {
             }
         }
 
+        // When chat overlay is visible, block all panel navigation
+        // This prevents Tab, arrow keys, etc. from interacting with underlying panels
+        if self.state.chat_overlay.visible {
+            return Ok(false);
+        }
+
         // Handle vim-style navigation and actions
         match key.code {
             // Escape - clear active filters
