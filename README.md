@@ -225,6 +225,65 @@ just fmt      # format
 
 Contributions are welcome! 
 
+### Development Setup
+
+1. **Clone the repository:**
+   ```bash
+   git clone https://github.com/Dronakurl/neojoplin.git
+   cd neojoplin
+   ```
+
+2. **Build the project:**
+   ```bash
+   just build
+   ```
+
+3. **Run tests:**
+   ```bash
+   just test
+   ```
+
+### AI Testing with Ollama
+
+To test AI functionality (generate, summarize commands), you'll need a local Ollama server:
+
+1. **Start Ollama Docker container:**
+   ```bash
+   just start-ollama
+   ```
+   This script:
+   - Starts Ollama in a Docker container on port 11434
+   - Downloads the `gemma2:2b` model (if not already present)
+   - Waits for the API to be ready
+
+2. **Run AI integration tests:**
+   ```bash
+   just test-ai
+   ```
+   This runs the following tests:
+   - Basic AI generate command
+   - AI generate with note context search (tests FTS search for notes)
+   - AI summarize command
+
+3. **Stop Ollama when done:**
+   ```bash
+   just stop-ollama
+   ```
+
+4. **Manual AI testing:**
+   ```bash
+   NEOJOPLIN_AI_PROVIDER=ollama OLLAMA_BASE_URL=http://127.0.0.1:11434 OLLAMA_MODEL=gemma2:2b \
+     cargo run -- ai generate "Your prompt here"
+   ```
+
+### Code Quality
+
+```bash
+just check    # Run clippy
+just fmt      # Format code
+just verify   # Full validation (fmt, lint, tests)
+```
+
 ## License
 
 MIT License - see [LICENSE](LICENSE) for details.

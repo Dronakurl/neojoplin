@@ -71,6 +71,14 @@ test-db:
 test-verbose:
     cargo test -- --nocapture
 
+# Run AI Ollama integration tests
+test-ai:
+    ./tests/ai_ollama_test.sh
+
+# Run AI Ollama integration tests with verbose output
+test-ai-verbose:
+    bash -x ./tests/ai_ollama_test.sh
+
 # Reset database (careful!)
 reset-db:
     rm -f ~/.local/share/neojoplin/joplin.db
