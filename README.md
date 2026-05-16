@@ -28,7 +28,7 @@ cargo install --path crates/cli --force
 
 - Rust toolchain (1.70+)
 - SQLite
-- WebDAV server 
+- WebDAV server (optional: for synchronization to a server)
 
 > [!TIP]
 > There is a configuration for a local WebDAV server in the `docker` folder, which you can use for testing. It is based on `caddy`
@@ -37,33 +37,9 @@ cargo install --path crates/cli --force
 
 NeoJoplin provides a binary that works as both a CLI tool and launches the TUI by default.
 
-### TUI (Default)
-
-```bash
-# Launch the TUI interface (default when no commands specified)
-neojoplin
-# or explicitly
-neojoplin --tui
-
-# Keybindings:
-# q     - Quit
-# ?     - Help
-# Tab   - Switch panels (notebooks | notes | content)
-# j/k   - Navigate (vim-style)
-# Enter - Edit selected note
-# n     - New note
-# N     - New folder
-# d     - Delete selected
-# s     - Sync
-
-```
-
 ### CLI Commands
 
 ```bash
-# Initialize the database
-neojoplin init
-
 # Create a folder and note
 neojoplin mkbook "Development"
 neojoplin mknote "Rust Tips" --body "Use cargo for everything!"
@@ -215,7 +191,7 @@ just fmt      # format
 
 ### Available Features ✅
 
-- **CLI**: `init`, `mknote`, `mkbook`, `mktodo`, `ls`, `cat`, `edit`, `sync`, `import`, `import-desktop`, `rm-note`, `rm-book`
+- **CLI**: `mknote`, `mkbook`, `mktodo`, `ls`, `cat`, `edit`, `sync`, `import`, `import-desktop`, `rm-note`, `rm-book`
 - **TUI**: Three-panel layout, vim navigation, interactive editing
 - **Sync**: Three-phase protocol, configurable remote path, WebDAV support
 - **Editor**: External editor integration with terminal handling

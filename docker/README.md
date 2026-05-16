@@ -8,8 +8,8 @@ This directory contains Docker setup for running a local WebDAV server for testi
 # Start the WebDAV server
 just webdav-server
 
-# Or manually with docker-compose
-docker-compose up -d webdav
+# Or manually with docker-compose (from the docker/ directory)
+cd docker && docker-compose up -d webdav
 
 # Test the connection
 just test-local-webdav

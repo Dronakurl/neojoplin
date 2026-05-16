@@ -12,7 +12,6 @@ use neojoplin_tui::importer::{
 use neojoplin_tui::settings::{Settings, SyncTarget};
 use serde_json::json;
 use std::env;
-use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -146,9 +145,6 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
-    /// Initialize the database
-    Init,
-
     /// Create a new note
     #[command(name = "mknote", visible_alias = "mk-note")]
     MkNote {
@@ -555,11 +551,6 @@ async fn main() -> Result<()> {
     plugin_manager.load_enabled_plugins(context_with_storage).await?;
 
     match cli.command.unwrap() {
-        Commands::Init => {
-            println!("Database initialized at: {}", get_db_path()?.display());
-            Ok(())
-        }
-
         Commands::MkNote {
             title,
             parent,
@@ -1504,11 +1495,6 @@ Search for relevant information in the notes provided.\n\n{}\n\nUser question: {
             }
         }
     }
-}
-
-fn get_db_path() -> Result<PathBuf> {
-    use neojoplin_core::Config;
-    Ok(Config::data_dir()?.join("joplin.db"))
 }
 
 async fn find_reusable_master_key(

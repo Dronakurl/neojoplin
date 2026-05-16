@@ -82,7 +82,7 @@ test-ai-verbose:
 # Reset database (careful!)
 reset-db:
     rm -f ~/.local/share/neojoplin/joplin.db
-    @echo "Database deleted. Run 'just run -- init' to recreate."
+    @echo "Database deleted. It will be recreated automatically on next TUI start."
 
 # Development build (faster than release)
 dev-build:
@@ -106,7 +106,6 @@ db-list-notes:
 
 # Create comprehensive test data
 test-data:
-    cargo run -- init && \
     cargo run -- mkbook "Development" && \
     cargo run -- mkbook "Personal" && \
     cargo run -- mk-note "Welcome" "Welcome to NeoJoplin!" && \
@@ -144,13 +143,13 @@ test-webdav URL USERNAME PASSWORD:
 
 # Start local WebDAV server for testing
 webdav-server:
-    docker compose up -d webdav
+    cd docker && docker compose up -d webdav
     @echo "Local WebDAV server started on http://localhost:8080"
     @echo "WebDAV path: http://localhost:8080/webdav"
 
 # Stop local WebDAV server
 webdav-stop:
-    docker compose down
+    cd docker && docker compose down
 
 # Test with local WebDAV server
 test-local-webdav:
@@ -158,7 +157,7 @@ test-local-webdav:
 
 # View WebDAV server logs
 webdav-logs:
-    docker compose logs -f webdav
+    cd docker && docker compose logs -f webdav
 
 # Test bidirectional sync with Joplin CLI
 test-sync:
