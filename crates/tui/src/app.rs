@@ -1240,9 +1240,12 @@ impl App {
     /// Spawn a background task to get a chat response from Mistral API
     async fn spawn_chat_response_task(&mut self, prompt: String) {
         let client = self.ai_client.clone();
-        let notes = self.state.notes.clone();
+        let storage = self.storage.clone();
         let selected_note = self.state.selected_note().cloned();
         let selected_folder = self.state.selected_folder.map(|idx| self.state.folders.get(idx).cloned()).flatten();
+        
+        // Search for relevant notes using FTS
+        let matching_notes = storage.search_notes(&prompt, Some(5)).await.unwrap_or_default();
         
         // Build context from selected note (full content)
         let selected_context = if let Some(note) = &selected_note {
@@ -1261,59 +1264,25 @@ impl App {
             String::new()
         };
         
-        // Search all notes for relevant content based on the prompt
-        // Extract keywords from the prompt
-        let prompt_lower = prompt.to_lowercase();
-        let keywords: Vec<&str> = prompt_lower
-            .split_whitespace()
-            .filter(|word| word.len() > 3) // Filter out short words
-            .collect();
-        
-        // Find notes matching any keyword
-        let mut matching_notes: Vec<&Note> = notes
-            .iter()
-            .filter(|note| {
-                if note.id == selected_note.as_ref().map_or("", |n| n.id.as_str()) {
-                    return false; // Skip selected note (already included)
-                }
-                let note_lower = note.title.to_lowercase();
-                let body_lower = note.body.to_lowercase();
-                keywords.iter().any(|kw| note_lower.contains(kw) || body_lower.contains(kw))
-            })
-            .collect();
-        
-        // Limit to top 5 matching notes
-        matching_notes.truncate(5);
-        
         // Build context from matching notes
         let matching_context: String = matching_notes
             .iter()
+            .filter(|note| {
+                // Skip selected note (already included above)
+                selected_note.as_ref().map_or(true, |s| s.id != note.id)
+            })
             .map(|note| format!("--- Note: {} ---\n{}", note.title, note.body))
             .collect::<Vec<_>>()
             .join("\n\n");
-        
-        // Build all notes summary (titles only) if no matches found
-        let all_notes_summary: String = if matching_notes.is_empty() {
-            notes
-                .iter()
-                .filter(|n| selected_note.as_ref().map_or(true, |s| s.id != n.id))
-                .take(15)
-                .map(|note| format!("- {}", note.title))
-                .collect::<Vec<_>>()
-                .join("\n")
-        } else {
-            String::new()
-        };
         
         // Combine all context with prompt
         let full_prompt = format!(
             "You are a helpful AI assistant with access to the user's notes and notebooks. \
 Use the information below to provide accurate, context-aware answers. \
-If the user asks about specific information (like IBAN, account numbers, etc.), search for it in the notes.\n\n{}{}{}{}\n\nUser question: {}",
+If the user asks about specific information (like IBAN, account numbers, etc.), search for it in the notes.\n\n{}{}{}\n\nUser question: {}",
             folder_context,
             if !selected_context.is_empty() { format!("\n\n{}", selected_context) } else { String::new() },
             if !matching_context.is_empty() { format!("\n\nRelevant notes:\n{}", matching_context) } else { String::new() },
-            if !all_notes_summary.is_empty() { format!("\n\nAvailable notes:\n{}", all_notes_summary) } else { String::new() },
             prompt
         );
         
