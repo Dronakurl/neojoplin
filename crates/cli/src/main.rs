@@ -10,8 +10,120 @@ use neojoplin_tui::importer::{
     default_cli_database_path, default_desktop_database_path, import_database, resolve_import_path,
 };
 use neojoplin_tui::settings::{Settings, SyncTarget};
+use serde_json::json;
+use std::env;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Duration;
+
+/// Simple HTTP-based AI client for direct API calls (Ollama, OpenAI-compatible)
+/// Used as fallback when no AI provider plugins are available
+#[derive(Clone)]
+struct HttpAiClient {
+    api_url: String,
+    model: String,
+    api_key: Option<String>,
+}
+
+impl HttpAiClient {
+    fn from_env() -> Option<Self> {
+        let provider = env::var("NEOJOPLIN_AI_PROVIDER").unwrap_or_else(|_| "ollama".to_string());
+        
+        match provider.as_str() {
+            "ollama" => {
+                let api_url = env::var("OLLAMA_BASE_URL").unwrap_or_else(|_| "http://127.0.0.1:11434".to_string());
+                let model = env::var("OLLAMA_MODEL").unwrap_or_else(|_| "llama3.2".to_string());
+                Some(Self {
+                    api_url,
+                    model,
+                    api_key: None,
+                })
+            }
+            "openai" => {
+                let api_url = env::var("OPENAI_BASE_URL").unwrap_or_else(|_| "https://api.openai.com/v1".to_string());
+                let model = env::var("OPENAI_MODEL").unwrap_or_else(|_| "gpt-4o-mini".to_string());
+                let api_key = env::var("OPENAI_API_KEY").ok();
+                Some(Self {
+                    api_url,
+                    model,
+                    api_key,
+                })
+            }
+            _ => None,
+        }
+    }
+    
+    async fn generate_text(&self, prompt: &str, system_prompt: Option<&str>) -> Result<String> {
+        let client = reqwest::Client::builder()
+            .timeout(Duration::from_secs(120))
+            .build()?;
+        
+        let mut messages: Vec<_> = Vec::new();
+        
+        if let Some(sys) = system_prompt {
+            messages.push(json!({
+                "role": "system",
+                "content": sys
+            }));
+        }
+        
+        messages.push(json!({
+            "role": "user",
+            "content": prompt
+        }));
+        
+        let mut request_body = json!({
+            "model": self.model,
+            "messages": messages,
+            "temperature": 0.7,
+            "max_tokens": 2048,
+        });
+        
+        // For Ollama, use non-streaming mode and the /api/chat endpoint
+        let api_url = if self.api_url.contains("127.0.0.1:11434") || self.api_url.contains("localhost:11434") {
+            // This is Ollama - use /api/chat endpoint and disable streaming
+            request_body["stream"] = json!(false);
+            format!("{}/api/chat", self.api_url.trim_end_matches('/'))
+        } else {
+            self.api_url.clone()
+        };
+        
+        let mut request = client.post(&api_url)
+            .json(&request_body);
+        
+        if let Some(ref key) = self.api_key {
+            request = request.bearer_auth(key);
+        }
+        
+        let response = request.send().await?;
+        let body: serde_json::Value = response.json().await?;
+        
+        // Handle Ollama /api/chat response format
+        if let Some(message) = body["message"].as_object() {
+            if let Some(content) = message["content"].as_str() {
+                return Ok(content.to_string());
+            }
+        }
+        
+        // Handle OpenAI response format
+        if let Some(choices) = body["choices"].as_array() {
+            if let Some(first) = choices.first() {
+                if let Some(message) = first["message"].as_object() {
+                    if let Some(content) = message["content"].as_str() {
+                        return Ok(content.to_string());
+                    }
+                }
+            }
+        }
+        
+        // Ollama /api/generate uses "response" field
+        if let Some(response) = body["response"].as_str() {
+            return Ok(response.to_string());
+        }
+        
+        Err(anyhow::anyhow!("Unexpected AI API response format: {}", body))
+    }
+}
 
 #[derive(Parser)]
 #[command(name = "neojoplin")]
@@ -1239,23 +1351,25 @@ async fn main() -> Result<()> {
         }
 
         Commands::Ai { command } => {
-            // Get AI provider plugins
-            let mut ai_providers: Vec<&dyn neojoplin_plugin::AiProvider> = Vec::new();
+            // Check for HTTP client from environment (simpler approach)
+            let http_client = HttpAiClient::from_env();
             
+            // Try plugin providers first
+            let mut plugin_providers: Vec<&dyn neojoplin_plugin::AiProvider> = Vec::new();
             for plugin in plugin_manager.loader.get_all_plugins() {
                 if let Some(provider) = plugin.as_ai_provider() {
-                    ai_providers.push(provider);
+                    plugin_providers.push(provider);
                 }
             }
 
-            if ai_providers.is_empty() {
+            let use_plugin = !plugin_providers.is_empty();
+            let use_http = http_client.is_some();
+            
+            if !use_plugin && !use_http {
                 return Err(anyhow::anyhow!(
-                    "No AI provider plugin loaded. Install an AI plugin first."
+                    "No AI provider available. Set NEOJOPLIN_AI_PROVIDER (ollama/openai) and corresponding environment variables."
                 ));
             }
-
-            // For now, use the first AI provider
-            let ai_provider = ai_providers[0];
 
             match command {
                 AiCommands::Generate { prompt, system } => {
@@ -1277,14 +1391,17 @@ async fn main() -> Result<()> {
                     let full_prompt = format!(
                         "You are a helpful AI assistant with access to the user's notes. \
 Use the information below to provide accurate, context-aware answers. \
-If the user asks about specific information (like IBAN, account numbers, etc.), search for it in the notes.\n\n{}\n\nUser question: {}",
+Search for relevant information in the notes provided.\n\n{}\n\nUser question: {}",
                         context,
                         prompt
                     );
                     
-                    let result = ai_provider
-                        .generate_text(&full_prompt, system.as_deref())
-                        .await?;
+                    // Use plugin or HTTP client
+                    let result = if use_plugin {
+                        plugin_providers[0].generate_text(&full_prompt, system.as_deref()).await?
+                    } else {
+                        http_client.unwrap().generate_text(&full_prompt, system.as_deref()).await?
+                    };
                     println!("{}", result);
                     Ok(())
                 }
@@ -1301,7 +1418,13 @@ If the user asks about specific information (like IBAN, account numbers, etc.), 
                         storage.get_note(&found.id).await?.unwrap()
                     };
 
-                    let summary = ai_provider.summarize(&note_obj, None).await?;
+                    let summary = if use_plugin {
+                        plugin_providers[0].summarize(&note_obj, None).await?
+                    } else {
+                        // For HTTP client, build the summarize prompt manually
+                        let summarize_prompt = format!("Summarize this note:\n\n{}", note_obj.body);
+                        http_client.unwrap().generate_text(&summarize_prompt, None).await?
+                    };
                     println!("Summary of '{}':", note_obj.title);
                     println!("{}", summary);
                     Ok(())
@@ -1319,7 +1442,23 @@ If the user asks about specific information (like IBAN, account numbers, etc.), 
                         storage.get_note(&found.id).await?.unwrap()
                     };
 
-                    let tags = ai_provider.generate_tags(&note_obj, limit).await?;
+                    let tags = if use_plugin {
+                        plugin_providers[0].generate_tags(&note_obj, limit).await?
+                    } else {
+                        // For HTTP client, build the tags prompt manually
+                        let tags_prompt = format!(
+                            "Extract up to {} relevant tags from this note. Return as comma-separated list:\n\n{}",
+                            limit,
+                            note_obj.body
+                        );
+                        let result = http_client.unwrap().generate_text(&tags_prompt, None).await?;
+                        result
+                            .split(',')
+                            .map(|s| s.trim().to_string())
+                            .filter(|s| !s.is_empty())
+                            .take(limit)
+                            .collect()
+                    };
                     println!("Suggested tags for '{}':", note_obj.title);
                     for tag in tags {
                         println!("  - {}", tag);
@@ -1342,9 +1481,14 @@ If the user asks about specific information (like IBAN, account numbers, etc.), 
                     // Get all notes for similarity search
                     let all_notes = storage.list_notes(None).await?;
 
-                    let similar = ai_provider
-                        .find_similar_notes(&note_obj, &all_notes, limit)
-                        .await?;
+                    let similar = if use_plugin {
+                        plugin_providers[0].find_similar_notes(&note_obj, &all_notes, limit).await?
+                    } else {
+                        // For HTTP client, use FTS search as a fallback for similarity
+                        // This is a simplified version - proper similarity would need embeddings
+                        let query = format!("{} {}", note_obj.title, note_obj.body);
+                        storage.search_notes(&query, Some(limit)).await?
+                    };
 
                     println!("Notes similar to '{}':", note_obj.title);
                     for (i, similar_note) in similar.iter().enumerate() {

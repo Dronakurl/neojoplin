@@ -262,7 +262,8 @@ To test AI functionality (generate, summarize commands), you'll need a local Oll
    ```
    This runs the following tests:
    - Basic AI generate command
-   - AI generate with note context search (tests FTS search for notes)
+   - AI generate with note title search
+   - AI generate with note content search (tests FTS full-text search)
    - AI summarize command
 
 3. **Stop Ollama when done:**

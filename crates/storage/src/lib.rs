@@ -1225,7 +1225,40 @@ impl Storage for SqliteStorage {
     async fn search_notes(&self, query: &str, limit: Option<usize>) -> Result<Vec<Note>, DatabaseError> {
         let limit_clause = limit.map(|l| format!(" LIMIT {}", l)).unwrap_or_default();
         
-        let notes: Vec<Note> = sqlx::query_as::<_, Note>(&format!(
+        // Split query into words and create a LIKE pattern for each
+        // This allows matching any of the words in title or body
+        // Strip common punctuation from word boundaries and convert to lowercase for case-insensitive search
+        let words: Vec<String> = query
+            .split_whitespace()
+            .map(|w| {
+                let w = w.trim_matches(|c: char| c.is_ascii_punctuation()).to_lowercase();
+                if w.is_empty() {
+                    String::new()
+                } else {
+                    format!("%{}%", w)
+                }
+            })
+            .filter(|w| !w.is_empty())
+            .collect();
+        
+        if words.is_empty() {
+            return Ok(Vec::new());
+        }
+        
+        // Build WHERE clause: (LOWER(title) LIKE ? OR LOWER(body) LIKE ?) OR ...
+        // Use OR between word groups so ANY word matching will find the note
+        let mut where_parts = Vec::new();
+        let mut binds = Vec::new();
+        
+        for word in &words {
+            where_parts.push("(LOWER(title) LIKE ? OR LOWER(body) LIKE ?)");
+            binds.push(word.as_str());
+            binds.push(word.as_str());
+        }
+        
+        let where_clause = where_parts.join(" OR ");
+        
+        let sql = format!(
             r#"
             SELECT
                 id, title, body, created_time, updated_time,
@@ -1237,16 +1270,19 @@ impl Storage for SqliteStorage {
                 encryption_blob_encrypted, master_key_id, share_id,
                 conflict_original_id, deleted_time
             FROM notes
-            WHERE id IN (
-                SELECT id FROM notes_fts WHERE notes_fts MATCH ?
-            )
-            AND COALESCE(deleted_time, 0) = 0
+            WHERE ({}) AND COALESCE(deleted_time, 0) = 0
             ORDER BY "order" ASC, title ASC
             {}
             "#,
-            limit_clause
-        ))
-        .bind(query)
+            where_clause, limit_clause
+        );
+        
+        let mut query = sqlx::query_as::<_, Note>(&sql);
+        for bind in binds {
+            query = query.bind(bind);
+        }
+        
+        let notes = query
         .fetch_all(&self.pool)
         .await
         .map_err(|e| DatabaseError::QueryFailed(format!("Failed to search notes: {}", e)))?;
