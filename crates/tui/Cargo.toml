@@ -12,7 +12,6 @@ joplin-domain = { path = "../joplin-domain", features = ["sqlx"] }
 joplin-sync = { path = "../joplin-sync" }
 neojoplin-core = { path = "../core" }
 neojoplin-storage = { path = "../storage" }
-neojoplin-plugin = { path = "../plugin" }
 tokio = { workspace = true }
 sqlx = { workspace = true }
 ratatui = "0.30"

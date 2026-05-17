@@ -13,7 +13,6 @@ pub enum SettingsTab {
     AutoSync,
     Status,
     Encryption,
-    Plugins,
 }
 
 /// Active field in the encryption password prompt
@@ -425,19 +424,17 @@ impl Settings {
             SettingsTab::Sync => SettingsTab::AutoSync,
             SettingsTab::AutoSync => SettingsTab::Status,
             SettingsTab::Status => SettingsTab::Encryption,
-            SettingsTab::Encryption => SettingsTab::Plugins,
-            SettingsTab::Plugins => SettingsTab::Sync,
+            SettingsTab::Encryption => SettingsTab::Sync,
         };
     }
 
     /// Cycle to previous settings tab
     pub fn cycle_tab_backward(&mut self) {
         self.current_tab = match self.current_tab {
-            SettingsTab::Sync => SettingsTab::Plugins,
+            SettingsTab::Sync => SettingsTab::Encryption,
             SettingsTab::AutoSync => SettingsTab::Sync,
             SettingsTab::Status => SettingsTab::AutoSync,
             SettingsTab::Encryption => SettingsTab::Status,
-            SettingsTab::Plugins => SettingsTab::Encryption,
         };
     }
 
@@ -1021,8 +1018,6 @@ mod tests {
         assert_eq!(settings.current_tab, SettingsTab::Status);
         settings.cycle_tab_forward();
         assert_eq!(settings.current_tab, SettingsTab::Encryption);
-        settings.cycle_tab_forward();
-        assert_eq!(settings.current_tab, SettingsTab::Plugins);
         settings.cycle_tab_forward();
         assert_eq!(settings.current_tab, SettingsTab::Sync);
     }

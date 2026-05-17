@@ -170,8 +170,7 @@ sync_engine.sync().await?;
 
 ## Future Considerations
 
-1. **Plugin System**: Could the architecture support user extensions?
-2. **Alternative Backends**: Could storage layer support PostgreSQL or cloud databases?
+1. **Alternative Backends**: Could storage layer support PostgreSQL or cloud databases?
 3. **Sync Targets**: Could sync engine support protocols beyond WebDAV?
 4. **Mobile**: Could this architecture work on mobile platforms (iOS/Android)?
 5. **Web Assembly**: Could components be compiled to WASM for web usage?

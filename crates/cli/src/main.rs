@@ -16,7 +16,6 @@ use std::sync::Arc;
 use std::time::Duration;
 
 /// Simple HTTP-based AI client for direct API calls (Ollama, OpenAI-compatible)
-/// Used as fallback when no AI provider plugins are available
 #[derive(Clone)]
 struct HttpAiClient {
     api_url: String,
@@ -308,7 +307,7 @@ enum Commands {
         command: E2eeCommands,
     },
 
-    /// AI commands (provided by plugins)
+    /// AI commands
     Ai {
         #[command(subcommand)]
         command: AiCommands,

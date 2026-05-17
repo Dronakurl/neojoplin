@@ -158,9 +158,6 @@ pub struct App {
     auto_sync_scheduler: AutoSyncScheduler,
     /// Background sync task handle
     sync_task: Option<JoinHandle<SyncTaskResult>>,
-    /// Plugin manager for loading and managing plugins
-    #[allow(dead_code)]
-    plugin_manager: PluginManager,
     /// AI client for chat (Mistral API)
     ai_client: AiClient,
     /// Background chat task handle
@@ -298,18 +295,6 @@ impl App {
 
         let auto_sync_scheduler = AutoSyncScheduler::new(state.settings.auto_sync.interval_seconds);
 
-        // Initialize plugin manager
-        let mut plugin_manager = PluginManager::new();
-        plugin_manager.initialize().await?;
-
-        // Load enabled plugins
-        let context = neojoplin_plugin::PluginContext {
-            storage: None,
-            config: neojoplin_plugin::PluginConfig::default(),
-            metadata: neojoplin_plugin::PluginMetadata::default(),
-        };
-        plugin_manager.load_enabled_plugins(context).await?;
-
         let ai_client = AiClient::new();
 
         let mut app = Self {
@@ -326,7 +311,6 @@ impl App {
             command_history_draft: String::new(),
             auto_sync_scheduler,
             sync_task: None,
-            plugin_manager,
             ai_client,
             chat_task: None,
         };
@@ -836,7 +820,6 @@ impl App {
             // Settings
             KeyCode::Char('S') => {
                 self.refresh_sync_status().await?;
-                self.refresh_plugin_list().await?;
                 self.state.toggle_settings();
             }
 
@@ -1322,31 +1305,7 @@ If the user asks about specific information (like IBAN, account numbers, etc.), 
         Ok(())
     }
 
-    /// Refresh the list of plugins for settings display
-    async fn refresh_plugin_list(&mut self) -> Result<()> {
-        let mut plugins: Vec<crate::state::PluginListItem> = Vec::new();
 
-        for plugin in self.plugin_manager.loader.get_all_plugins() {
-            let metadata = plugin.metadata();
-            let state = "enabled".to_string(); // For now, all loaded plugins are enabled
-            plugins.push(crate::state::PluginListItem {
-                id: metadata.id.clone(),
-                name: metadata.name.clone(),
-                version: metadata.version.clone(),
-                description: metadata.description.clone(),
-                state,
-            });
-        }
-
-        self.state.plugins = plugins;
-        if self.state.plugins.is_empty() {
-            self.state.selected_plugin = 0;
-        } else {
-            self.state.selected_plugin =
-                self.state.selected_plugin.min(self.state.plugins.len() - 1);
-        }
-        Ok(())
-    }
 
     async fn run_auto_sync_if_due(&mut self) -> Result<()> {
         if !self.auto_sync_scheduler.is_due() || !self.can_auto_sync_now() {

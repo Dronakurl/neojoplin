@@ -53,9 +53,7 @@ neojoplin edit "Rust Tips"
 # Sync with WebDAV
 neojoplin sync --url https://webdav.example.com --username user --password pass
 
-# Plugin management + AI chat
-neojoplin plugin list
-neojoplin plugin enable ai-ollama
+# AI chat
 neojoplin ai generate "What notes mention Pflege?"
 neojoplin ai summarize "My note title"
 ```

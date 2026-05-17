@@ -14,16 +14,6 @@ use fuzzy_matcher::FuzzyMatcher;
 use joplin_domain::{Folder, Note, NoteRevision};
 use joplin_sync::E2eeService;
 
-/// Plugin list item for settings display
-#[derive(Debug, Clone)]
-pub struct PluginListItem {
-    pub id: String,
-    pub name: String,
-    pub version: String,
-    pub description: String,
-    pub state: String,
-}
-
 /// Message in the chat overlay
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ChatOverlayMessage {
@@ -301,10 +291,6 @@ pub struct AppState {
     pub sync_in_progress: bool,
     /// AI chat overlay state
     pub chat_overlay: ChatOverlayState,
-    /// List of plugins for settings display
-    pub plugins: Vec<PluginListItem>,
-    /// Selected plugin index in settings tab
-    pub selected_plugin: usize,
 }
 
 impl Default for AppState {
@@ -360,8 +346,6 @@ impl Default for AppState {
             error_message: String::new(),
             sync_in_progress: false,
             chat_overlay: ChatOverlayState::default(),
-            plugins: Vec::new(),
-            selected_plugin: 0,
         }
     }
 }

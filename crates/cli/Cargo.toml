@@ -19,7 +19,6 @@ neojoplin-storage = { path = "../storage" }
 neojoplin-sync = { path = "../sync" }
 neojoplin-tui = { path = "../tui" }
 neojoplin-e2ee = { path = "../e2ee" }
-neojoplin-plugin = { path = "../plugin" }
 tokio = { workspace = true }
 clap = { version = "4.5", features = ["derive"] }
 anyhow = { workspace = true }
