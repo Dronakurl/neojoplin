@@ -2135,7 +2135,7 @@ mod tests {
     async fn test_database_creation() {
         let db = setup_test_db().await;
         let version = db.get_version().await.unwrap();
-        assert_eq!(version, 42);
+        assert_eq!(version, 43);
     }
 
     #[tokio::test]

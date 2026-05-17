@@ -80,6 +80,17 @@ impl Storage for MockStorage {
         })
     }
 
+    async fn search_notes(&self, query: &str, _limit: Option<usize>) -> Result<Vec<Note>, DatabaseError> {
+        let notes = self.notes.read().await;
+        Ok(notes
+            .iter()
+            .filter(|note| 
+                note.title.contains(query) || note.body.contains(query)
+            )
+            .cloned()
+            .collect())
+    }
+
     async fn create_folder(&self, folder: &Folder) -> Result<(), DatabaseError> {
         self.folders.write().await.push(folder.clone());
         Ok(())
@@ -367,7 +378,6 @@ async fn integration_basic_sync() {
     let folder = Folder {
         id: Uuid::new_v4().to_string(),
         title: "Test Folder".to_string(),
-        parent_id: String::new(),
         created_time: now_ms(),
         updated_time: now_ms(),
         user_created_time: 0,
@@ -377,6 +387,8 @@ async fn integration_basic_sync() {
         master_key_id: None,
         encryption_applied: 0,
         encryption_cipher_text: None,
+        encryption_blob_encrypted: 0,
+        parent_id: String::new(),
         icon: String::new(),
     };
 

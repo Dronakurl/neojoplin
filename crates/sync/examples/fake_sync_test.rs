@@ -24,7 +24,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let folder = Folder {
         id: Uuid::new_v4().to_string(),
         title: "Test Folder".to_string(),
-        parent_id: String::new(),
         created_time: now_ms(),
         updated_time: now_ms(),
         user_created_time: 0,
@@ -34,6 +33,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         master_key_id: None,
         encryption_applied: 0,
         encryption_cipher_text: None,
+        encryption_blob_encrypted: 0,
+        parent_id: String::new(),
         icon: String::new(),
     };
     storage.create_folder(&folder).await?;

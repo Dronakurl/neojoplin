@@ -2397,6 +2397,13 @@ mod tests {
         ) -> std::result::Result<Vec<Note>, joplin_domain::DatabaseError> {
             Ok(vec![])
         }
+        async fn search_notes(
+            &self,
+            _: &str,
+            _: Option<usize>,
+        ) -> std::result::Result<Vec<Note>, joplin_domain::DatabaseError> {
+            Ok(vec![])
+        }
         async fn create_folder(
             &self,
             _: &Folder,

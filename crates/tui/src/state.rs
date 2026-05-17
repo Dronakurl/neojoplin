@@ -1476,7 +1476,6 @@ mod tests {
         let folders = vec![Folder {
             id: "1".to_string(),
             title: "Test Folder".to_string(),
-            parent_id: String::new(),
             created_time: now_ms(),
             updated_time: now_ms(),
             user_created_time: 0,
@@ -1486,6 +1485,8 @@ mod tests {
             master_key_id: None,
             encryption_applied: 0,
             encryption_cipher_text: None,
+            encryption_blob_encrypted: 0,
+            parent_id: String::new(),
             icon: String::new(),
         }];
 
@@ -1517,7 +1518,6 @@ mod tests {
             Folder {
                 id: "1".to_string(),
                 title: "Folder 1".to_string(),
-                parent_id: String::new(),
                 created_time: now_ms(),
                 updated_time: now_ms(),
                 user_created_time: 0,
@@ -1527,12 +1527,13 @@ mod tests {
                 master_key_id: None,
                 encryption_applied: 0,
                 encryption_cipher_text: None,
+                encryption_blob_encrypted: 0,
+                parent_id: String::new(),
                 icon: String::new(),
             },
             Folder {
                 id: "2".to_string(),
                 title: "Folder 2".to_string(),
-                parent_id: String::new(),
                 created_time: now_ms(),
                 updated_time: now_ms(),
                 user_created_time: 0,
@@ -1542,6 +1543,8 @@ mod tests {
                 master_key_id: None,
                 encryption_applied: 0,
                 encryption_cipher_text: None,
+                encryption_blob_encrypted: 0,
+                parent_id: String::new(),
                 icon: String::new(),
             },
         ];
