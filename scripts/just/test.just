@@ -34,7 +34,7 @@ test-local-webdav:
 
 # Test bidirectional sync with Joplin CLI
 test-sync:
-    ./tests/integration/sync_test.sh
+    ./tests/sync_test.sh
 
 # Create a test note
 test-note:
