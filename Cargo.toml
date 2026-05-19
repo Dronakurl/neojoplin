@@ -1,7 +1,6 @@
 [workspace]
 members = [
   "crates/joplin-domain",
-  "crates/joplin",
   "crates/joplin-sync",
   "crates/core",
   "crates/storage",
