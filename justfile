@@ -69,7 +69,6 @@ tui:
 
 # Install the system
 install:
-    just clean
     cargo build --release
     cargo install --path crates/cli --force
     @echo "Installed neojoplin (CLI + TUI)"
