@@ -568,7 +568,10 @@ impl App {
         // Handle global shortcuts
         if self.state.show_quit_confirmation {
             // Confirm quit
-            if key.code == KeyCode::Char('q') || key.code == KeyCode::Char('y') {
+            if key.code == KeyCode::Char('q')
+                || key.code == KeyCode::Char('y')
+                || key.code == KeyCode::Enter
+            {
                 return Ok(true); // Exit
             } else {
                 self.state.hide_quit();
