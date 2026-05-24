@@ -814,10 +814,10 @@ fn termimad_to_ratatui_lines(text: &str, width: usize) -> Vec<Line<'static>> {
                         let indent = "  ".repeat(level as usize);
                         // Use different bullet characters for different nesting levels
                         let bullet = match level {
-                            0 => "•",  // Standard bullet for top level
-                            1 => "◦",  // Circle for level 1
-                            2 => "▪",  // Square for level 2
-                            _ => "○",  // Empty circle for deeper levels
+                            0 => "•", // Standard bullet for top level
+                            1 => "◦", // Circle for level 1
+                            2 => "▪", // Square for level 2
+                            _ => "○", // Empty circle for deeper levels
                         };
                         let mut result = vec![Span::styled(
                             format!("{} {} ", indent, bullet),
@@ -1303,7 +1303,6 @@ fn settings_bottom_hints<'a>(state: &'a AppState, theme: &'a Theme) -> Line<'a> 
                     }
                 }
             }
-
         }
     }
 
@@ -2659,8 +2658,6 @@ fn centered_rect(percent_x: u16, percent_y: u16, r: Rect) -> Rect {
         )
         .split(popup_layout[1])[1]
 }
-
-
 
 #[cfg(test)]
 mod tests {

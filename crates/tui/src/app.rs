@@ -1305,8 +1305,6 @@ If the user asks about specific information (like IBAN, account numbers, etc.), 
         Ok(())
     }
 
-
-
     async fn run_auto_sync_if_due(&mut self) -> Result<()> {
         if !self.auto_sync_scheduler.is_due() || !self.can_auto_sync_now() {
             return Ok(());
