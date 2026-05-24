@@ -193,8 +193,8 @@ enum Commands {
 
     /// Display note content
     Cat {
-        /// Note ID or title
-        note: String,
+        /// Note ID or title, leave empty to print all
+        note: Option<String>,
     },
 
     /// Restore a note to a previous version from the revisions table
@@ -807,71 +807,37 @@ async fn main() -> Result<()> {
         }
 
         Commands::Cat { note } => {
-            // Try to find note by ID or title
-            let note_obj = if let Some(found) = storage.get_note(&note).await? {
-                found
-            } else {
-                // Try to find by title
-                let notes = storage.list_notes(None).await?;
-                let found = notes
-                    .iter()
-                    .find(|n| n.title == note)
-                    .ok_or_else(|| anyhow::anyhow!("Note not found: {}", note))?;
-                storage.get_note(&found.id).await?.unwrap()
-            };
-
-            println!("Title: {}", note_obj.title);
-            println!("ID: {}", note_obj.id);
-            println!();
-
-            // Try to display decrypted content if note is encrypted
-            if note_obj.encryption_applied == 1 {
-                // Load E2EE service
-                let e2ee_service = load_e2ee_service(None).await?;
-
-                if let Some(cipher_text) = &note_obj.encryption_cipher_text {
-                    if !cipher_text.is_empty() {
-                        match e2ee_service.decrypt_string(cipher_text) {
-                            Ok(decrypted) => {
-                                // Try to parse as JSON to extract body
-                                if let Ok(json) =
-                                    serde_json::from_str::<serde_json::Value>(&decrypted)
-                                {
-                                    if let Some(body) = json.get("body").and_then(|v| v.as_str()) {
-                                        println!("{}", body);
-                                        return Ok(());
-                                    }
-                                }
-                                // If JSON parsing failed, print the decrypted string
-                                println!("{}", decrypted);
-                                return Ok(());
-                            }
-                            Err(e) => {
-                                eprintln!("Decryption error: {}", e);
-                            }
-                        }
+            match note {
+                None => {
+                    let notes = storage.list_notes(None).await?;
+                    for n in notes {
+                        print_note(n).await?;
+                        println!();
                     }
+                    return Ok(());
                 }
 
-                // If decryption failed, try the body field
-                if !note_obj.body.is_empty() {
-                    let e2ee_service = load_e2ee_service(None).await?;
-                    if let Ok(decrypted) = e2ee_service.decrypt_string(&note_obj.body) {
-                        // Try to parse as JSON to extract body
-                        if let Ok(json) = serde_json::from_str::<serde_json::Value>(&decrypted) {
-                            if let Some(body) = json.get("body").and_then(|v| v.as_str()) {
-                                println!("{}", body);
-                                return Ok(());
-                            }
-                        }
-                        println!("{}", decrypted);
-                        return Ok(());
-                    }
+                Some(note_str) => {
+                    // Try to find note by ID or title
+                    let note_obj = if let Some(found) = storage.get_note(&note_str).await? {
+                        found
+                    } else {
+                        // Try to find by title
+                        let notes = storage.list_notes(None).await?;
+                        let found = notes
+                            .iter()
+                            .find(|n| n.title == note_str)
+                            .ok_or_else(|| anyhow::anyhow!("Note not found: {}", note_str))?;
+                        storage.get_note(&found.id).await?.unwrap()
+                    };
+
+                    println!("Title: {}", note_obj.title);
+                    println!("ID: {}", note_obj.id);
+                    println!();
+
+                    return print_note(note_obj).await;
                 }
             }
-
-            println!("{}", note_obj.body);
-            Ok(())
         }
 
         Commands::Restore {
@@ -1502,6 +1468,60 @@ async fn load_configured_sync_target() -> Result<Option<SyncTarget>> {
         .sync
         .current_target_index
         .and_then(|index| settings.sync.targets.get(index).cloned()))
+}
+
+async fn print_note(note_obj: Note) -> Result<()> {
+    // Try to display decrypted content if note is encrypted
+    if note_obj.encryption_applied == 1 {
+        // Load E2EE service
+        let e2ee_service = load_e2ee_service(None).await?;
+
+        if let Some(cipher_text) = &note_obj.encryption_cipher_text {
+            if !cipher_text.is_empty() {
+                match e2ee_service.decrypt_string(cipher_text) {
+                    Ok(decrypted) => {
+                        // Try to parse as JSON to extract body
+                        if let Ok(json) = serde_json::from_str::<serde_json::Value>(&decrypted) {
+                            if let Some(body) = json.get("body").and_then(|v| v.as_str()) {
+                                println!("{}", body);
+                                return Ok(());
+                            }
+                        }
+                        // If JSON parsing failed, print the decrypted string
+                        println!("{}", decrypted);
+                        return Ok(());
+                    }
+                    Err(e) => {
+                        eprintln!("Decryption error: {}", e);
+                    }
+                }
+            }
+        }
+
+        // If decryption failed, try the body field
+        if !note_obj.body.is_empty() {
+            let e2ee_service = load_e2ee_service(None).await?;
+            if let Ok(decrypted) = e2ee_service.decrypt_string(&note_obj.body) {
+                // Try to parse as JSON to extract body
+                if let Ok(json) = serde_json::from_str::<serde_json::Value>(&decrypted) {
+                    if let Some(body) = json.get("body").and_then(|v| v.as_str()) {
+                        println!("{}", body);
+                        return Ok(());
+                    }
+                }
+                println!("{}", decrypted);
+                return Ok(());
+            }
+        }
+    }
+
+    println!("Title: {}", note_obj.title);
+    if note_obj.body.len() > 20000 {
+        println!("Long Body");
+    } else {
+        println!("Body: {}", note_obj.body);
+    }
+    Ok(())
 }
 
 fn resolve_sync_target(

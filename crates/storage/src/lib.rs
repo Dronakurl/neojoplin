@@ -1079,6 +1079,28 @@ impl Storage for SqliteStorage {
         Ok(row)
     }
 
+    async fn get_all_notes(&self) -> Result<Vec<Note>, DatabaseError> {
+        let rows = sqlx::query_as::<_, Note>(
+            r#"
+        SELECT
+            id, title, body, created_time, updated_time,
+            user_created_time, user_updated_time, parent_id,
+            is_conflict, is_todo, todo_completed, todo_due,
+            source, source_application, "order", latitude, longitude,
+            altitude, author, source_url, is_shared, application_data,
+            markup_language, encryption_cipher_text, encryption_applied,
+            encryption_blob_encrypted, master_key_id, share_id,
+            conflict_original_id, deleted_time
+        FROM notes
+        "#,
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| DatabaseError::QueryFailed(format!("Failed to get all notes: {}", e)))?;
+
+        Ok(rows)
+    }
+
     async fn update_note(&self, note: &Note) -> Result<(), DatabaseError> {
         let updated_time = now_ms();
         let user_updated_time = if note.user_updated_time > 0 {
