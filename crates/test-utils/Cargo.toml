@@ -16,4 +16,4 @@ neojoplin-sync = { path = "../sync" }
 neojoplin-core = { path = "../core" }
 tokio = { workspace = true }
 anyhow = { workspace = true }
-futures = "0.3"
+futures = { workspace = true }

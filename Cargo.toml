@@ -21,14 +21,42 @@ repository = "https://github.com/Dronakurl/neojoplin"
 
 [workspace.dependencies]
 # Shared dependencies across all crates
-tokio = { version = "1.40", features = ["full"] }
-serde = { version = "1.0", features = ["derive"] }
-serde_json = "1.0"
-uuid = { version = "1.10", features = ["v4", "serde"] }
+tokio = { version = "1", features = ["full"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+uuid = { version = "1", features = ["v4", "serde"] }
 chrono = { version = "0.4", features = ["serde"] }
 tracing = "0.1"
-anyhow = "1.0"
-thiserror = "2.0"
+anyhow = "1"
+thiserror = "2"
+async-trait = "0.1"
+futures = "0.3"
+dirs = "6"
+tempfile = "3"
+tokio-test = "0.4"
+criterion = "0.5"
+clap = { version = "4", features = ["derive"] }
+tracing-subscriber = "0.3"
+dialoguer = "0.12"
+serde_bytes = "0.11"
+aes = "0.8"
+aes-gcm = "0.10"
+pbkdf2 = "0.13"
+sha2 = "0.11"
+rand = "0.10"
+rand_core = "0.6"
+hex = "0.4"
+base64 = "0.22"
+ccm = "0.5"
+sha-1 = "0.10"
+hmac = "0.13"
+quick-xml = "0.39"
+fuzzy-matcher = "0.3"
+ratatui-interact = "0.5"
+termimad = { path = "../termimad" }
+ureq = { version = "2", features = ["json"] }
+toml = { version = "1", features = ["parse", "display"] }
+tar = "0.4"
 
 [workspace.dependencies.sqlx]
 version = "0.8"
@@ -38,9 +66,8 @@ features = ["runtime-tokio", "sqlite"]
 version = "0.13"
 features = ["json", "stream"]
 
-[workspace.dependencies.async-trait]
-version = "0.1"
+[workspace.dependencies.ratatui]
+version = "0.30"
 
-[workspace.dependencies.toml]
-version = "1.1"
-features = ["parse", "display"]
+[workspace.dependencies.crossterm]
+version = "0.29"

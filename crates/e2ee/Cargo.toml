@@ -16,14 +16,14 @@ thiserror = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 chrono = { workspace = true }
-serde_bytes = "0.11"
-aes-gcm = "0.10"
-pbkdf2 = "0.13"
-sha2 = "0.11"
-rand = "0.10"
-rand_core = "0.6"
-hex = "0.4"
+serde_bytes = { workspace = true }
+aes-gcm = { workspace = true }
+pbkdf2 = { workspace = true }
+sha2 = { workspace = true }
+rand = { workspace = true }
+rand_core = { workspace = true }
+hex = { workspace = true }
 uuid = { workspace = true }
 
 [dev-dependencies]
-tokio-test = "0.4"
+tokio-test = { workspace = true }
