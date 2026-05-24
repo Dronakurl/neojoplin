@@ -4,130 +4,14 @@ use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use joplin_domain::{now_ms, Folder, Note, Storage};
 use joplin_sync::{E2eeService, MasterKey};
-use neojoplin_core::Editor;
+use neojoplin_cli::resolve_sync_target;
+use neojoplin_core::{Editor, HttpAiClient};
 use neojoplin_storage::SqliteStorage;
 use neojoplin_tui::importer::{
     default_cli_database_path, default_desktop_database_path, import_database, resolve_import_path,
 };
 use neojoplin_tui::settings::{Settings, SyncTarget};
-use serde_json::json;
-use std::env;
 use std::sync::Arc;
-use std::time::Duration;
-
-/// Simple HTTP-based AI client for direct API calls (Ollama, OpenAI-compatible)
-#[derive(Clone)]
-struct HttpAiClient {
-    api_url: String,
-    model: String,
-    api_key: Option<String>,
-}
-
-impl HttpAiClient {
-    fn from_env() -> Option<Self> {
-        let provider = env::var("NEOJOPLIN_AI_PROVIDER").unwrap_or_else(|_| "ollama".to_string());
-
-        match provider.as_str() {
-            "ollama" => {
-                let api_url = env::var("OLLAMA_BASE_URL")
-                    .unwrap_or_else(|_| "http://127.0.0.1:11434".to_string());
-                let model = env::var("OLLAMA_MODEL").unwrap_or_else(|_| "llama3.2".to_string());
-                Some(Self {
-                    api_url,
-                    model,
-                    api_key: None,
-                })
-            }
-            "openai" => {
-                let api_url = env::var("OPENAI_BASE_URL")
-                    .unwrap_or_else(|_| "https://api.openai.com/v1".to_string());
-                let model = env::var("OPENAI_MODEL").unwrap_or_else(|_| "gpt-4o-mini".to_string());
-                let api_key = env::var("OPENAI_API_KEY").ok();
-                Some(Self {
-                    api_url,
-                    model,
-                    api_key,
-                })
-            }
-            _ => None,
-        }
-    }
-
-    async fn generate_text(&self, prompt: &str, system_prompt: Option<&str>) -> Result<String> {
-        let client = reqwest::Client::builder()
-            .timeout(Duration::from_secs(120))
-            .build()?;
-
-        let mut messages: Vec<_> = Vec::new();
-
-        if let Some(sys) = system_prompt {
-            messages.push(json!({
-                "role": "system",
-                "content": sys
-            }));
-        }
-
-        messages.push(json!({
-            "role": "user",
-            "content": prompt
-        }));
-
-        let mut request_body = json!({
-            "model": self.model,
-            "messages": messages,
-            "temperature": 0.7,
-            "max_tokens": 2048,
-        });
-
-        // For Ollama, use non-streaming mode and the /api/chat endpoint
-        let api_url = if self.api_url.contains("127.0.0.1:11434")
-            || self.api_url.contains("localhost:11434")
-        {
-            // This is Ollama - use /api/chat endpoint and disable streaming
-            request_body["stream"] = json!(false);
-            format!("{}/api/chat", self.api_url.trim_end_matches('/'))
-        } else {
-            self.api_url.clone()
-        };
-
-        let mut request = client.post(&api_url).json(&request_body);
-
-        if let Some(ref key) = self.api_key {
-            request = request.bearer_auth(key);
-        }
-
-        let response = request.send().await?;
-        let body: serde_json::Value = response.json().await?;
-
-        // Handle Ollama /api/chat response format
-        if let Some(message) = body["message"].as_object() {
-            if let Some(content) = message["content"].as_str() {
-                return Ok(content.to_string());
-            }
-        }
-
-        // Handle OpenAI response format
-        if let Some(choices) = body["choices"].as_array() {
-            if let Some(first) = choices.first() {
-                if let Some(message) = first["message"].as_object() {
-                    if let Some(content) = message["content"].as_str() {
-                        return Ok(content.to_string());
-                    }
-                }
-            }
-        }
-
-        // Ollama /api/generate uses "response" field
-        if let Some(response) = body["response"].as_str() {
-            return Ok(response.to_string());
-        }
-
-        Err(anyhow::anyhow!(
-            "Unexpected AI API response format: {}",
-            body
-        ))
-    }
-}
 
 #[derive(Parser)]
 #[command(name = "neojoplin")]
@@ -1522,52 +1406,4 @@ async fn print_note(note_obj: Note) -> Result<()> {
         println!("Body: {}", note_obj.body);
     }
     Ok(())
-}
-
-fn resolve_sync_target(
-    url: Option<String>,
-    username: Option<String>,
-    password: Option<String>,
-    remote: Option<String>,
-    configured_target: Option<SyncTarget>,
-) -> Result<(String, String, String, String)> {
-    if let Some(url) = url {
-        // If URL is provided, split it to extract base URL and remote path
-        let (base_url, configured_remote) = split_webdav_url(&url);
-        return Ok((
-            base_url,
-            username.unwrap_or_default(),
-            password.unwrap_or_default(),
-            remote.unwrap_or(configured_remote),
-        ));
-    }
-
-    let configured_target = configured_target.ok_or_else(|| {
-        anyhow::anyhow!(
-            "WebDAV URL is required or configure a sync target in the TUI settings first"
-        )
-    })?;
-
-    let (base_url, configured_remote) = split_webdav_url(&configured_target.url);
-    Ok((
-        base_url,
-        username.unwrap_or(configured_target.username),
-        password.unwrap_or(configured_target.password),
-        remote.unwrap_or(configured_remote),
-    ))
-}
-
-fn split_webdav_url(full_url: &str) -> (String, String) {
-    let trimmed = full_url.trim_end_matches('/');
-    let scheme_end = trimmed.find("://").map(|i| i + 3).unwrap_or(0);
-    if let Some(slash_pos) = trimmed[scheme_end..].rfind('/') {
-        let abs_pos = scheme_end + slash_pos;
-        let base = &trimmed[..abs_pos];
-        let path = &trimmed[abs_pos..];
-        if !path.is_empty() && path != "/" {
-            return (base.to_string(), path.to_string());
-        }
-    }
-
-    (trimmed.to_string(), "/neojoplin".to_string())
 }
