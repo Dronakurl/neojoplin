@@ -131,7 +131,7 @@ pub fn dark_theme() -> Theme {
         secondary: Color::Blue,
         accent: Color::Magenta,
         selection_bg: Color::Blue,
-        selection_fg: Color::White,
+        selection_fg: Color::Black,
         error: Color::Red,
         warning: Color::Yellow,
         success: Color::Green,
