@@ -810,9 +810,17 @@ fn termimad_to_ratatui_lines(text: &str, width: usize) -> Vec<Line<'static>> {
                         }));
                         result
                     }
-                    CompositeKind::ListItem(_) => {
+                    CompositeKind::ListItem(level) => {
+                        let indent = "  ".repeat(level as usize);
+                        // Use different bullet characters for different nesting levels
+                        let bullet = match level {
+                            0 => "•",  // Standard bullet for top level
+                            1 => "◦",  // Circle for level 1
+                            2 => "▪",  // Square for level 2
+                            _ => "○",  // Empty circle for deeper levels
+                        };
                         let mut result = vec![Span::styled(
-                            "  • ".to_string(),
+                            format!("{} {} ", indent, bullet),
                             Style::default().fg(Color::Yellow),
                         )];
                         result.extend(
