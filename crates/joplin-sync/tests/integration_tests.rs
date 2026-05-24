@@ -80,13 +80,15 @@ impl Storage for MockStorage {
         })
     }
 
-    async fn search_notes(&self, query: &str, _limit: Option<usize>) -> Result<Vec<Note>, DatabaseError> {
+    async fn search_notes(
+        &self,
+        query: &str,
+        _limit: Option<usize>,
+    ) -> Result<Vec<Note>, DatabaseError> {
         let notes = self.notes.read().await;
         Ok(notes
             .iter()
-            .filter(|note| 
-                note.title.contains(query) || note.body.contains(query)
-            )
+            .filter(|note| note.title.contains(query) || note.body.contains(query))
             .cloned()
             .collect())
     }
