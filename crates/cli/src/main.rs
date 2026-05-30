@@ -533,17 +533,7 @@ async fn main() -> Result<()> {
         }
 
         Commands::TodoToggle { todo } => {
-            // Find the note by ID or title
-            let note_obj = if let Some(found) = storage.get_note(&todo).await? {
-                found
-            } else {
-                let notes = storage.list_notes(None).await?;
-                let found = notes
-                    .iter()
-                    .find(|n| n.title == todo)
-                    .ok_or_else(|| anyhow::anyhow!("Todo not found: {}", todo))?;
-                storage.get_note(&found.id).await?.unwrap()
-            };
+            let note_obj = resolve_note(storage.as_ref(), &todo, "Todo").await?;
 
             if note_obj.is_todo != 1 {
                 return Err(anyhow::anyhow!("'{}' is not a todo", note_obj.title));
@@ -593,18 +583,7 @@ async fn main() -> Result<()> {
         }
 
         Commands::Edit { note } => {
-            // Find the note
-            let note_obj = if let Some(found) = storage.get_note(&note).await? {
-                found
-            } else {
-                // Try to find by title
-                let notes = storage.list_notes(None).await?;
-                let found = notes
-                    .iter()
-                    .find(|n| n.title == note)
-                    .ok_or_else(|| anyhow::anyhow!("Note not found: {}", note))?;
-                storage.get_note(&found.id).await?.unwrap()
-            };
+            let note_obj = resolve_note(storage.as_ref(), &note, "Note").await?;
 
             println!("Editing note: {}", note_obj.title);
 
@@ -690,55 +669,33 @@ async fn main() -> Result<()> {
             Ok(())
         }
 
-        Commands::Cat { note } => {
-            match note {
-                None => {
-                    let notes = storage.list_notes(None).await?;
-                    for n in notes {
-                        print_note(n).await?;
-                        println!();
-                    }
-                    return Ok(());
-                }
-
-                Some(note_str) => {
-                    // Try to find note by ID or title
-                    let note_obj = if let Some(found) = storage.get_note(&note_str).await? {
-                        found
-                    } else {
-                        // Try to find by title
-                        let notes = storage.list_notes(None).await?;
-                        let found = notes
-                            .iter()
-                            .find(|n| n.title == note_str)
-                            .ok_or_else(|| anyhow::anyhow!("Note not found: {}", note_str))?;
-                        storage.get_note(&found.id).await?.unwrap()
-                    };
-
-                    println!("Title: {}", note_obj.title);
-                    println!("ID: {}", note_obj.id);
+        Commands::Cat { note } => match note {
+            None => {
+                let notes = storage.list_notes(None).await?;
+                for n in notes {
+                    print_note(n).await?;
                     println!();
-
-                    return print_note(note_obj).await;
                 }
+                return Ok(());
             }
-        }
+
+            Some(note_str) => {
+                let note_obj = resolve_note(storage.as_ref(), &note_str, "Note").await?;
+
+                println!("Title: {}", note_obj.title);
+                println!("ID: {}", note_obj.id);
+                println!();
+
+                return print_note(note_obj).await;
+            }
+        },
 
         Commands::Restore {
             note,
             list,
             revision,
         } => {
-            let note_obj = if let Some(found) = storage.get_note(&note).await? {
-                found
-            } else {
-                let notes = storage.list_notes(None).await?;
-                let found = notes
-                    .iter()
-                    .find(|n| n.title == note)
-                    .ok_or_else(|| anyhow::anyhow!("Note not found: {}", note))?;
-                storage.get_note(&found.id).await?.unwrap()
-            };
+            let note_obj = resolve_note(storage.as_ref(), &note, "Note").await?;
 
             let revisions = storage.list_note_revisions(&note_obj.id).await?;
             if revisions.is_empty() {
@@ -778,16 +735,7 @@ async fn main() -> Result<()> {
         }
 
         Commands::Versions { note, revision } => {
-            let note_obj = if let Some(found) = storage.get_note(&note).await? {
-                found
-            } else {
-                let notes = storage.list_notes(None).await?;
-                let found = notes
-                    .iter()
-                    .find(|n| n.title == note)
-                    .ok_or_else(|| anyhow::anyhow!("Note not found: {}", note))?;
-                storage.get_note(&found.id).await?.unwrap()
-            };
+            let note_obj = resolve_note(storage.as_ref(), &note, "Note").await?;
 
             let revisions = storage.list_note_revisions(&note_obj.id).await?;
             if revisions.is_empty() {
@@ -1211,17 +1159,7 @@ Search for relevant information in the notes provided.\n\n{}\n\nUser question: {
                     Ok(())
                 }
                 AiCommands::Summarize { note } => {
-                    // Get note from storage
-                    let note_obj = if let Some(found) = storage.get_note(&note).await? {
-                        found
-                    } else {
-                        let notes = storage.list_notes(None).await?;
-                        let found = notes
-                            .iter()
-                            .find(|n| n.title == note)
-                            .ok_or_else(|| anyhow::anyhow!("Note not found: {}", note))?;
-                        storage.get_note(&found.id).await?.unwrap()
-                    };
+                    let note_obj = resolve_note(storage.as_ref(), &note, "Note").await?;
 
                     // Build summarize prompt for HTTP client
                     let summarize_prompt = format!("Summarize this note:\n\n{}", note_obj.body);
@@ -1231,17 +1169,7 @@ Search for relevant information in the notes provided.\n\n{}\n\nUser question: {
                     Ok(())
                 }
                 AiCommands::Tag { note, limit } => {
-                    // Get note from storage
-                    let note_obj = if let Some(found) = storage.get_note(&note).await? {
-                        found
-                    } else {
-                        let notes = storage.list_notes(None).await?;
-                        let found = notes
-                            .iter()
-                            .find(|n| n.title == note)
-                            .ok_or_else(|| anyhow::anyhow!("Note not found: {}", note))?;
-                        storage.get_note(&found.id).await?.unwrap()
-                    };
+                    let note_obj = resolve_note(storage.as_ref(), &note, "Note").await?;
 
                     // Build tags prompt for HTTP client
                     let tags_prompt = format!(
@@ -1263,17 +1191,7 @@ Search for relevant information in the notes provided.\n\n{}\n\nUser question: {
                     Ok(())
                 }
                 AiCommands::Similar { note, limit } => {
-                    // Get note from storage
-                    let note_obj = if let Some(found) = storage.get_note(&note).await? {
-                        found
-                    } else {
-                        let notes = storage.list_notes(None).await?;
-                        let found = notes
-                            .iter()
-                            .find(|n| n.title == note)
-                            .ok_or_else(|| anyhow::anyhow!("Note not found: {}", note))?;
-                        storage.get_note(&found.id).await?.unwrap()
-                    };
+                    let note_obj = resolve_note(storage.as_ref(), &note, "Note").await?;
 
                     // Get all notes for similarity search using FTS
                     let query = format!("{} {}", note_obj.title, note_obj.body);
@@ -1354,6 +1272,23 @@ async fn load_configured_sync_target() -> Result<Option<SyncTarget>> {
         .and_then(|index| settings.sync.targets.get(index).cloned()))
 }
 
+async fn resolve_note(storage: &dyn Storage, query: &str, item_kind: &str) -> Result<Note> {
+    if let Some(note) = storage.get_note(query).await? {
+        return Ok(note);
+    }
+
+    let notes = storage.list_notes(None).await?;
+    find_note_by_title(&notes, query, item_kind)
+}
+
+fn find_note_by_title(notes: &[Note], query: &str, item_kind: &str) -> Result<Note> {
+    notes
+        .iter()
+        .find(|note| note.title == query)
+        .cloned()
+        .ok_or_else(|| anyhow::anyhow!("{} not found: {}", item_kind, query))
+}
+
 async fn print_note(note_obj: Note) -> Result<()> {
     // Try to display decrypted content if note is encrypted
     if note_obj.encryption_applied == 1 {
@@ -1406,4 +1341,34 @@ async fn print_note(note_obj: Note) -> Result<()> {
         println!("Body: {}", note_obj.body);
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::find_note_by_title;
+    use joplin_domain::Note;
+
+    fn make_note(id: &str, title: &str) -> Note {
+        Note {
+            id: id.to_string(),
+            title: title.to_string(),
+            ..Note::default()
+        }
+    }
+
+    #[test]
+    fn find_note_by_title_returns_matching_note() {
+        let notes = vec![make_note("note-1", "Meeting notes")];
+        let note = find_note_by_title(&notes, "Meeting notes", "Note")
+            .expect("note should resolve by title");
+        assert_eq!(note.id, "note-1");
+        assert_eq!(note.title, "Meeting notes");
+    }
+
+    #[test]
+    fn find_note_by_title_uses_item_kind_in_missing_error() {
+        let err = find_note_by_title(&[], "missing", "Todo")
+            .expect_err("missing note should return an error");
+        assert!(err.to_string().contains("Todo not found: missing"));
+    }
 }

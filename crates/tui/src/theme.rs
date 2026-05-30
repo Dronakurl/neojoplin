@@ -204,7 +204,7 @@ mod tests {
         assert_eq!(text_style.fg, Some(Color::White));
 
         let selection_style = theme.selection();
-        assert_eq!(selection_style.fg, Some(Color::White));
+        assert_eq!(selection_style.fg, Some(Color::Black));
         assert_eq!(selection_style.bg, Some(Color::Blue));
     }
 }

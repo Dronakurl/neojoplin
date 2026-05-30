@@ -11,22 +11,24 @@ async fn test_note_roundtrip() {
         .await
         .expect("Failed to create storage");
 
-    // Create a folder using Default + set required fields
-    let mut folder = Folder::default();
-    folder.id = "test-folder-roundtrip".to_string();
-    folder.title = "Test Folder".to_string();
+    let folder = Folder {
+        id: "test-folder-roundtrip".to_string(),
+        title: "Test Folder".to_string(),
+        ..Folder::default()
+    };
 
     storage
         .create_folder(&folder)
         .await
         .expect("Failed to create folder");
 
-    // Create a note using Default + set required fields
-    let mut note = Note::default();
-    note.id = "test-note-roundtrip".to_string();
-    note.title = "Test Note Roundtrip".to_string();
-    note.body = "This is a test note body for roundtrip testing".to_string();
-    note.parent_id = folder.id.clone();
+    let note = Note {
+        id: "test-note-roundtrip".to_string(),
+        title: "Test Note Roundtrip".to_string(),
+        body: "This is a test note body for roundtrip testing".to_string(),
+        parent_id: folder.id.clone(),
+        ..Note::default()
+    };
 
     storage
         .create_note(&note)
@@ -51,7 +53,7 @@ async fn test_note_roundtrip() {
         .await
         .expect("Failed to list notes");
 
-    assert!(all_notes.len() >= 1, "Expected at least 1 note");
+    assert!(!all_notes.is_empty(), "Expected at least 1 note");
     assert!(
         all_notes.iter().any(|n| n.id == note.id),
         "Note not found in list"

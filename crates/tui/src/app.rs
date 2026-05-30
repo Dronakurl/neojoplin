@@ -1235,8 +1235,7 @@ impl App {
         let selected_folder = self
             .state
             .selected_folder
-            .map(|idx| self.state.folders.get(idx).cloned())
-            .flatten();
+            .and_then(|idx| self.state.folders.get(idx).cloned());
 
         // Search for relevant notes using FTS
         let matching_notes = storage
@@ -1266,7 +1265,7 @@ impl App {
             .iter()
             .filter(|note| {
                 // Skip selected note (already included above)
-                selected_note.as_ref().map_or(true, |s| s.id != note.id)
+                selected_note.as_ref().is_none_or(|s| s.id != note.id)
             })
             .map(|note| format!("--- Note: {} ---\n{}", note.title, note.body))
             .collect::<Vec<_>>()

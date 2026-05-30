@@ -215,10 +215,11 @@ pub fn parse_command(input: &str) -> Result<CommandAction, String> {
     }
 
     let (name, arg) = split_command(trimmed);
-    match name {
+    let normalized_name = name.to_ascii_lowercase();
+    match normalized_name.as_str() {
         "move" | "mv" => required_arg(arg, "move <notebook>").map(CommandAction::Move),
         "delete-orphaned" => no_arg(arg, "delete-orphaned").map(|_| CommandAction::DeleteOrphaned),
-        "quit" | "q" => no_arg(arg, name).map(|_| CommandAction::Quit),
+        "quit" | "q" => no_arg(arg, normalized_name.as_str()).map(|_| CommandAction::Quit),
         "import-desktop" => no_arg(arg, "import-desktop").map(|_| CommandAction::ImportDesktop),
         "import" => Ok(CommandAction::Import(optional_arg(arg))),
         "import-jex" => required_arg(arg, "import-jex <file.jex>").map(CommandAction::ImportJex),
@@ -291,7 +292,7 @@ pub fn command_previews(input: &str) -> Vec<CommandPreview> {
             .collect();
     }
 
-    if name == "tag" {
+    if name.eq_ignore_ascii_case("tag") {
         let (subcommand, subarg) = split_command(arg.trim_start());
         if subarg.is_none() {
             return TAG_COMMAND_PREVIEWS
@@ -313,7 +314,7 @@ pub fn command_previews(input: &str) -> Vec<CommandPreview> {
 
     COMMANDS
         .iter()
-        .find(|command| command.name == name)
+        .find(|command| command.name.eq_ignore_ascii_case(name))
         .map(|command| {
             vec![CommandPreview {
                 left: command.usage,
@@ -350,7 +351,7 @@ fn parse_tag_command(arg: Option<&str>) -> Result<CommandAction, String> {
     }
 
     let (subcommand, subarg) = split_command(raw);
-    match subcommand {
+    match subcommand.to_ascii_lowercase().as_str() {
         "add" => required_arg(subarg, "tag add <tag>").map(CommandAction::TagAdd),
         "remove" => required_arg(subarg, "tag remove <tag>").map(CommandAction::TagRemove),
         "list" => no_arg(subarg, "tag list").map(|_| CommandAction::TagList),
@@ -483,5 +484,35 @@ mod tests {
             CommandAction::TagRemove("urgent".to_string())
         );
         assert_eq!(parse_command("tag list").unwrap(), CommandAction::TagList);
+    }
+
+    #[test]
+    fn parse_command_accepts_case_insensitive_command_names() {
+        assert_eq!(
+            parse_command("MOVE Personal Projects").unwrap(),
+            CommandAction::Move("Personal Projects".to_string())
+        );
+        assert_eq!(
+            parse_command("TAG ADD urgent").unwrap(),
+            CommandAction::TagAdd("urgent".to_string())
+        );
+    }
+
+    #[test]
+    fn command_previews_match_case_insensitive_argument_context() {
+        assert_eq!(
+            command_previews("MOVE target"),
+            vec![CommandPreview {
+                left: ":move <notebook>",
+                right: "Move the selected note or notebook to a notebook",
+            }]
+        );
+        assert_eq!(
+            command_previews("TAG ADD"),
+            vec![CommandPreview {
+                left: ":tag add <tag>",
+                right: "Attach a tag to the selected note, creating it if needed",
+            }]
+        );
     }
 }

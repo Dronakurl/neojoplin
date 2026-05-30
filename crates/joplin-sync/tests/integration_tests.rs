@@ -53,6 +53,10 @@ impl Storage for MockStorage {
             .cloned())
     }
 
+    async fn get_all_notes(&self) -> Result<Vec<Note>, DatabaseError> {
+        Ok(self.notes.read().await.clone())
+    }
+
     async fn update_note(&self, note: &Note) -> Result<(), DatabaseError> {
         let mut notes = self.notes.write().await;
         if let Some(existing) = notes.iter_mut().find(|existing| existing.id == note.id) {

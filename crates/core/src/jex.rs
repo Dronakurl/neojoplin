@@ -457,7 +457,7 @@ fn parse_item(content: &str) -> Result<ParsedItem> {
             } else {
                 // Skip malformed NoteTag entries (Joplin Desktop export bug)
                 tracing::warn!("Skipping malformed NoteTag entry (missing note_id or tag_id)");
-                return Ok(ParsedItem::Note(Box::new(Note::default())));
+                return Ok(ParsedItem::Note(Box::default()));
             }
         }
         x if x == ModelType::Resource as i32 => {
@@ -466,7 +466,7 @@ fn parse_item(content: &str) -> Result<ParsedItem> {
             tracing::warn!(
                 "Skipping Resource entry (type 5) - Resource import not yet implemented"
             );
-            return Ok(ParsedItem::Note(Box::new(Note::default())));
+            return Ok(ParsedItem::Note(Box::default()));
         }
         _ => anyhow::bail!("Unsupported JEX item type: {}", actual_type),
     })

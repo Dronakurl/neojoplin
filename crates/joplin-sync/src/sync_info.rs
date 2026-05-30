@@ -4,12 +4,62 @@
 // info.json format. The info.json file is stored on the WebDAV server and contains
 // metadata about the synchronization state including E2EE master keys.
 
-use anyhow::Result;
 use chrono::Utc;
+use joplin_domain::{WebDavClient, WebDavError};
 use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
+use std::io::ErrorKind;
+use std::path::{Path, PathBuf};
+use thiserror::Error;
 use tokio::fs;
 use uuid::Uuid;
+
+#[derive(Debug, Error)]
+pub enum SyncInfoError {
+    #[error("failed to check info.json existence: {0}")]
+    CheckFailed(WebDavError),
+
+    #[error("failed to download info.json: {0}")]
+    DownloadFailed(WebDavError),
+
+    #[error("failed to read info.json: {0}")]
+    ReadFailed(std::io::Error),
+
+    #[error("failed to parse info.json: {0}")]
+    ParseFailed(serde_json::Error),
+
+    #[error("failed to serialize info.json: {0}")]
+    SerializeFailed(serde_json::Error),
+
+    #[error("failed to upload info.json: {0}")]
+    UploadFailed(WebDavError),
+}
+
+#[derive(Debug, Error)]
+pub enum ClientIdError {
+    #[error("failed to read client ID from {path}: {source}")]
+    ReadFailed {
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+
+    #[error("client ID file is blank: {0}")]
+    InvalidClientId(PathBuf),
+
+    #[error("failed to create client ID directory {path}: {source}")]
+    CreateParentDir {
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+
+    #[error("failed to persist client ID to {path}: {source}")]
+    PersistFailed {
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+}
 
 /// Sync information stored in info.json for Joplin compatibility
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -127,33 +177,34 @@ impl SyncInfo {
 
     /// Load sync info from remote WebDAV server (reads info.json)
     pub async fn load_from_remote(
-        webdav: &dyn joplin_domain::WebDavClient,
+        webdav: &dyn WebDavClient,
         remote_path: &str,
-    ) -> Result<Option<Self>> {
+    ) -> Result<Option<Self>, SyncInfoError> {
         let info_json_path = format!("{}/info.json", remote_path.trim_end_matches('/'));
 
         let exists = webdav
             .exists(&info_json_path)
             .await
-            .map_err(|e| anyhow::anyhow!("Failed to check info.json existence: {:?}", e))?;
+            .map_err(SyncInfoError::CheckFailed)?;
 
         if !exists {
             return Ok(None);
         }
 
-        let mut content = webdav
-            .get(&info_json_path)
-            .await
-            .map_err(|e| anyhow::anyhow!("Failed to download info.json: {:?}", e))?;
+        let mut content = match webdav.get(&info_json_path).await {
+            Ok(content) => content,
+            Err(WebDavError::NotFound(_)) => return Ok(None),
+            Err(err) => return Err(SyncInfoError::DownloadFailed(err)),
+        };
 
         use futures::io::AsyncReadExt;
         let mut bytes = Vec::new();
         AsyncReadExt::read_to_end(&mut content, &mut bytes)
             .await
-            .map_err(|e| anyhow::anyhow!("Failed to read info.json: {:?}", e))?;
+            .map_err(SyncInfoError::ReadFailed)?;
 
-        let sync_info: SyncInfo = serde_json::from_slice(&bytes)
-            .map_err(|e| anyhow::anyhow!("Failed to parse info.json: {:?}", e))?;
+        let sync_info: SyncInfo =
+            serde_json::from_slice(&bytes).map_err(SyncInfoError::ParseFailed)?;
 
         Ok(Some(sync_info))
     }
@@ -161,19 +212,18 @@ impl SyncInfo {
     /// Save sync info to remote WebDAV server (writes info.json)
     pub async fn save_to_remote(
         &self,
-        webdav: &dyn joplin_domain::WebDavClient,
+        webdav: &dyn WebDavClient,
         remote_path: &str,
-    ) -> Result<()> {
+    ) -> Result<(), SyncInfoError> {
         let info_json_path = format!("{}/info.json", remote_path.trim_end_matches('/'));
 
-        let content = serde_json::to_string_pretty(self)
-            .map_err(|e| anyhow::anyhow!("Failed to serialize info.json: {:?}", e))?;
+        let content = serde_json::to_string_pretty(self).map_err(SyncInfoError::SerializeFailed)?;
 
         let bytes = content.as_bytes();
         webdav
             .put(&info_json_path, bytes, bytes.len() as u64)
             .await
-            .map_err(|e| anyhow::anyhow!("Failed to upload info.json: {:?}", e))?;
+            .map_err(SyncInfoError::UploadFailed)?;
 
         Ok(())
     }
@@ -209,15 +259,41 @@ impl ClientIdManager {
         format!("neojoplin-{}", Uuid::new_v4())
     }
 
-    pub async fn get_or_generate(client_id_path: &PathBuf) -> Result<String> {
-        if let Ok(content) = fs::read_to_string(client_id_path).await {
-            return Ok(content.trim().to_string());
+    pub async fn get_or_generate(client_id_path: &Path) -> Result<String, ClientIdError> {
+        match fs::read_to_string(client_id_path).await {
+            Ok(content) => {
+                let client_id = content.trim();
+                if client_id.is_empty() {
+                    return Err(ClientIdError::InvalidClientId(client_id_path.to_path_buf()));
+                }
+
+                return Ok(client_id.to_string());
+            }
+            Err(err) if err.kind() == ErrorKind::NotFound => {}
+            Err(err) => {
+                return Err(ClientIdError::ReadFailed {
+                    path: client_id_path.to_path_buf(),
+                    source: err,
+                });
+            }
+        }
+
+        if let Some(parent) = client_id_path.parent() {
+            fs::create_dir_all(parent)
+                .await
+                .map_err(|source| ClientIdError::CreateParentDir {
+                    path: parent.to_path_buf(),
+                    source,
+                })?;
         }
 
         let client_id = Self::generate();
         fs::write(client_id_path, &client_id)
             .await
-            .map_err(|e| anyhow::anyhow!("Failed to write client_id file: {:?}", e))?;
+            .map_err(|source| ClientIdError::PersistFailed {
+                path: client_id_path.to_path_buf(),
+                source,
+            })?;
 
         Ok(client_id)
     }
@@ -226,6 +302,151 @@ impl ClientIdManager {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use async_trait::async_trait;
+    use futures::io::Cursor;
+    use joplin_domain::{DavEntry, WebDavError};
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use tempfile::tempdir;
+    use tokio::sync::Mutex;
+
+    #[derive(Default)]
+    struct RaceyWebDav {
+        exists_called: AtomicBool,
+    }
+
+    #[async_trait]
+    impl WebDavClient for RaceyWebDav {
+        async fn list(&self, _path: &str) -> Result<Vec<DavEntry>, WebDavError> {
+            unimplemented!()
+        }
+
+        async fn get(
+            &self,
+            path: &str,
+        ) -> Result<Box<dyn futures::io::AsyncRead + Unpin + Send>, WebDavError> {
+            if self.exists_called.load(Ordering::SeqCst) {
+                Err(WebDavError::NotFound(path.to_string()))
+            } else {
+                Ok(Box::new(Cursor::new(Vec::new())))
+            }
+        }
+
+        async fn put(&self, _path: &str, _body: &[u8], _size: u64) -> Result<(), WebDavError> {
+            unimplemented!()
+        }
+
+        async fn delete(&self, _path: &str) -> Result<(), WebDavError> {
+            unimplemented!()
+        }
+
+        async fn mkcol(&self, _path: &str) -> Result<(), WebDavError> {
+            unimplemented!()
+        }
+
+        async fn exists(&self, _path: &str) -> Result<bool, WebDavError> {
+            self.exists_called.store(true, Ordering::SeqCst);
+            Ok(true)
+        }
+
+        async fn stat(&self, _path: &str) -> Result<DavEntry, WebDavError> {
+            unimplemented!()
+        }
+
+        async fn lock(
+            &self,
+            _path: &str,
+            _timeout: std::time::Duration,
+        ) -> Result<String, WebDavError> {
+            unimplemented!()
+        }
+
+        async fn refresh_lock(&self, _lock_token: &str) -> Result<(), WebDavError> {
+            unimplemented!()
+        }
+
+        async fn unlock(&self, _path: &str, _lock_token: &str) -> Result<(), WebDavError> {
+            unimplemented!()
+        }
+
+        async fn mv(&self, _from: &str, _to: &str) -> Result<(), WebDavError> {
+            unimplemented!()
+        }
+
+        async fn copy(&self, _from: &str, _to: &str) -> Result<(), WebDavError> {
+            unimplemented!()
+        }
+    }
+
+    #[derive(Default)]
+    struct MemoryWebDav {
+        exists: bool,
+        bytes: Mutex<Vec<u8>>,
+    }
+
+    #[async_trait]
+    impl WebDavClient for MemoryWebDav {
+        async fn list(&self, _path: &str) -> Result<Vec<DavEntry>, WebDavError> {
+            unimplemented!()
+        }
+
+        async fn get(
+            &self,
+            path: &str,
+        ) -> Result<Box<dyn futures::io::AsyncRead + Unpin + Send>, WebDavError> {
+            if !self.exists {
+                return Err(WebDavError::NotFound(path.to_string()));
+            }
+
+            Ok(Box::new(Cursor::new(self.bytes.lock().await.clone())))
+        }
+
+        async fn put(&self, _path: &str, body: &[u8], _size: u64) -> Result<(), WebDavError> {
+            let mut bytes = self.bytes.lock().await;
+            bytes.clear();
+            bytes.extend_from_slice(body);
+            Ok(())
+        }
+
+        async fn delete(&self, _path: &str) -> Result<(), WebDavError> {
+            unimplemented!()
+        }
+
+        async fn mkcol(&self, _path: &str) -> Result<(), WebDavError> {
+            unimplemented!()
+        }
+
+        async fn exists(&self, _path: &str) -> Result<bool, WebDavError> {
+            Ok(self.exists)
+        }
+
+        async fn stat(&self, _path: &str) -> Result<DavEntry, WebDavError> {
+            unimplemented!()
+        }
+
+        async fn lock(
+            &self,
+            _path: &str,
+            _timeout: std::time::Duration,
+        ) -> Result<String, WebDavError> {
+            unimplemented!()
+        }
+
+        async fn refresh_lock(&self, _lock_token: &str) -> Result<(), WebDavError> {
+            unimplemented!()
+        }
+
+        async fn unlock(&self, _path: &str, _lock_token: &str) -> Result<(), WebDavError> {
+            unimplemented!()
+        }
+
+        async fn mv(&self, _from: &str, _to: &str) -> Result<(), WebDavError> {
+            unimplemented!()
+        }
+
+        async fn copy(&self, _from: &str, _to: &str) -> Result<(), WebDavError> {
+            unimplemented!()
+        }
+    }
 
     #[test]
     fn test_sync_info_default() {
@@ -280,5 +501,65 @@ mod tests {
     fn test_delta_context_default() {
         let ctx = DeltaContext::default();
         assert_eq!(ctx.timestamp, 0);
+    }
+
+    #[tokio::test]
+    async fn load_from_remote_treats_get_not_found_after_exists_as_missing() {
+        let webdav = RaceyWebDav::default();
+
+        let sync_info = SyncInfo::load_from_remote(&webdav, "/remote")
+            .await
+            .expect("load should not fail when info.json disappears after exists()");
+
+        assert!(sync_info.is_none());
+    }
+
+    #[tokio::test]
+    async fn save_to_remote_round_trips_joplin_shape() {
+        let webdav = MemoryWebDav {
+            exists: true,
+            ..Default::default()
+        };
+        let mut sync_info = SyncInfo::new();
+        sync_info.e2ee.value = true;
+        sync_info.e2ee.updated_time = 1234;
+
+        sync_info
+            .save_to_remote(&webdav, "/remote")
+            .await
+            .expect("save should work");
+
+        let saved = String::from_utf8(webdav.bytes.lock().await.clone()).expect("utf8");
+        assert!(saved.contains("\"appMinVersion\""));
+        assert!(saved.contains("\"e2ee\""));
+    }
+
+    #[tokio::test]
+    async fn client_id_manager_persists_generated_id() {
+        let tempdir = tempdir().expect("tempdir");
+        let path = tempdir.path().join("nested").join("client_id");
+
+        let first = ClientIdManager::get_or_generate(&path)
+            .await
+            .expect("first call should generate an ID");
+        let second = ClientIdManager::get_or_generate(&path)
+            .await
+            .expect("second call should reuse the stored ID");
+
+        assert!(first.starts_with("neojoplin-"));
+        assert_eq!(first, second);
+    }
+
+    #[tokio::test]
+    async fn client_id_manager_rejects_blank_ids() {
+        let tempdir = tempdir().expect("tempdir");
+        let path = tempdir.path().join("client_id");
+        fs::write(&path, "   \n").await.expect("write blank ID");
+
+        let err = ClientIdManager::get_or_generate(&path)
+            .await
+            .expect_err("blank client IDs must be rejected");
+
+        assert!(matches!(err, ClientIdError::InvalidClientId(ref invalid) if invalid == &path));
     }
 }

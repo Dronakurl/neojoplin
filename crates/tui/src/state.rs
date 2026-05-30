@@ -1332,7 +1332,6 @@ fn note_matches_tag_terms(
         tags.iter().any(|tag| {
             if term.exact {
                 tag.eq_ignore_ascii_case(&term.text)
-                    || tag.to_lowercase().contains(&term.text.to_lowercase())
             } else {
                 tag.to_lowercase().contains(&term.text.to_lowercase())
                     || matcher.fuzzy_match(tag, &term.text).is_some()
@@ -1683,6 +1682,35 @@ mod tests {
             Note {
                 id: "2".to_string(),
                 title: "Groceries".to_string(),
+                ..Note::default()
+            },
+        ];
+
+        let filtered = state.filter_notes(notes);
+        assert_eq!(filtered.len(), 1);
+        assert_eq!(filtered[0].id, "1");
+    }
+
+    #[test]
+    fn test_filter_notes_exact_tag_query_requires_literal_tag_match() {
+        let mut state = AppState::new();
+        state.note_filter_query = "#=work".to_string();
+        state
+            .note_tags
+            .insert("1".to_string(), vec!["work".to_string()]);
+        state
+            .note_tags
+            .insert("2".to_string(), vec!["workbench".to_string()]);
+
+        let notes = vec![
+            Note {
+                id: "1".to_string(),
+                title: "Exact tag".to_string(),
+                ..Note::default()
+            },
+            Note {
+                id: "2".to_string(),
+                title: "Substring tag".to_string(),
                 ..Note::default()
             },
         ];

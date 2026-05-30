@@ -745,14 +745,7 @@ impl SyncEngine {
                 self.context.last_sync_time = 0;
             }
             Err(e) => {
-                let error_msg = e.to_string();
-                if !error_msg.contains("NotFound") && !error_msg.contains("not found") {
-                    return Err(
-                        SyncError::Server(format!("Failed to load sync info: {}", e)).into(),
-                    );
-                }
-                self.sync_info = Some(SyncInfo::new());
-                self.context.last_sync_time = 0;
+                return Err(SyncError::Server(format!("Failed to load sync info: {}", e)).into())
             }
         }
         Ok(())
@@ -2378,6 +2371,11 @@ mod tests {
             _: &str,
         ) -> std::result::Result<Option<Note>, joplin_domain::DatabaseError> {
             Ok(None)
+        }
+        async fn get_all_notes(
+            &self,
+        ) -> std::result::Result<Vec<Note>, joplin_domain::DatabaseError> {
+            Ok(vec![])
         }
         async fn update_note(
             &self,
