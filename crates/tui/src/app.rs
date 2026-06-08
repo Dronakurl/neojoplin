@@ -289,9 +289,9 @@ impl App {
         state.settings.load_all_settings(&data_dir).await?;
 
         // Apply loaded UI settings to state
-        state.note_filter_query = state.settings.ui.note_filter_query.clone();
+        // state.note_filter_query = state.settings.ui.note_filter_query.clone();
         state.show_completed_todos = state.settings.ui.show_completed_todos;
-        state.note_filter_mode = state.settings.ui.note_filter_mode;
+        // state.note_filter_mode = state.settings.ui.note_filter_mode;
 
         let auto_sync_scheduler = AutoSyncScheduler::new(state.settings.auto_sync.interval_seconds);
 
