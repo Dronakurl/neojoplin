@@ -6,6 +6,9 @@ use sqlx::{sqlite::SqliteConnectOptions, sqlite::SqlitePoolOptions, SqlitePool};
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 
+mod schema;
+pub use schema::{JOPLIN_DB_VERSION, MIN_DB_VERSION};
+
 use joplin_domain::{
     now_ms, DatabaseError, DeletedItem, Folder, ModelType, Note, NoteRevision, NoteTag, Storage,
     SyncItem, SyncTarget, Tag,
@@ -93,215 +96,9 @@ impl SqliteStorage {
         Ok(storage)
     }
 
-    /// Initialize the database schema
+    /// Initialize the database schema (Joplin-compatible, see `schema`)
     async fn initialize(&self) -> Result<(), DatabaseError> {
-        // Check if database is already initialized
-        let version_result: Result<Option<i32>, _> =
-            sqlx::query_scalar("SELECT version FROM version LIMIT 1")
-                .fetch_optional(&self.pool)
-                .await;
-
-        if let Ok(Some(version)) = version_result {
-            if version == 41 {
-                tracing::info!("Migrating database from v41 to v42");
-                sqlx::query("ALTER TABLE notes ADD COLUMN deleted_time INTEGER DEFAULT 0")
-                    .execute(&self.pool)
-                    .await
-                    .map_err(|e| {
-                        DatabaseError::MigrationFailed(format!(
-                            "Failed to add deleted_time column: {}",
-                            e
-                        ))
-                    })?;
-                sqlx::query("UPDATE version SET version = 42")
-                    .execute(&self.pool)
-                    .await
-                    .map_err(|e| {
-                        DatabaseError::MigrationFailed(format!("Failed to update version: {}", e))
-                    })?;
-                tracing::info!("Database migrated to v42");
-                self.ensure_revision_table().await?;
-                return Ok(());
-            }
-            if version == 42 {
-                tracing::info!("Migrating database from v42 to v43");
-                // Add encryption fields to folders table
-                sqlx::query("ALTER TABLE folders ADD COLUMN encryption_cipher_text TEXT")
-                    .execute(&self.pool)
-                    .await
-                    .map_err(|e| {
-                        DatabaseError::MigrationFailed(format!(
-                            "Failed to add encryption_cipher_text to folders: {}",
-                            e
-                        ))
-                    })?;
-                sqlx::query("ALTER TABLE folders ADD COLUMN encryption_applied INTEGER DEFAULT 0")
-                    .execute(&self.pool)
-                    .await
-                    .map_err(|e| {
-                        DatabaseError::MigrationFailed(format!(
-                            "Failed to add encryption_applied to folders: {}",
-                            e
-                        ))
-                    })?;
-                sqlx::query(
-                    "ALTER TABLE folders ADD COLUMN encryption_blob_encrypted INTEGER DEFAULT 0",
-                )
-                .execute(&self.pool)
-                .await
-                .map_err(|e| {
-                    DatabaseError::MigrationFailed(format!(
-                        "Failed to add encryption_blob_encrypted to folders: {}",
-                        e
-                    ))
-                })?;
-                // Add encryption fields to tags table
-                sqlx::query("ALTER TABLE tags ADD COLUMN encryption_cipher_text TEXT")
-                    .execute(&self.pool)
-                    .await
-                    .map_err(|e| {
-                        DatabaseError::MigrationFailed(format!(
-                            "Failed to add encryption_cipher_text to tags: {}",
-                            e
-                        ))
-                    })?;
-                sqlx::query("ALTER TABLE tags ADD COLUMN encryption_applied INTEGER DEFAULT 0")
-                    .execute(&self.pool)
-                    .await
-                    .map_err(|e| {
-                        DatabaseError::MigrationFailed(format!(
-                            "Failed to add encryption_applied to tags: {}",
-                            e
-                        ))
-                    })?;
-                sqlx::query(
-                    "ALTER TABLE tags ADD COLUMN encryption_blob_encrypted INTEGER DEFAULT 0",
-                )
-                .execute(&self.pool)
-                .await
-                .map_err(|e| {
-                    DatabaseError::MigrationFailed(format!(
-                        "Failed to add encryption_blob_encrypted to tags: {}",
-                        e
-                    ))
-                })?;
-                sqlx::query("ALTER TABLE tags ADD COLUMN master_key_id TEXT")
-                    .execute(&self.pool)
-                    .await
-                    .map_err(|e| {
-                        DatabaseError::MigrationFailed(format!(
-                            "Failed to add master_key_id to tags: {}",
-                            e
-                        ))
-                    })?;
-                // Add encryption fields to note_tags table
-                sqlx::query("ALTER TABLE note_tags ADD COLUMN encryption_cipher_text TEXT")
-                    .execute(&self.pool)
-                    .await
-                    .map_err(|e| {
-                        DatabaseError::MigrationFailed(format!(
-                            "Failed to add encryption_cipher_text to note_tags: {}",
-                            e
-                        ))
-                    })?;
-                sqlx::query(
-                    "ALTER TABLE note_tags ADD COLUMN encryption_applied INTEGER DEFAULT 0",
-                )
-                .execute(&self.pool)
-                .await
-                .map_err(|e| {
-                    DatabaseError::MigrationFailed(format!(
-                        "Failed to add encryption_applied to note_tags: {}",
-                        e
-                    ))
-                })?;
-                sqlx::query(
-                    "ALTER TABLE note_tags ADD COLUMN encryption_blob_encrypted INTEGER DEFAULT 0",
-                )
-                .execute(&self.pool)
-                .await
-                .map_err(|e| {
-                    DatabaseError::MigrationFailed(format!(
-                        "Failed to add encryption_blob_encrypted to note_tags: {}",
-                        e
-                    ))
-                })?;
-                sqlx::query("ALTER TABLE note_tags ADD COLUMN master_key_id TEXT")
-                    .execute(&self.pool)
-                    .await
-                    .map_err(|e| {
-                        DatabaseError::MigrationFailed(format!(
-                            "Failed to add master_key_id to note_tags: {}",
-                            e
-                        ))
-                    })?;
-                sqlx::query("UPDATE version SET version = 43")
-                    .execute(&self.pool)
-                    .await
-                    .map_err(|e| {
-                        DatabaseError::MigrationFailed(format!("Failed to update version: {}", e))
-                    })?;
-                tracing::info!("Database migrated to v43");
-                self.ensure_revision_table().await?;
-                return Ok(());
-            }
-            if version >= 43 {
-                tracing::info!("Database already initialized at version {}", version);
-                self.ensure_revision_table().await?;
-                return Ok(());
-            }
-        }
-
-        tracing::info!("Initializing database schema v42");
-        self.create_schema().await?;
-        self.ensure_revision_table().await?;
-        Ok(())
-    }
-
-    async fn ensure_revision_table(&self) -> Result<(), DatabaseError> {
-        sqlx::query(
-            r#"
-            CREATE TABLE IF NOT EXISTS revisions (
-                id TEXT PRIMARY KEY,
-                parent_id TEXT NOT NULL DEFAULT "",
-                item_type INTEGER NOT NULL,
-                item_id TEXT NOT NULL,
-                item_updated_time INTEGER NOT NULL,
-                title_diff TEXT NOT NULL DEFAULT "",
-                body_diff TEXT NOT NULL DEFAULT "",
-                metadata_diff TEXT NOT NULL DEFAULT "",
-                encryption_cipher_text TEXT NOT NULL DEFAULT "",
-                encryption_applied INTEGER NOT NULL DEFAULT 0,
-                updated_time INTEGER NOT NULL,
-                created_time INTEGER NOT NULL
-            )
-            "#,
-        )
-        .execute(&self.pool)
-        .await
-        .map_err(|e| {
-            DatabaseError::MigrationFailed(format!("Failed to create revisions table: {}", e))
-        })?;
-
-        for index_sql in [
-            "CREATE INDEX IF NOT EXISTS revisions_parent_id ON revisions(parent_id)",
-            "CREATE INDEX IF NOT EXISTS revisions_item_type ON revisions(item_type)",
-            "CREATE INDEX IF NOT EXISTS revisions_item_id ON revisions(item_id)",
-            "CREATE INDEX IF NOT EXISTS revisions_item_updated_time ON revisions(item_updated_time)",
-            "CREATE INDEX IF NOT EXISTS revisions_updated_time ON revisions(updated_time)",
-        ] {
-            sqlx::query(index_sql)
-                .execute(&self.pool)
-                .await
-                .map_err(|e| {
-                    DatabaseError::MigrationFailed(format!(
-                        "Failed to create revisions index: {}",
-                        e
-                    ))
-                })?;
-        }
-
-        Ok(())
+        schema::initialize(&self.pool).await
     }
 
     pub async fn list_note_revisions(
@@ -438,283 +235,23 @@ impl SqliteStorage {
         Ok(())
     }
 
-    /// Create the database schema
-    async fn create_schema(&self) -> Result<(), DatabaseError> {
-        let mut tx = self.pool.begin().await.map_err(|e| {
-            DatabaseError::ConnectionFailed(format!("Failed to begin transaction: {}", e))
-        })?;
-
-        // Create version table first
+    /// Record a note change for Joplin's search engine and revision service,
+    /// the same way Joplin's `ItemChange.add` does.
+    async fn record_note_change(
+        &self,
+        note_id: &str,
+        change_type: i32,
+    ) -> Result<(), DatabaseError> {
         sqlx::query(
-            r#"
-            CREATE TABLE IF NOT EXISTS version (
-                version INTEGER NOT NULL,
-                table_fields_version INTEGER DEFAULT 0
-            )
-            "#,
+            "INSERT INTO item_changes (item_type, item_id, type, source, created_time, before_change_item) VALUES (?, ?, ?, 1, ?, '')",
         )
-        .execute(&mut *tx)
-        .await
-        .map_err(|e| {
-            DatabaseError::MigrationFailed(format!("Failed to create version table: {}", e))
-        })?;
-
-        // Create notes table
-        sqlx::query(
-            r#"
-            CREATE TABLE IF NOT EXISTS notes (
-                id TEXT PRIMARY KEY,
-                title TEXT,
-                body TEXT,
-                created_time INTEGER NOT NULL,
-                updated_time INTEGER NOT NULL,
-                user_created_time INTEGER DEFAULT 0,
-                user_updated_time INTEGER DEFAULT 0,
-                is_conflict INTEGER DEFAULT 0,
-                is_todo INTEGER DEFAULT 0,
-                todo_completed INTEGER DEFAULT 0,
-                todo_due INTEGER DEFAULT 0,
-                source TEXT,
-                source_application TEXT,
-                "order" INTEGER DEFAULT 0,
-                latitude INTEGER DEFAULT 0,
-                longitude INTEGER DEFAULT 0,
-                altitude INTEGER DEFAULT 0,
-                author TEXT,
-                source_url TEXT,
-                is_shared INTEGER DEFAULT 0,
-                application_data TEXT,
-                markup_language INTEGER DEFAULT 1,
-                parent_id TEXT,
-                encryption_cipher_text TEXT,
-                encryption_applied INTEGER DEFAULT 0,
-                encryption_blob_encrypted INTEGER DEFAULT 0,
-                master_key_id TEXT,
-                share_id TEXT,
-                conflict_original_id TEXT,
-                deleted_time INTEGER DEFAULT 0
-            )
-            "#,
-        )
-        .execute(&mut *tx)
-        .await
-        .map_err(|e| {
-            DatabaseError::MigrationFailed(format!("Failed to create notes table: {}", e))
-        })?;
-
-        // Create folders table
-        sqlx::query(
-            r#"
-            CREATE TABLE IF NOT EXISTS folders (
-                id TEXT PRIMARY KEY,
-                title TEXT,
-                created_time INTEGER NOT NULL,
-                updated_time INTEGER NOT NULL,
-                user_created_time INTEGER DEFAULT 0,
-                user_updated_time INTEGER DEFAULT 0,
-                parent_id TEXT,
-                icon TEXT,
-                share_id TEXT,
-                master_key_id TEXT,
-                is_shared INTEGER DEFAULT 0,
-                encryption_cipher_text TEXT,
-                encryption_applied INTEGER DEFAULT 0,
-                encryption_blob_encrypted INTEGER DEFAULT 0
-            )
-            "#,
-        )
-        .execute(&mut *tx)
-        .await
-        .map_err(|e| {
-            DatabaseError::MigrationFailed(format!("Failed to create folders table: {}", e))
-        })?;
-
-        // Create tags table
-        sqlx::query(
-            r#"
-            CREATE TABLE IF NOT EXISTS tags (
-                id TEXT PRIMARY KEY,
-                title TEXT,
-                created_time INTEGER NOT NULL,
-                updated_time INTEGER NOT NULL,
-                user_created_time INTEGER DEFAULT 0,
-                user_updated_time INTEGER DEFAULT 0,
-                parent_id TEXT,
-                is_shared INTEGER DEFAULT 0,
-                encryption_cipher_text TEXT,
-                encryption_applied INTEGER DEFAULT 0,
-                encryption_blob_encrypted INTEGER DEFAULT 0,
-                master_key_id TEXT
-            )
-            "#,
-        )
-        .execute(&mut *tx)
-        .await
-        .map_err(|e| {
-            DatabaseError::MigrationFailed(format!("Failed to create tags table: {}", e))
-        })?;
-
-        // Create note_tags table
-        sqlx::query(
-            r#"
-            CREATE TABLE IF NOT EXISTS note_tags (
-                id TEXT PRIMARY KEY,
-                note_id TEXT NOT NULL,
-                tag_id TEXT NOT NULL,
-                created_time INTEGER NOT NULL,
-                updated_time INTEGER NOT NULL,
-                is_shared INTEGER DEFAULT 0,
-                encryption_cipher_text TEXT,
-                encryption_applied INTEGER DEFAULT 0,
-                encryption_blob_encrypted INTEGER DEFAULT 0,
-                master_key_id TEXT,
-                FOREIGN KEY (note_id) REFERENCES notes(id) ON DELETE CASCADE,
-                FOREIGN KEY (tag_id) REFERENCES tags(id) ON DELETE CASCADE
-            )
-            "#,
-        )
-        .execute(&mut *tx)
-        .await
-        .map_err(|e| {
-            DatabaseError::MigrationFailed(format!("Failed to create note_tags table: {}", e))
-        })?;
-
-        // Create resources table
-        sqlx::query(
-            r#"
-            CREATE TABLE IF NOT EXISTS resources (
-                id TEXT PRIMARY KEY,
-                title TEXT,
-                filename TEXT,
-                file_extension TEXT,
-                mime TEXT,
-                size INTEGER DEFAULT -1,
-                created_time INTEGER NOT NULL,
-                updated_time INTEGER NOT NULL,
-                user_created_time INTEGER DEFAULT 0,
-                user_updated_time INTEGER DEFAULT 0,
-                blob_updated_time INTEGER DEFAULT 0,
-                encryption_cipher_text TEXT,
-                encryption_applied INTEGER DEFAULT 0,
-                encryption_blob_encrypted INTEGER DEFAULT 0,
-                share_id TEXT,
-                master_key_id TEXT,
-                is_shared INTEGER DEFAULT 0
-            )
-            "#,
-        )
-        .execute(&mut *tx)
-        .await
-        .map_err(|e| {
-            DatabaseError::MigrationFailed(format!("Failed to create resources table: {}", e))
-        })?;
-
-        // Create settings table
-        sqlx::query(
-            r#"
-            CREATE TABLE IF NOT EXISTS settings (
-                key TEXT PRIMARY KEY,
-                value TEXT,
-                type INTEGER
-            )
-            "#,
-        )
-        .execute(&mut *tx)
-        .await
-        .map_err(|e| {
-            DatabaseError::MigrationFailed(format!("Failed to create settings table: {}", e))
-        })?;
-
-        // Create sync_items table
-        sqlx::query(
-            r#"
-            CREATE TABLE IF NOT EXISTS sync_items (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                sync_target INTEGER NOT NULL,
-                sync_time INTEGER DEFAULT 0,
-                item_type INTEGER NOT NULL,
-                item_id TEXT NOT NULL,
-                sync_disabled INTEGER DEFAULT 0,
-                sync_disabled_reason TEXT,
-                item_location INTEGER DEFAULT 1
-            )
-            "#,
-        )
-        .execute(&mut *tx)
-        .await
-        .map_err(|e| {
-            DatabaseError::MigrationFailed(format!("Failed to create sync_items table: {}", e))
-        })?;
-
-        // Create deleted_items table
-        sqlx::query(
-            r#"
-            CREATE TABLE IF NOT EXISTS deleted_items (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                item_type INTEGER NOT NULL,
-                item_id TEXT NOT NULL,
-                deleted_time INTEGER NOT NULL,
-                sync_target INTEGER NOT NULL
-            )
-            "#,
-        )
-        .execute(&mut *tx)
-        .await
-        .map_err(|e| {
-            DatabaseError::MigrationFailed(format!("Failed to create deleted_items table: {}", e))
-        })?;
-
-        // Create full-text search table (standalone, not external content)
-        sqlx::query(
-            r#"
-            CREATE VIRTUAL TABLE IF NOT EXISTS notes_fts USING fts5(
-                id UNINDEXED, title, body
-            )
-            "#,
-        )
-        .execute(&mut *tx)
-        .await
-        .map_err(|e| {
-            DatabaseError::MigrationFailed(format!("Failed to create notes_fts table: {}", e))
-        })?;
-
-        // Set database version
-        sqlx::query("INSERT INTO version (version) VALUES (43)")
-            .execute(&mut *tx)
-            .await
-            .map_err(|e| DatabaseError::MigrationFailed(format!("Failed to set version: {}", e)))?;
-
-        tx.commit().await.map_err(|e| {
-            DatabaseError::MigrationFailed(format!("Failed to commit transaction: {}", e))
-        })?;
-
-        tracing::info!("Database schema created successfully");
-        Ok(())
-    }
-
-    /// Update full-text search index for a note
-    async fn update_note_fts(&self, note: &Note) -> Result<(), DatabaseError> {
-        // First delete existing entry
-        sqlx::query("DELETE FROM notes_fts WHERE id = ?")
-            .bind(&note.id)
-            .execute(&self.pool)
-            .await
-            .map_err(|e| DatabaseError::QueryFailed(format!("Failed to delete from FTS: {}", e)))?;
-
-        // Then insert new entry
-        sqlx::query(
-            r#"
-            INSERT INTO notes_fts (id, title, body)
-            VALUES (?, ?, ?)
-            "#,
-        )
-        .bind(&note.id)
-        .bind(&note.title)
-        .bind(&note.body)
+        .bind(ModelType::Note as i32)
+        .bind(note_id)
+        .bind(change_type)
+        .bind(now_ms())
         .execute(&self.pool)
         .await
-        .map_err(|e| DatabaseError::QueryFailed(format!("Failed to insert into FTS: {}", e)))?;
-
+        .map_err(|e| DatabaseError::QueryFailed(format!("Failed to record item change: {}", e)))?;
         Ok(())
     }
 }
@@ -1010,9 +547,9 @@ impl Storage for SqliteStorage {
                 source, source_application, "order", latitude, longitude,
                 altitude, author, source_url, is_shared, application_data,
                 markup_language, encryption_cipher_text, encryption_applied,
-                encryption_blob_encrypted, master_key_id, share_id,
+                master_key_id, share_id,
                 conflict_original_id, deleted_time
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             "#
         )
         .bind(&note.id)
@@ -1038,19 +575,17 @@ impl Storage for SqliteStorage {
         .bind(note.is_shared)
         .bind(&note.application_data)
         .bind(note.markup_language)
-        .bind(&note.encryption_cipher_text)
+        .bind(note.encryption_cipher_text.as_deref().unwrap_or(""))
         .bind(note.encryption_applied)
-        .bind(note.encryption_blob_encrypted)
-        .bind(&note.master_key_id)
-        .bind(&note.share_id)
+        .bind(note.master_key_id.as_deref().unwrap_or(""))
+        .bind(note.share_id.as_deref().unwrap_or(""))
         .bind(&note.conflict_original_id)
         .bind(note.deleted_time)
         .execute(&self.pool)
         .await
         .map_err(|e| DatabaseError::QueryFailed(format!("Failed to create note: {}", e)))?;
 
-        // Update full-text search
-        self.update_note_fts(note).await?;
+        self.record_note_change(&note.id, 1).await?;
         self.insert_note_revision(note, note.updated_time).await?;
 
         Ok(())
@@ -1066,7 +601,7 @@ impl Storage for SqliteStorage {
                 source, source_application, "order", latitude, longitude,
                 altitude, author, source_url, is_shared, application_data,
                 markup_language, encryption_cipher_text, encryption_applied,
-                encryption_blob_encrypted, master_key_id, share_id,
+                master_key_id, share_id,
                 conflict_original_id, deleted_time
             FROM notes WHERE id = ?
             "#,
@@ -1089,7 +624,7 @@ impl Storage for SqliteStorage {
             source, source_application, "order", latitude, longitude,
             altitude, author, source_url, is_shared, application_data,
             markup_language, encryption_cipher_text, encryption_applied,
-            encryption_blob_encrypted, master_key_id, share_id,
+            master_key_id, share_id,
             conflict_original_id, deleted_time
         FROM notes
         "#,
@@ -1119,7 +654,7 @@ impl Storage for SqliteStorage {
                 altitude = ?, author = ?, source_url = ?,
                 is_shared = ?, application_data = ?,
                 markup_language = ?, encryption_cipher_text = ?,
-                encryption_applied = ?, encryption_blob_encrypted = ?,
+                encryption_applied = ?,
                 master_key_id = ?, share_id = ?,
                 conflict_original_id = ?,
                 deleted_time = ?
@@ -1146,11 +681,10 @@ impl Storage for SqliteStorage {
         .bind(note.is_shared)
         .bind(&note.application_data)
         .bind(note.markup_language)
-        .bind(&note.encryption_cipher_text)
+        .bind(note.encryption_cipher_text.as_deref().unwrap_or(""))
         .bind(note.encryption_applied)
-        .bind(note.encryption_blob_encrypted)
-        .bind(&note.master_key_id)
-        .bind(&note.share_id)
+        .bind(note.master_key_id.as_deref().unwrap_or(""))
+        .bind(note.share_id.as_deref().unwrap_or(""))
         .bind(&note.conflict_original_id)
         .bind(note.deleted_time)
         .bind(&note.id)
@@ -1158,8 +692,7 @@ impl Storage for SqliteStorage {
         .await
         .map_err(|e| DatabaseError::QueryFailed(format!("Failed to update note: {}", e)))?;
 
-        // Update full-text search
-        self.update_note_fts(note).await?;
+        self.record_note_change(&note.id, 2).await?;
         let mut revision_note = note.clone();
         revision_note.updated_time = updated_time;
         self.insert_note_revision(&revision_note, updated_time)
@@ -1194,7 +727,7 @@ impl Storage for SqliteStorage {
             DatabaseError::QueryFailed(format!("Failed to commit note deletion: {}", e))
         })?;
 
-        Ok(())
+        self.record_note_change(id, 3).await
     }
 
     async fn list_notes(&self, folder_id: Option<&str>) -> Result<Vec<Note>, DatabaseError> {
@@ -1208,7 +741,7 @@ impl Storage for SqliteStorage {
                     source, source_application, "order", latitude, longitude,
                     altitude, author, source_url, is_shared, application_data,
                     markup_language, encryption_cipher_text, encryption_applied,
-                    encryption_blob_encrypted, master_key_id, share_id,
+                    master_key_id, share_id,
                     conflict_original_id, deleted_time
                 FROM notes
                 WHERE parent_id = ? AND COALESCE(deleted_time, 0) = 0
@@ -1229,7 +762,7 @@ impl Storage for SqliteStorage {
                     source, source_application, "order", latitude, longitude,
                     altitude, author, source_url, is_shared, application_data,
                     markup_language, encryption_cipher_text, encryption_applied,
-                    encryption_blob_encrypted, master_key_id, share_id,
+                    master_key_id, share_id,
                     conflict_original_id, deleted_time
                 FROM notes
                 WHERE COALESCE(deleted_time, 0) = 0
@@ -1295,7 +828,7 @@ impl Storage for SqliteStorage {
                 source, source_application, "order", latitude, longitude,
                 altitude, author, source_url, is_shared, application_data,
                 markup_language, encryption_cipher_text, encryption_applied,
-                encryption_blob_encrypted, master_key_id, share_id,
+                master_key_id, share_id,
                 conflict_original_id, deleted_time
             FROM notes
             WHERE ({}) AND COALESCE(deleted_time, 0) = 0
@@ -1326,8 +859,8 @@ impl Storage for SqliteStorage {
                 id, title, created_time, updated_time,
                 user_created_time, user_updated_time, parent_id,
                 icon, share_id, master_key_id, is_shared,
-                encryption_cipher_text, encryption_applied, encryption_blob_encrypted
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                encryption_cipher_text, encryption_applied
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             "#,
         )
         .bind(&folder.id)
@@ -1338,12 +871,11 @@ impl Storage for SqliteStorage {
         .bind(folder.user_updated_time)
         .bind(&folder.parent_id)
         .bind(&folder.icon)
-        .bind(&folder.share_id)
-        .bind(&folder.master_key_id)
+        .bind(folder.share_id.as_deref().unwrap_or(""))
+        .bind(folder.master_key_id.as_deref().unwrap_or(""))
         .bind(folder.is_shared)
-        .bind(&folder.encryption_cipher_text)
+        .bind(folder.encryption_cipher_text.as_deref().unwrap_or(""))
         .bind(folder.encryption_applied)
-        .bind(folder.encryption_blob_encrypted)
         .execute(&self.pool)
         .await
         .map_err(|e| DatabaseError::QueryFailed(format!("Failed to create folder: {}", e)))?;
@@ -1358,7 +890,7 @@ impl Storage for SqliteStorage {
                 id, title, created_time, updated_time,
                 user_created_time, user_updated_time, parent_id,
                 icon, share_id, master_key_id, is_shared,
-                encryption_cipher_text, encryption_applied, encryption_blob_encrypted
+                encryption_cipher_text, encryption_applied
             FROM folders WHERE id = ?
             "#,
         )
@@ -1377,7 +909,7 @@ impl Storage for SqliteStorage {
                 title = ?, updated_time = ?,
                 user_updated_time = ?, parent_id = ?,
                 icon = ?, share_id = ?, master_key_id = ?, is_shared = ?,
-                encryption_cipher_text = ?, encryption_applied = ?, encryption_blob_encrypted = ?
+                encryption_cipher_text = ?, encryption_applied = ?
             WHERE id = ?
             "#,
         )
@@ -1386,12 +918,11 @@ impl Storage for SqliteStorage {
         .bind(folder.user_updated_time)
         .bind(&folder.parent_id)
         .bind(&folder.icon)
-        .bind(&folder.share_id)
-        .bind(&folder.master_key_id)
+        .bind(folder.share_id.as_deref().unwrap_or(""))
+        .bind(folder.master_key_id.as_deref().unwrap_or(""))
         .bind(folder.is_shared)
-        .bind(&folder.encryption_cipher_text)
+        .bind(folder.encryption_cipher_text.as_deref().unwrap_or(""))
         .bind(folder.encryption_applied)
-        .bind(folder.encryption_blob_encrypted)
         .bind(&folder.id)
         .execute(&self.pool)
         .await
@@ -1436,7 +967,7 @@ impl Storage for SqliteStorage {
                 id, title, created_time, updated_time,
                 user_created_time, user_updated_time, parent_id,
                 icon, share_id, master_key_id, is_shared,
-                encryption_cipher_text, encryption_applied, encryption_blob_encrypted
+                encryption_cipher_text, encryption_applied
             FROM folders
             ORDER BY title ASC
             "#,
@@ -1455,8 +986,8 @@ impl Storage for SqliteStorage {
             INSERT INTO tags (
                 id, title, created_time, updated_time,
                 user_created_time, user_updated_time, parent_id, is_shared,
-                encryption_cipher_text, encryption_applied, encryption_blob_encrypted, master_key_id
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                encryption_cipher_text, encryption_applied
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             "#,
         )
         .bind(&tag.id)
@@ -1467,10 +998,8 @@ impl Storage for SqliteStorage {
         .bind(tag.user_updated_time)
         .bind(&tag.parent_id)
         .bind(tag.is_shared)
-        .bind(&tag.encryption_cipher_text)
+        .bind(tag.encryption_cipher_text.as_deref().unwrap_or(""))
         .bind(tag.encryption_applied)
-        .bind(tag.encryption_blob_encrypted)
-        .bind(&tag.master_key_id)
         .execute(&self.pool)
         .await
         .map_err(|e| DatabaseError::QueryFailed(format!("Failed to create tag: {}", e)))?;
@@ -1484,7 +1013,7 @@ impl Storage for SqliteStorage {
             SELECT
                 id, title, created_time, updated_time,
                 user_created_time, user_updated_time, parent_id, is_shared,
-                encryption_cipher_text, encryption_applied, encryption_blob_encrypted, master_key_id
+                encryption_cipher_text, encryption_applied
             FROM tags WHERE id = ?
             "#,
         )
@@ -1502,8 +1031,7 @@ impl Storage for SqliteStorage {
             UPDATE tags SET
                 title = ?, updated_time = ?,
                 user_updated_time = ?, parent_id = ?,
-                encryption_cipher_text = ?, encryption_applied = ?, encryption_blob_encrypted = ?,
-                master_key_id = ?
+                encryption_cipher_text = ?, encryption_applied = ?
             WHERE id = ?
             "#,
         )
@@ -1511,10 +1039,8 @@ impl Storage for SqliteStorage {
         .bind(tag.updated_time)
         .bind(tag.user_updated_time)
         .bind(&tag.parent_id)
-        .bind(&tag.encryption_cipher_text)
+        .bind(tag.encryption_cipher_text.as_deref().unwrap_or(""))
         .bind(tag.encryption_applied)
-        .bind(tag.encryption_blob_encrypted)
-        .bind(&tag.master_key_id)
         .bind(&tag.id)
         .execute(&self.pool)
         .await
@@ -1582,8 +1108,9 @@ impl Storage for SqliteStorage {
         sqlx::query(
             r#"
             INSERT INTO note_tags (
-                id, note_id, tag_id, created_time, updated_time, is_shared,
-                encryption_cipher_text, encryption_applied, encryption_blob_encrypted, master_key_id
+                id, note_id, tag_id, created_time, updated_time,
+                user_created_time, user_updated_time, is_shared,
+                encryption_cipher_text, encryption_applied
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             "#,
         )
@@ -1592,11 +1119,11 @@ impl Storage for SqliteStorage {
         .bind(&note_tag.tag_id)
         .bind(note_tag.created_time)
         .bind(note_tag.updated_time)
+        .bind(note_tag.user_created_time)
+        .bind(note_tag.user_updated_time)
         .bind(note_tag.is_shared)
-        .bind(&note_tag.encryption_cipher_text)
+        .bind(note_tag.encryption_cipher_text.as_deref().unwrap_or(""))
         .bind(note_tag.encryption_applied)
-        .bind(note_tag.encryption_blob_encrypted)
-        .bind(&note_tag.master_key_id)
         .execute(&self.pool)
         .await
         .map_err(|e| DatabaseError::QueryFailed(format!("Failed to add note tag: {}", e)))?;
@@ -1650,7 +1177,7 @@ impl Storage for SqliteStorage {
     async fn set_setting(&self, key: &str, value: &str) -> Result<(), DatabaseError> {
         sqlx::query(
             r#"
-            INSERT INTO settings (key, value, type) VALUES (?, ?, 2)
+            INSERT INTO settings (key, value) VALUES (?, ?)
             ON CONFLICT(key) DO UPDATE SET value = excluded.value
             "#,
         )
@@ -1944,7 +1471,7 @@ impl Storage for SqliteStorage {
                 ) VALUES (?, ?, ?, ?, ?, ?, ?)
                 "#
             )
-            .bind(1) // sync_target
+            .bind(SyncTarget::WebDAV as i32)
             .bind(timestamp)
             .bind(item_type)
             .bind(id)
@@ -1973,13 +1500,16 @@ impl Storage for SqliteStorage {
                     .map_err(|e| {
                         DatabaseError::QueryFailed(format!("Failed to purge note: {}", e))
                     })?;
-                sqlx::query("DELETE FROM notes_fts WHERE id = ?")
-                    .bind(item_id)
-                    .execute(&mut *tx)
-                    .await
-                    .map_err(|e| {
-                        DatabaseError::QueryFailed(format!("Failed to purge note FTS row: {}", e))
-                    })?;
+                sqlx::query(
+                    "INSERT INTO item_changes (item_type, item_id, type, source, created_time, before_change_item) VALUES (1, ?, 3, 1, ?, '')",
+                )
+                .bind(item_id)
+                .bind(now_ms())
+                .execute(&mut *tx)
+                .await
+                .map_err(|e| {
+                    DatabaseError::QueryFailed(format!("Failed to record note purge: {}", e))
+                })?;
             }
             2 => {
                 sqlx::query("DELETE FROM folders WHERE id = ?")
@@ -2018,9 +1548,8 @@ impl Storage for SqliteStorage {
                     })?;
             }
             13 => {
-                // Type 13 is for item_changes (Joplin sync metadata)
-                // neojoplin doesn't have an item_changes table, so just skip content deletion
-                // The sync_items record will be deleted below
+                // Type 13 is for item_changes (Joplin sync metadata); local-only,
+                // so just the sync_items record is deleted below
             }
             _ => {
                 return Err(DatabaseError::InvalidData(format!(
@@ -2098,7 +1627,7 @@ impl Storage for SqliteStorage {
             .execute(&self.pool)
             .await
             .map_err(|e| DatabaseError::QueryFailed(format!("Failed to trash note: {}", e)))?;
-        Ok(())
+        self.record_note_change(id, 2).await
     }
 
     async fn restore_note(&self, id: &str) -> Result<(), DatabaseError> {
@@ -2112,7 +1641,7 @@ impl Storage for SqliteStorage {
             .execute(&self.pool)
             .await
             .map_err(|e| DatabaseError::QueryFailed(format!("Failed to restore note: {}", e)))?;
-        Ok(())
+        self.record_note_change(id, 2).await
     }
 
     async fn list_deleted_notes(&self) -> Result<Vec<Note>, DatabaseError> {
@@ -2125,7 +1654,7 @@ impl Storage for SqliteStorage {
                 source, source_application, "order", latitude, longitude,
                 altitude, author, source_url, is_shared, application_data,
                 markup_language, encryption_cipher_text, encryption_applied,
-                encryption_blob_encrypted, master_key_id, share_id,
+                master_key_id, share_id,
                 conflict_original_id, deleted_time
             FROM notes
             WHERE COALESCE(deleted_time, 0) > 0
@@ -2147,22 +1676,134 @@ mod tests {
     use super::*;
     use tempfile::TempDir;
 
-    async fn setup_test_db() -> SqliteStorage {
+    async fn setup_test_db() -> (SqliteStorage, TempDir) {
         let temp_dir = TempDir::new().unwrap();
         let db_path = temp_dir.path().join("test.db");
-        SqliteStorage::with_path(&db_path).await.unwrap()
+        let db = SqliteStorage::with_path(&db_path).await.unwrap();
+        (db, temp_dir)
     }
 
     #[tokio::test]
     async fn test_database_creation() {
-        let db = setup_test_db().await;
+        let (db, _dir) = setup_test_db().await;
         let version = db.get_version().await.unwrap();
-        assert_eq!(version, 43);
+        assert_eq!(version, JOPLIN_DB_VERSION);
+    }
+
+    #[tokio::test]
+    async fn test_note_changes_are_recorded_for_joplin() {
+        let (db, _dir) = setup_test_db().await;
+        let note = Note {
+            title: "Indexed by Joplin".to_string(),
+            ..Default::default()
+        };
+        db.create_note(&note).await.unwrap();
+        db.update_note(&note).await.unwrap();
+        db.delete_note(&note.id).await.unwrap();
+
+        let types: Vec<i32> =
+            sqlx::query_scalar("SELECT type FROM item_changes WHERE item_id = ? ORDER BY id")
+                .bind(&note.id)
+                .fetch_all(&db.pool)
+                .await
+                .unwrap();
+        assert_eq!(types, vec![1, 2, 3]);
+    }
+
+    #[tokio::test]
+    async fn test_legacy_neojoplin_database_is_converted() {
+        let temp_dir = TempDir::new().unwrap();
+        let db_path = temp_dir.path().join("legacy.db");
+        let options = SqliteConnectOptions::from_str(&format!("sqlite:{}", db_path.display()))
+            .unwrap()
+            .create_if_missing(true);
+        let pool = SqlitePool::connect_with(options).await.unwrap();
+        sqlx::raw_sql(
+            r#"
+            CREATE TABLE version (version INTEGER NOT NULL, table_fields_version INTEGER DEFAULT 0);
+            INSERT INTO version (version) VALUES (43);
+            CREATE TABLE notes (id TEXT PRIMARY KEY, title TEXT, body TEXT, created_time INTEGER NOT NULL,
+                updated_time INTEGER NOT NULL, parent_id TEXT, encryption_blob_encrypted INTEGER DEFAULT 0,
+                master_key_id TEXT, deleted_time INTEGER DEFAULT 0);
+            CREATE TABLE tags (id TEXT PRIMARY KEY, title TEXT, created_time INTEGER NOT NULL,
+                updated_time INTEGER NOT NULL, master_key_id TEXT);
+            CREATE TABLE note_tags (id TEXT PRIMARY KEY, note_id TEXT NOT NULL, tag_id TEXT NOT NULL,
+                created_time INTEGER NOT NULL, updated_time INTEGER NOT NULL,
+                FOREIGN KEY (note_id) REFERENCES notes(id) ON DELETE CASCADE);
+            CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT, type INTEGER);
+            CREATE TABLE sync_items (id INTEGER PRIMARY KEY AUTOINCREMENT, sync_target INTEGER NOT NULL,
+                sync_time INTEGER DEFAULT 0, item_type INTEGER NOT NULL, item_id TEXT NOT NULL,
+                sync_disabled INTEGER DEFAULT 0, sync_disabled_reason TEXT, item_location INTEGER DEFAULT 1);
+            CREATE TABLE revisions (id TEXT PRIMARY KEY, parent_id TEXT NOT NULL DEFAULT "",
+                item_type INTEGER NOT NULL, item_id TEXT NOT NULL, item_updated_time INTEGER NOT NULL,
+                title_diff TEXT NOT NULL DEFAULT "", body_diff TEXT NOT NULL DEFAULT "",
+                metadata_diff TEXT NOT NULL DEFAULT "", encryption_cipher_text TEXT NOT NULL DEFAULT "",
+                encryption_applied INTEGER NOT NULL DEFAULT 0, updated_time INTEGER NOT NULL,
+                created_time INTEGER NOT NULL);
+            CREATE INDEX revisions_item_id ON revisions(item_id);
+            CREATE VIRTUAL TABLE notes_fts USING fts5(id UNINDEXED, title, body);
+            INSERT INTO notes (id, title, body, created_time, updated_time, parent_id)
+                VALUES ('aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', NULL, 'Body', 1, 2, 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb');
+            INSERT INTO tags (id, title, created_time, updated_time) VALUES ('cccccccccccccccccccccccccccccccc', 'tag', 1, 2);
+            INSERT INTO note_tags (id, note_id, tag_id, created_time, updated_time)
+                VALUES ('dddddddddddddddddddddddddddddddd', 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 'cccccccccccccccccccccccccccccccc', 1, 2);
+            INSERT INTO settings (key, value, type) VALUES ('sync.last_sync_time.test', '123', 2);
+            INSERT INTO sync_items (sync_target, sync_time, item_type, item_id)
+                VALUES (1, 5, 1, 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa');
+            "#,
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        pool.close().await;
+
+        let db = SqliteStorage::with_path(&db_path).await.unwrap();
+        assert_eq!(db.get_version().await.unwrap(), JOPLIN_DB_VERSION);
+
+        let note = db
+            .get_note("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(note.title, "");
+        assert_eq!(note.body, "Body");
+        let tags = db.get_note_tags(&note.id).await.unwrap();
+        assert_eq!(tags.len(), 1);
+        assert_eq!(
+            db.get_setting("sync.last_sync_time.test").await.unwrap(),
+            Some("123".to_string())
+        );
+        let items = db.get_sync_items(SyncTarget::WebDAV as i32).await.unwrap();
+        assert_eq!(items.len(), 1);
+
+        let fts_sql: String =
+            sqlx::query_scalar("SELECT sql FROM sqlite_master WHERE name = 'notes_fts'")
+                .fetch_one(&db.pool)
+                .await
+                .unwrap();
+        assert!(fts_sql.contains("fts4"));
+
+        let backups = std::fs::read_dir(temp_dir.path())
+            .unwrap()
+            .filter(|e| {
+                e.as_ref()
+                    .unwrap()
+                    .file_name()
+                    .to_string_lossy()
+                    .contains(".neojoplin-v43-")
+            })
+            .count();
+        assert_eq!(backups, 1);
+
+        // Opening again must not convert or back up a second time.
+        drop(db);
+        let db = SqliteStorage::with_path(&db_path).await.unwrap();
+        assert_eq!(db.get_version().await.unwrap(), JOPLIN_DB_VERSION);
     }
 
     #[tokio::test]
     async fn test_create_note() {
-        let db = setup_test_db().await;
+        let (db, _dir) = setup_test_db().await;
         let created_time = now_ms();
 
         let note = Note {
@@ -2187,7 +1828,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_folder_operations() {
-        let db = setup_test_db().await;
+        let (db, _dir) = setup_test_db().await;
 
         let folder = Folder {
             title: "Test Folder".to_string(),
@@ -2202,7 +1843,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_settings() {
-        let db = setup_test_db().await;
+        let (db, _dir) = setup_test_db().await;
 
         db.set_setting("test_key", "test_value").await.unwrap();
         let value = db.get_setting("test_key").await.unwrap().unwrap();
@@ -2211,7 +1852,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_delete_note_tracks_webdav_deletion() {
-        let db = setup_test_db().await;
+        let (db, _dir) = setup_test_db().await;
 
         let note = Note {
             title: "Tracked".to_string(),
@@ -2232,7 +1873,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_delete_folder_tracks_webdav_deletion() {
-        let db = setup_test_db().await;
+        let (db, _dir) = setup_test_db().await;
 
         let folder = Folder {
             title: "Tracked Folder".to_string(),
@@ -2253,7 +1894,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_trash_note_updates_sync_timestamp_and_is_returned() {
-        let db = setup_test_db().await;
+        let (db, _dir) = setup_test_db().await;
         let base_time = now_ms() - 60_000;
 
         let note = Note {

@@ -6,8 +6,9 @@ use neojoplin_storage::SqliteStorage;
 
 #[tokio::test]
 async fn test_note_roundtrip() {
-    // Use default storage path (in-memory or temp)
-    let storage = SqliteStorage::new()
+    // Never use SqliteStorage::new() in tests: it opens the user's real database.
+    let temp_dir = tempfile::TempDir::new().unwrap();
+    let storage = SqliteStorage::with_path(&temp_dir.path().join("test.db"))
         .await
         .expect("Failed to create storage");
 

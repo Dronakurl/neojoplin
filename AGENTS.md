@@ -37,7 +37,7 @@ The entire application is built around **exact replication of Joplin's sync prot
 
 ### Key Architectural Layers I want that the user can use the joplin command line along side the neojoplin application, sharing the same database and syncing to it. 
 
-1. **Database Layer** (`src/core/`) - Must match Joplin schema v41 exactly
+1. **Database Layer** (`src/core/`) - Must match the Joplin schema exactly (currently v53, same version numbers as Joplin; see `crates/storage/src/schema.rs`)
    - **Models**: Complete Joplin data structures (Note, Folder, Tag, Resource, etc.)
    - **Database**: SQLite with WAL mode, FTS5 full-text search
    - **Compatibility**: Every field type and table structure must match the reference implementation
@@ -160,7 +160,7 @@ The rclone password is "obscured". The real password is: `MUsWu2kVB9tgxGM`
 
 **Current Crate Structure:**
 - `crates/core/` - Core domain models and database interfaces
-- `crates/storage/` - SQLite database implementation with Joplin v41 schema
+- `crates/storage/` - SQLite database implementation with the Joplin schema (v53)
 - `crates/sync/` - WebDAV sync engine with three-phase protocol
 - `crates/e2ee/` - End-to-end encryption implementation (JED format)
 - `crates/cli/` - Command-line interface using Clap
@@ -224,12 +224,12 @@ joplin sync
 - Joplin CLI installed (for compatibility testing)
 - Port 8080 available
 
-**Unit tests:** In module files throughout the codebase
+**Unit tests:** In module files throughout the codebase. Tests must never call `SqliteStorage::new()` (it opens the real database); use `SqliteStorage::with_path` with a `TempDir`.
 **Integration tests:** `tests/integration/`
 
 ### Important Implementation Notes
 
-1. **Never modify the database schema** - it must match Joplin v41 exactly
+1. **Never modify the database schema** - it must match Joplin exactly. New Joplin migrations are ported 1:1 into `crates/storage/src/schema.rs`, and `joplin_schema_v53.sql` is a verbatim dump of a fresh Joplin profile
 2. **Always test sync compatibility** when changing database or sync code
 3. **Use milliseconds for timestamps** - Joplin uses ms, not seconds
 4. **FTS5 limitations** - Virtual tables don't support UPSERT, use DELETE + INSERT

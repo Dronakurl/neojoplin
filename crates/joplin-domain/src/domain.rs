@@ -384,6 +384,15 @@ pub fn timestamp_to_local_datetime(ts: i64) -> DateTime<Local> {
 #[cfg(feature = "sqlx")]
 use sqlx::Row;
 
+/// Joplin declares `order` and the coordinates as NUMERIC, so they may hold floats.
+#[cfg(feature = "sqlx")]
+fn numeric_as_i64(row: &sqlx::sqlite::SqliteRow, column: &str) -> sqlx::Result<i64> {
+    match row.try_get::<i64, _>(column) {
+        Ok(value) => Ok(value),
+        Err(_) => row.try_get::<f64, _>(column).map(|v| v as i64),
+    }
+}
+
 #[cfg(feature = "sqlx")]
 impl sqlx::FromRow<'_, sqlx::sqlite::SqliteRow> for Note {
     fn from_row(row: &sqlx::sqlite::SqliteRow) -> sqlx::Result<Self> {
@@ -407,15 +416,15 @@ impl sqlx::FromRow<'_, sqlx::sqlite::SqliteRow> for Note {
             todo_due: row.try_get("todo_due")?,
             source: row.try_get("source")?,
             source_application: row.try_get("source_application")?,
-            order: row.try_get("order")?,
-            latitude: row.try_get("latitude")?,
-            longitude: row.try_get("longitude")?,
-            altitude: row.try_get("altitude")?,
+            order: numeric_as_i64(row, "order")?,
+            latitude: numeric_as_i64(row, "latitude")?,
+            longitude: numeric_as_i64(row, "longitude")?,
+            altitude: numeric_as_i64(row, "altitude")?,
             author: row.try_get("author")?,
             source_url: row.try_get("source_url")?,
             application_data: row.try_get("application_data")?,
             markup_language: row.try_get("markup_language")?,
-            encryption_blob_encrypted: row.try_get("encryption_blob_encrypted")?,
+            encryption_blob_encrypted: row.try_get("encryption_blob_encrypted").unwrap_or(0),
             conflict_original_id: row.try_get("conflict_original_id")?,
             deleted_time: row.try_get("deleted_time").unwrap_or(0),
         })
