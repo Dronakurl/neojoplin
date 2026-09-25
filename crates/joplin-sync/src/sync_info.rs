@@ -85,6 +85,12 @@ pub struct SyncInfo {
     /// Timestamp of last delta sync for change detection (NeoJoplin extension)
     #[serde(default, skip_serializing_if = "is_zero")]
     pub delta_timestamp: i64,
+
+    /// Fields NeoJoplin doesn't model (e.g. `noteLockKey`, `revisionServiceEnabled`,
+    /// `revisionServiceTtlDays`). Preserved so uploading info.json never drops
+    /// data written by newer Joplin versions.
+    #[serde(flatten)]
+    pub extra: serde_json::Map<String, serde_json::Value>,
 }
 
 fn is_zero(v: &i64) -> bool {
@@ -140,6 +146,10 @@ pub struct MasterKeyInfo {
     pub has_been_used: bool,
     #[serde(default = "default_master_key_enabled")]
     pub enabled: i32,
+
+    /// Unmodelled master key fields, preserved on round-trip
+    #[serde(flatten)]
+    pub extra: serde_json::Map<String, serde_json::Value>,
 }
 
 fn default_master_key_enabled() -> i32 {
@@ -172,6 +182,7 @@ impl SyncInfo {
             master_keys: Vec::new(),
             ppk: None,
             delta_timestamp: 0,
+            extra: serde_json::Map::new(),
         }
     }
 
@@ -302,6 +313,26 @@ impl ClientIdManager {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn preserves_unknown_fields_on_round_trip() {
+        let json = r#"{
+            "version": 3,
+            "appMinVersion": "3.7.0",
+            "noteLockKey": {"id": "abc", "content": "x"},
+            "revisionServiceEnabled": {"value": true, "updatedTime": 5},
+            "masterKeys": [{"id": "k", "created_time": 1, "updated_time": 2,
+                "source_application": "a", "encryption_method": 8, "content": "c",
+                "future_field": 7}]
+        }"#;
+        let info: SyncInfo = serde_json::from_str(json).unwrap();
+        let out: serde_json::Value =
+            serde_json::from_str(&serde_json::to_string(&info).unwrap()).unwrap();
+        assert_eq!(out["noteLockKey"]["id"], "abc");
+        assert_eq!(out["revisionServiceEnabled"]["updatedTime"], 5);
+        assert_eq!(out["masterKeys"][0]["future_field"], 7);
+        assert_eq!(out["appMinVersion"], "3.7.0");
+    }
     use async_trait::async_trait;
     use futures::io::Cursor;
     use joplin_domain::{DavEntry, WebDavError};

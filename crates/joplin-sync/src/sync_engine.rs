@@ -797,6 +797,7 @@ impl SyncEngine {
                                 content: mk.content.clone(),
                                 has_been_used: true,
                                 enabled: if mk.enabled { 1 } else { 0 },
+                                extra: Default::default(),
                             });
                         }
                     }

@@ -32,7 +32,7 @@ impl MasterKey {
         let now = chrono::Utc::now().timestamp_millis();
 
         Self {
-            id: Uuid::new_v4().to_string(),
+            id: Uuid::new_v4().simple().to_string(),
             data: key_data,
             created_time: now,
             updated_time: now,
@@ -50,7 +50,7 @@ impl MasterKey {
         let now = chrono::Utc::now().timestamp_millis();
 
         Ok(Self {
-            id: Uuid::new_v4().to_string(),
+            id: Uuid::new_v4().simple().to_string(),
             data,
             created_time: now,
             updated_time: now,
