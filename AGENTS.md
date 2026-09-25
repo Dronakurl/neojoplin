@@ -106,8 +106,8 @@ The project includes a Docker-based local WebDAV server for testing and developm
 
 **Starting the local WebDAV server:**
 ```bash
-# Using docker compose
-docker compose up -d
+# Using just (docker/docker-compose.yml)
+just webdav-server
 
 # Or manually
 docker start neojoplin-webdav-1
@@ -180,7 +180,7 @@ The rclone password is "obscured". The real password is: `MUsWu2kVB9tgxGM`
 **Quick test with local Docker WebDAV:**
 ```bash
 # Ensure local WebDAV server is running
-docker compose up -d
+just webdav-server
 
 # Test basic functionality
 rm -rf ~/.local/share/neojoplin/joplin.db && ~/.local/bin/neojoplin init

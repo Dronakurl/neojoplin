@@ -9,12 +9,12 @@ pub fn resolve_sync_target(
     configured_target: Option<SyncTarget>,
 ) -> Result<(String, String, String, String)> {
     if let Some(url) = url {
-        let (base_url, configured_remote) = split_webdav_url(&url);
+        let (base_url, remote) = base_and_remote(&url, remote);
         return Ok((
             base_url,
             username.unwrap_or_default(),
             password.unwrap_or_default(),
-            remote.unwrap_or(configured_remote),
+            remote,
         ));
     }
 
@@ -24,13 +24,23 @@ pub fn resolve_sync_target(
         )
     })?;
 
-    let (base_url, configured_remote) = split_webdav_url(&configured_target.url);
+    let (base_url, remote) = base_and_remote(&configured_target.url, remote);
     Ok((
         base_url,
         username.unwrap_or(configured_target.username),
         password.unwrap_or(configured_target.password),
-        remote.unwrap_or(configured_remote),
+        remote,
     ))
+}
+
+/// With an explicit remote path the URL is the WebDAV root and is used as is
+/// (`--url http://host/webdav/ --remote /notes`). Without one, the URL is a
+/// Joplin-style full path whose last segment is the sync folder.
+fn base_and_remote(url: &str, remote: Option<String>) -> (String, String) {
+    match remote {
+        Some(remote) => (url.trim_end_matches('/').to_string(), remote),
+        None => split_webdav_url(url),
+    }
 }
 
 pub fn split_webdav_url(full_url: &str) -> (String, String) {
@@ -101,7 +111,7 @@ mod tests {
         assert_eq!(
             resolved,
             (
-                "https://dav.example.com/custom".to_string(),
+                "https://dav.example.com/custom/path".to_string(),
                 "arg-user".to_string(),
                 "arg-pass".to_string(),
                 "/explicit".to_string()
@@ -129,6 +139,36 @@ mod tests {
                 "/notes".to_string()
             )
         );
+    }
+
+    #[test]
+    fn resolve_sync_target_keeps_webdav_root_with_explicit_remote() {
+        let resolved = resolve_sync_target(
+            Some("http://localhost:8080/webdav/".to_string()),
+            None,
+            None,
+            Some("/test-sync".to_string()),
+            None,
+        )
+        .expect("resolution should work");
+
+        assert_eq!(resolved.0, "http://localhost:8080/webdav");
+        assert_eq!(resolved.3, "/test-sync");
+    }
+
+    #[test]
+    fn resolve_sync_target_splits_url_without_explicit_remote() {
+        let resolved = resolve_sync_target(
+            Some("http://localhost:8080/webdav/test-sync".to_string()),
+            None,
+            None,
+            None,
+            None,
+        )
+        .expect("resolution should work");
+
+        assert_eq!(resolved.0, "http://localhost:8080/webdav");
+        assert_eq!(resolved.3, "/test-sync");
     }
 
     #[test]

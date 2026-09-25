@@ -1,9 +1,11 @@
-version: "3.8"
+# Project name matches the original root-level setup, so the existing
+# container and webdav-data volume are reused.
+name: neojoplin
 
 services:
   webdav:
     build:
-      context: .
+      context: ..
       dockerfile: docker/Dockerfile.webdav
     ports:
       - "8080:8080"
