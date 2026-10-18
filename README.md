@@ -16,7 +16,7 @@ A native Rust terminal client for [Joplin](https://joplinapp.org/) note-taking w
 
 ### From the GitHub release (recommended)
 
-Every push to `main` builds the binary on GitHub Actions and publishes it on the
+Every push to `main` builds the binary on GitHub Actions and replaces the single `latest` release on the
 [release page](https://github.com/Dronakurl/neojoplin/releases). Prebuilt binaries
 exist for Linux (x86_64, aarch64) and macOS (Apple Silicon). All you need is `curl`:
 
@@ -31,7 +31,7 @@ just install-release
 ```
 
 The binary is installed to `~/.local/bin/neojoplin` (change with `-d DIR` or
-`NEOJOPLIN_INSTALL_DIR`; pin a release with `-v build-12`). The script verifies the
+`NEOJOPLIN_INSTALL_DIR`; pin a release with `-v TAG`). The script verifies the
 SHA-256 checksum and prints an error if your platform has no published binary.
 
 ### From Source
