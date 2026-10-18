@@ -14,19 +14,41 @@ A native Rust terminal client for [Joplin](https://joplinapp.org/) note-taking w
 
 ## Installation
 
+### From the GitHub release (recommended)
+
+Every push to `main` builds the binary on GitHub Actions and publishes it on the
+[release page](https://github.com/Dronakurl/neojoplin/releases). Prebuilt binaries
+exist for Linux (x86_64, aarch64) and macOS (Apple Silicon). All you need is `curl`:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Dronakurl/neojoplin/main/scripts/install.sh | sh
+```
+
+or, from a clone of this repository:
+
+```bash
+just install-release
+```
+
+The binary is installed to `~/.local/bin/neojoplin` (change with `-d DIR` or
+`NEOJOPLIN_INSTALL_DIR`; pin a release with `-v build-12`). The script verifies the
+SHA-256 checksum and prints an error if your platform has no published binary.
+
 ### From Source
 
 ```bash
-# Clone the repository
 git clone https://github.com/Dronakurl/neojoplin.git
 cd neojoplin
-
-cargo install --path crates/cli --force
+just install        # or: cargo install --path crates/cli --force
 ```
+
+No submodules or sibling checkouts are required; all dependencies come from crates.io.
+(Earlier versions expected a local `../termimad` checkout and failed with
+`failed to read .../termimad/Cargo.toml`; update to the current `main` if you see this.)
 
 ### Prerequisites
 
-- Rust toolchain (1.70+)
+- Rust toolchain (only for building from source)
 - SQLite
 - WebDAV server (optional: for synchronization to a server)
 

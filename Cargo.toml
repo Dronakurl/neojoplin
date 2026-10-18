@@ -53,7 +53,7 @@ hmac = "0.13"
 quick-xml = "0.39"
 fuzzy-matcher = "0.3"
 ratatui-interact = "0.5"
-termimad = { path = "../termimad" }
+termimad = "0.35"
 ureq = { version = "2", features = ["json"] }
 toml = { version = "1", features = ["parse", "display"] }
 tar = "0.4"

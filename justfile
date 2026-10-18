@@ -67,7 +67,11 @@ db-list-notes:
 tui:
     cargo run --release --bin neojoplin -- --tui
 
-# Install the system
+# Install the latest release binary from GitHub (needs only curl)
+install-release:
+    sh scripts/install.sh
+
+# Build from source and install (needs a Rust toolchain)
 install:
     cargo build --release
     cargo install --path crates/cli --force
